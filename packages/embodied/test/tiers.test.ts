@@ -669,6 +669,44 @@ test("params-match.mjs: a tier run matches --tier, not its flags spelled out, an
 	}
 });
 
+test("params-match.mjs: a flag the result does not record ran with its introduced default; one listed nowhere is skipped and named", async () => {
+	const r = await result(await toy({}));
+	// A result written before the prefix-cache flags (and --keep-images) existed.
+	const old = { ...r, params: { ...r.params }, params_default: { ...r.params_default } };
+	for (const name of ["image-trim-every", "replay-thinking", "cache-breakpoints", "keep-images"]) {
+		assert.ok(name in old.params, name);
+		delete old.params[name];
+		delete old.params_default[name];
+	}
+	const dir = mkdtempSync(join(tmpdir(), "introduced-"));
+	try {
+		const file = join(dir, "result.json");
+		writeFileSync(file, JSON.stringify(old));
+		const match = (args: string[]) => node("params-match.mjs", [file], { PI_ARGS_JSON: JSON.stringify(args) });
+		assert.equal(match([]).status, 0, "the defaults now are the introduced ones");
+		assert.equal(match(["--image-trim-every=0", "--replay-thinking", "false", "--cache-breakpoints=false"]).status, 0);
+		const trim = match(["--image-trim-every", "8"]);
+		assert.equal(trim.status, 2);
+		assert.match(trim.stderr, /--image-trim-every ran "0" \(unrecorded: its default when introduced\), now "8"/);
+		const marks = match(["--replay-thinking=none", "--image-trim-every", "8", "--cache-breakpoints=true"]);
+		assert.equal(marks.status, 2);
+		assert.match(marks.stderr, /--replay-thinking ran "false" .*now "none"/);
+		assert.match(marks.stderr, /--cache-breakpoints ran "false" .*now "true"/);
+		// --keep-images is listed nowhere: not compared (the run is accepted), but named.
+		const keep = match(["--keep-images", "6", "--model", "x/y"]);
+		assert.equal(keep.status, 0, keep.stderr);
+		assert.match(keep.stderr, /unrecorded in the old result, not compared: --keep-images$/m);
+		assert.doesNotMatch(keep.stderr, /--model/);
+		// Recorded, the same flags compare as before.
+		writeFileSync(file, JSON.stringify(r));
+		assert.equal(match(["--image-trim-every", "8"]).status, 2);
+		assert.equal(match(["--keep-images", "6"]).status, 2);
+		assert.equal(match([]).stderr, "");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("tier-flags.mjs prints the flags a tier stands for, and refuses a contradicting argument", () => {
 	const s3 = node("tier-flags.mjs", ["--model", "x/y", "--tier", "S3", "--task", "0"]);
 	assert.equal(s3.status, 0);

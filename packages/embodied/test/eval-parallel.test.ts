@@ -24,8 +24,8 @@ const RUNNER = new URL("../src/scripts/eval-parallel.sh", import.meta.url).pathn
  * exits without a result (env_error); seed 2 hangs while the FAKE_HANG file exists.
  */
 const FAKE_PI = `#!/usr/bin/env bash
-all=("$@") dir="" seed="" good=false
-while [ $# -gt 0 ]; do case $1 in --session-dir) dir=$2 && shift ;; --seed) seed=$2 && shift ;; --good) good=true ;; esac; shift; done
+all=("$@") dir="" seed="" good=false trim=""
+while [ $# -gt 0 ]; do case $1 in --session-dir) dir=$2 && shift ;; --seed) seed=$2 && shift ;; --good) good=true ;; --image-trim-every) trim=$2 && shift ;; esac; shift; done
 printf '%s\\n' "\${all[@]}" >"$dir/argv"
 env | grep '^PI_EMBODIED_' >"$dir/env"
 echo $$ >"$dir/pid"
@@ -33,7 +33,8 @@ echo "$dir CVD=\${CUDA_VISIBLE_DEVICES-unset} EGL=\${MUJOCO_EGL_DEVICE_ID-unset}
 if [ "$seed" = 2 ] && [ -n "\${FAKE_HANG:-}" ] && [ -e "$FAKE_HANG" ]; then sleep 30 & wait; fi
 case ",\${FAKE_FAIL:-}," in *",$seed,"*) exit 1 ;; esac
 [ $((seed % 2)) = 0 ] && good=true
-echo '{"type":"custom","customType":"robot_result","data":{"success":'$good',"terminated":'$good',"claimed":"success","env_steps":1}}' >"$dir/s.jsonl"
+params=""; [ -n "$trim" ] && params=',"params":{"image-trim-every":"'$trim'"},"params_default":{"image-trim-every":"0"}'
+echo '{"type":"custom","customType":"robot_result","data":{"success":'$good',"terminated":'$good',"claimed":"success","env_steps":1'$params'}}' >"$dir/s.jsonl"
 `;
 
 function sandbox() {
@@ -234,6 +235,28 @@ test("the summary label names a ManiSkill --arm other than the Panda, and varian
 	assert.match(xarm.config, /\/robot=xarm6_robotiq$/);
 	assert.doesNotMatch(panda.config, /robot=/);
 	assert.match(r.stdout, /xarm: .*robot=xarm6_robotiq: success/);
+});
+
+test("the summary's config names a prefix-cache flag (recorded in params) that is not at its introduced default", () => {
+	const s = sandbox();
+	const out = join(s.dir, "out");
+	const r = s.run([
+		"--variant",
+		"trim=--image-trim-every 8",
+		"--variant",
+		"plain=",
+		"maniskill",
+		out,
+		"PickCube-v1",
+		"0-1",
+		"--model",
+		"m/x",
+	]);
+	assert.equal(r.status, 0, r.stdout + r.stderr);
+	const [trim, plain] = summary(out) as { config: string }[];
+	assert.match(trim.config, /\/image-trim-every=8$/);
+	assert.doesNotMatch(plain.config, /image-trim-every/);
+	assert.notEqual(trim.config, plain.config);
 });
 
 test("a rerun fills only the invalid cells; infrastructure failures are counted apart", () => {

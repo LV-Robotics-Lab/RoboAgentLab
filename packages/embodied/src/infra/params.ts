@@ -132,6 +132,21 @@ export const DEPLOYMENT: ReadonlySet<string> = new Set([
 	"dashboard-live-fps",
 ]);
 
+/**
+ * Tracked flags added after results existed, with the default each had when it was introduced
+ * (`introduced`) and its registered default now (`default`, test/params.test.ts keeps it equal to
+ * the registration). A result whose `params` lacks the flag was written before it existed, so it
+ * ran with the introduced default: ../scripts/params-match.mjs reads the missing key as that value
+ * and compares it with the run asked for, so `--image-trim-every 8` never mixes with such a result,
+ * and neither does a run without the flag once its default is flipped. A missing flag not listed
+ * here is skipped (its value then is unknown) and named in the script's output.
+ */
+export const INTRODUCED: Readonly<Record<string, { introduced: string; default: string }>> = {
+	"image-trim-every": { introduced: "0", default: "0" },
+	"replay-thinking": { introduced: "false", default: "false" },
+	"cache-breakpoints": { introduced: "false", default: "false" },
+};
+
 const tracked = new WeakMap<object, Tracked>();
 
 /**

@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { argvFlags, DEPLOYMENT, NUMERIC, numberError, params, trackedFlags, trackFlags } from "../src/infra/params.ts";
+import {
+	argvFlags,
+	DEPLOYMENT,
+	INTRODUCED,
+	NUMERIC,
+	numberError,
+	params,
+	trackedFlags,
+	trackFlags,
+} from "../src/infra/params.ts";
 import { deployFlags } from "./helpers/deployment.ts";
 
 /** Every robot extension, loaded into a stub pi (flags at their defaults). */
@@ -129,6 +138,8 @@ test("the result records the extras that were on, every experiment flag (params)
 	assert.equal(r.params_default["max-turns"], "0");
 	assert.equal(r.params["object-memory"], true);
 	assert.equal(r.params_default["object-memory"], false);
+	// INTRODUCED names the registered default now: a flipped default must be recorded there too.
+	for (const [name, { default: now }] of Object.entries(INTRODUCED)) assert.equal(r.params_default[name], now, name);
 });
 
 test("argvFlags parses pi's --name[=value] rules; the tracker's given() reads the process's own argv", () => {

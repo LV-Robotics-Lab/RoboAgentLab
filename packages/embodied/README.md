@@ -350,7 +350,8 @@ Every result records `params` (the effective value of every experiment flag the 
 and `params_default` (their defaults), next to `extras`; where services, files and GPUs are is not
 a flag and is left out (`src/infra/params.ts`). The eval scripts compare a recorded result
 with the run they are asked for through `src/scripts/params-match.mjs` (a flag given on the
-command line must have run with that value, every other one with its default) on top of their own
+command line must have run with that value, every other one with its default; a flag a result does
+not record ran with the default it was introduced with, `INTRODUCED` in `params.ts`) on top of their own
 checks, and refuse an out dir that would mix configurations. A numeric flag that does not parse
 or is out of range stops the robot at start instead of falling back to a default, and every flag
 has one owner (`test/params.test.ts`).

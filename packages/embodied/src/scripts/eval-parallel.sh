@@ -371,6 +371,10 @@ vdirs.forEach((vdir, v) => {
 			r.tier ? `tier=${r.tier}` : r.preset ? `preset=${r.preset}` : "",
 			r.max_move === undefined ? "" : `max_move=${r.max_move}`, r.grasping_mode ? `grasp=${r.grasping_mode}` : "",
 			(r.maniskill_robot ?? "panda") !== "panda" ? `robot=${r.maniskill_robot}` : "",
+			// The prefix-cache flags (recorded in params) when not at the default they were introduced with
+			// (src/infra/params.ts INTRODUCED): a result without them ran with those defaults.
+			...Object.entries({ "replay-thinking": "false", "image-trim-every": "0", "cache-breakpoints": "false" })
+				.map(([f, introduced]) => String(r.params?.[f] ?? introduced) === introduced ? "" : `${f}=${r.params[f]}`),
 			r.protocol_id ?? ""].filter(Boolean).join("/")));
 	const name = vdir === "." ? "-" : vdir;
 	if (configs.size > 1) {
