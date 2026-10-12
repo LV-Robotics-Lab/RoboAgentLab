@@ -22,15 +22,18 @@ from __future__ import annotations
 import argparse
 import functools
 import io
+import json
 import math
 import os
 import random
 import sys
+import time
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.libero import motormind_rig as rig
 from pi_embodied_services.utils import (
     collision,
     ground_truth,
@@ -112,6 +115,7 @@ LIBERO_MOTIONS = (
     "env.home_pose",
     "env.open_gripper",
     "env.close_gripper",
+    "env.mm_run_step",
 )
 #: The motions pi's tools run with ``tool_call=True`` (LiberoEnvFacade._for_tools).
 TOOL_MOTIONS = (
@@ -125,10 +129,20 @@ TOOL_MOTIONS = (
     "env.home_pose",
     "env.open_gripper",
     "env.close_gripper",
+    "env.mm_run_step",
 )
 #: Zero-action steps RLinf's LiberoEnv.reset takes inside (gripper open): robosuite counts them
 #: toward its horizon, RLinf's truncation does not.
 RLINF_RESET_STEPS = 15
+#: MotorMind mode (motormind_rig.py): its camera names -> LIBERO's; ``side`` only with
+#: --side-camera, mounted after every reset.
+MM_CAMERAS = {"scene": "agentview", "side": "sideview", "wrist": "robot0_eye_in_hand"}
+#: The bodies tried, in order, for MotorMind's base frame.
+MM_BASE_BODIES = ("robot0_base", "robot0_link0", "robot0_fixed_base_link")
+#: --mm-home: refuse the model's ``home`` (default), or run it as a scene reset.
+MM_HOME = ("refuse", "reset")
+#: The env.mm_run_step segment kinds.
+MM_KINDS = ("translate", "rotate", "gripper", "wait", "home")
 
 
 class Refused(ValueError):
@@ -155,6 +169,19 @@ def _finite(name: str, value) -> np.ndarray:
     if not np.isfinite(arr).all():
         raise ValueError(f"{name} must be finite, got {value!r}")
     return arr
+
+
+def _jsonable(value):
+    """``value`` with numpy arrays and scalars as JSON types (the truth log's lines)."""
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 # torch and LiberoEnv are only imported at call time (after --cuda-device
@@ -314,6 +341,436 @@ def _exposing_poses(env_fn):
     return fn
 
 
+# ---------------------------------------------------------------------------
+# MotorMind mode: the worker side (the sim lives only in the env worker process)
+# ---------------------------------------------------------------------------
+
+
+def _model(sim):
+    """The raw ``mujoco.MjModel`` behind robosuite's wrapper."""
+    return getattr(sim.model, "_model", sim.model)
+
+
+def _mm_base(rob) -> dict:
+    """The first of MM_BASE_BODIES the model has: its name and world pose, unrounded."""
+    m = rob.sim.model
+    for name in MM_BASE_BODIES:
+        try:
+            i = m.body_name2id(name)
+        except Exception:  # noqa: BLE001  robosuite raises ValueError for an unknown name
+            continue
+        return {
+            "body": name,
+            "pos": np.asarray(rob.sim.data.body_xpos[i], dtype=np.float64).tolist(),
+            "xmat": np.asarray(rob.sim.data.body_xmat[i], dtype=np.float64)
+            .reshape(3, 3)
+            .tolist(),
+        }
+    return {"body": None}
+
+
+def _mm_static(rob) -> dict:
+    """What MotorMind reads once at connect: the base pose, the arm controller's output_max and
+    reference frame, the control frequency and robosuite's horizon."""
+    arm = rob.robots[0]
+    composite = getattr(arm, "composite_controller", None)
+    if composite is not None:
+        parts = composite.part_controllers
+        ctl = parts.get("right") or next(
+            v for k, v in parts.items() if "gripper" not in k
+        )
+    else:
+        ctl = arm.controller
+    return {
+        "base": _mm_base(rob),
+        "output_max": [float(v) for v in np.asarray(ctl.output_max).reshape(-1)[:6]],
+        "ref_frame": str(getattr(ctl, "input_ref_frame", "world")),
+        "controller": type(ctl).__name__,
+        "control_freq": float(rob.control_freq),
+        "horizon": int(rob.horizon),
+    }
+
+
+def _mm_scene(rob) -> tuple[list[dict], np.ndarray]:
+    """The static geoms the table-top pick considers (welded to the world, rig.TABLE_GEOM_TYPES)
+    and the world positions of the free-jointed bodies."""
+    sim = rob.sim
+    m = _model(sim)
+    geoms = []
+    for g in range(m.ngeom):
+        if int(m.geom_type[g]) not in rig.TABLE_GEOM_TYPES:
+            continue
+        if int(m.body_weldid[m.geom_bodyid[g]]) != 0:
+            continue
+        geoms.append(
+            {
+                "name": sim.model.geom_id2name(g),
+                "body": sim.model.body_id2name(int(m.geom_bodyid[g])),
+                "type": int(m.geom_type[g]),
+                "pos": np.asarray(sim.data.geom_xpos[g], dtype=np.float64),
+                "xmat": np.asarray(sim.data.geom_xmat[g], dtype=np.float64).reshape(
+                    3, 3
+                ),
+                "size": np.asarray(m.geom_size[g], dtype=np.float64),
+            }
+        )
+    free = [
+        np.asarray(sim.data.body_xpos[m.jnt_bodyid[j]], dtype=np.float64)
+        for j in range(m.njnt)
+        if int(m.jnt_type[j]) == 0
+    ]
+    return geoms, np.asarray(free).reshape(-1, 3)
+
+
+def _mm_mount_side(rob, camera: str = "sideview", agent: str = "agentview") -> dict:
+    """Mount ``camera`` by the side rule (rig.side_mount): writes cam_pos / cam_quat / cam_fovy
+    and runs ``sim.forward()``. Left where the scene XML put it, with the reason, when the base,
+    the table top or a worldbody parent is missing. ``pre`` is the pose before the write."""
+    sim = rob.sim
+    m = sim.model
+    cid = m.camera_name2id(camera)
+    parent = m.body_id2name(m.cam_bodyid[cid])
+    pre = {
+        "pos": np.asarray(m.cam_pos[cid], dtype=np.float64).tolist(),
+        "quat_wxyz": np.asarray(m.cam_quat[cid], dtype=np.float64).tolist(),
+        "fovy": float(m.cam_fovy[cid]),
+    }
+    out: dict[str, Any] = {
+        "mounted": False,
+        "camera": camera,
+        "parent": parent,
+        "pre": pre,
+    }
+    base = _mm_base(rob)
+    if base["body"] is None:
+        return {**out, "reason": "no base body"}
+    if parent != "world":
+        return {**out, "reason": f"the camera's parent is {parent}, not the worldbody"}
+    top = rig.table_top(*_mm_scene(rob))
+    if top is None:
+        return {**out, "reason": "no static geom carries a free body (no table top)"}
+    aid = m.camera_name2id(agent)
+    pose = rig.side_mount(base["pos"], top["top_z"], sim.data.cam_xpos[aid])
+    m.cam_pos[cid] = pose["eye"]
+    m.cam_quat[cid] = pose["quat_wxyz"]
+    m.cam_fovy[cid] = m.cam_fovy[aid]
+    sim.forward()
+    return {
+        **out,
+        "mounted": True,
+        "pos": pose["eye"].tolist(),
+        "quat_wxyz": pose["quat_wxyz"].tolist(),
+        "fovy": float(m.cam_fovy[cid]),
+        "aim_world": pose["aim"].tolist(),
+        "standoff_m": pose["standoff"],
+        "table_top": top,
+        "cam_xpos": np.asarray(sim.data.cam_xpos[cid], dtype=np.float64).tolist(),
+        "cam_xmat": np.asarray(sim.data.cam_xmat[cid], dtype=np.float64)
+        .reshape(3, 3)
+        .tolist(),
+    }
+
+
+def _mm_calibration(sim, cid: int) -> dict:
+    return {
+        "fovy": float(sim.model.cam_fovy[cid]),
+        "cam_xpos": np.asarray(sim.data.cam_xpos[cid], dtype=np.float64).copy(),
+        "cam_xmat": np.asarray(sim.data.cam_xmat[cid], dtype=np.float64)
+        .reshape(3, 3)
+        .copy(),
+    }
+
+
+def _mm_frames(rob, cameras: dict, size: int, depth=()) -> dict:
+    """Render ``cameras`` (name -> MuJoCo camera) at ``size`` square, upright (rows flipped):
+    ``rgb`` uint8, ``depth`` float32 metres for the names in ``depth`` (robosuite's linearised
+    depth, NaN to 0), and each camera's fovy, position and orientation."""
+    from robosuite.utils.camera_utils import get_real_depth_map
+
+    sim = rob.sim
+    out = {}
+    for name, cam in cameras.items():
+        cid = sim.model.camera_name2id(cam)
+        want = name in depth
+        img = sim.render(width=size, height=size, camera_name=cam, depth=want)
+        rgb, dep = img if want else (img, None)
+        entry = {
+            "rgb": np.ascontiguousarray(np.asarray(rgb)[::-1]),
+            **_mm_calibration(sim, cid),
+        }
+        if dep is not None:
+            real = get_real_depth_map(sim, np.asarray(dep))
+            entry["depth"] = np.ascontiguousarray(
+                np.nan_to_num(real[::-1], nan=0.0).astype(np.float32)
+            )
+        out[name] = entry
+    return out
+
+
+def _mm_truth(rob, state: bool = False) -> dict:
+    """Privileged ground truth for mm_truth.jsonl and the tests: the task objects' world poses,
+    LIBERO's goal predicates and its success right now (not latched), the hand's world pose, the
+    finger joints, the sim time and robosuite's step counter; ``state`` adds the flattened sim
+    state."""
+    sim = rob.sim
+    out: dict[str, Any] = {
+        "objects": ground_truth.mujoco_body_poses(sim, rob.obj_body_id),
+        "sim_time_s": float(sim.data.time),
+        "robosuite_timestep": int(rob.timestep),
+    }
+    try:
+        goal = rob.parsed_problem["goal_state"]
+        out["goal"] = [
+            {"predicate": [str(v) for v in g], "value": bool(rob._eval_predicate(g))}
+            for g in goal
+        ]
+        out["success_now"] = bool(rob._check_success())
+    except Exception as e:  # noqa: BLE001  a task without BDDL predicates
+        out["goal_error"] = f"{type(e).__name__}: {e}"
+    m = sim.model
+    try:
+        site = m.site_name2id("gripper0_right_grip_site")
+        out["grip_site"] = {
+            "pos": np.asarray(sim.data.site_xpos[site], dtype=np.float64).tolist(),
+            "xmat": np.asarray(sim.data.site_xmat[site], dtype=np.float64)
+            .reshape(3, 3)
+            .tolist(),
+        }
+    except Exception:  # noqa: BLE001  another gripper model
+        pass
+    arm = rob.robots[0]
+    try:
+        out["gripper_qpos"] = [
+            float(sim.data.qpos[i])
+            for i in np.asarray(arm._ref_gripper_joint_pos_indexes["right"]).reshape(-1)
+        ]
+        out["arm_qpos"] = [
+            float(sim.data.qpos[i])
+            for i in np.asarray(arm._ref_joint_pos_indexes).reshape(-1)
+        ]
+    except Exception:  # noqa: BLE001  robosuite 1.4 names them differently
+        pass
+    if state:
+        out["sim_state"] = np.asarray(
+            sim.get_state().flatten(), dtype=np.float64
+        ).tolist()
+    return out
+
+
+#: The geom groups the cameras draw (and so the rays the depth checks cast): robosuite's offscreen
+#: renderer hides group 0, the collision geoms (``render_collision_mesh=False``), and draws the
+#: visual group 1. A ray that met collision geoms would stop short of what the camera sees, e.g.
+#: 11 mm above the living-room table's visible top.
+_RENDERED_GROUPS = np.array([0, 1, 1, 0, 0, 0], dtype=np.uint8)
+
+
+def _mm_ray(sim, origin, direction) -> dict:
+    """The first rendered geom along a world ray: distance (m, along the unit direction), the
+    geom and its body; ``dist`` None when nothing is hit."""
+    import mujoco
+
+    d = np.asarray(direction, dtype=np.float64).reshape(3)
+    d = d / np.linalg.norm(d)
+    geom = np.zeros(1, dtype=np.int32)
+    t = mujoco.mj_ray(
+        _model(sim),
+        getattr(sim.data, "_data", sim.data),
+        np.asarray(origin, dtype=np.float64).reshape(3),
+        d,
+        _RENDERED_GROUPS,
+        1,
+        -1,
+        geom,
+    )
+    if t < 0:
+        return {"dist": None, "geom": None, "body": None}
+    g = int(geom[0])
+    return {
+        "dist": float(t),
+        "geom": sim.model.geom_id2name(g),
+        "body": sim.model.body_id2name(int(_model(sim).geom_bodyid[g])),
+    }
+
+
+def _mm_rays(rob, origins, directions) -> list:
+    return [_mm_ray(rob.sim, o, d) for o, d in zip(origins, directions)]
+
+
+def _mm_project(
+    rob,
+    cameras: dict,
+    size: int,
+    points_world=(),
+    bodies=(),
+    depth_pixels=None,
+) -> dict:
+    """Per camera (name -> MuJoCo camera): its segmentation render (upright), each world point's
+    pixel and the body seen there, each body prefix's pixel count and centroid and its first
+    body's origin projected, and for ``depth_pixels`` (name -> [[u, v], ...]) the rendered depth
+    and a ray-cast distance along the same pixel ray (both as camera z, metres)."""
+    from robosuite.utils.camera_utils import get_real_depth_map
+
+    sim = rob.sim
+    m = _model(sim)
+    names = [sim.model.body_id2name(i) for i in range(m.nbody)]
+    out = {}
+    for name, cam in cameras.items():
+        cid = sim.model.camera_name2id(cam)
+        cal = _mm_calibration(sim, cid)
+        k = rig.intrinsic(cal["fovy"], size, size)
+        c2w = rig.cam2world(cal["cam_xpos"], cal["cam_xmat"])
+        seg = np.asarray(
+            sim.render(width=size, height=size, camera_name=cam, segmentation=True)
+        )[::-1]
+        geom_px = np.where(seg[..., 0] == 5, seg[..., 1], -1)  # mjOBJ_GEOM
+        body_px = np.where(geom_px >= 0, m.geom_bodyid[np.clip(geom_px, 0, None)], -1)
+
+        def seen(uv) -> dict:
+            """What the segmentation render shows at pixel ``uv``: the object type (MuJoCo
+            mjtObj: 5 geom, 6 site), the object's name and, for a geom, its body."""
+            nothing = {"body": None, "objtype": None, "object": None}
+            if uv is None:
+                return nothing
+            c, r = int(math.floor(uv[0])), int(math.floor(uv[1]))
+            if not (0 <= r < size and 0 <= c < size):
+                return nothing
+            t, i = int(seg[r, c, 0]), int(seg[r, c, 1])
+            if t == 5:
+                return {
+                    "body": names[int(m.geom_bodyid[i])],
+                    "objtype": t,
+                    "object": sim.model.geom_id2name(i),
+                }
+            obj = sim.model.site_id2name(i) if t == 6 and i >= 0 else None
+            return {**nothing, "objtype": t, "object": obj}
+
+        pts = []
+        for p in points_world or ():
+            uv = rig.project(k, c2w, p)
+            pts.append(
+                {
+                    "uv": None if uv is None else [uv[0], uv[1]],
+                    "z_m": None if uv is None else uv[2],
+                    **seen(uv),
+                }
+            )
+        found = {}
+        for prefix in bodies or ():
+            ids = [i for i, n in enumerate(names) if n and n.startswith(prefix)]
+            mask = np.isin(body_px, ids)
+            rows, cols = np.nonzero(mask)
+            origin = None
+            if ids:
+                uv = rig.project(k, c2w, sim.data.body_xpos[ids[0]])
+                origin = None if uv is None else {"uv": [uv[0], uv[1]], **seen(uv)}
+            found[prefix] = {
+                "bodies": [names[i] for i in ids],
+                "pixels": int(mask.sum()),
+                "centroid_uv": None
+                if not len(rows)
+                else [float(cols.mean() + 0.5), float(rows.mean() + 0.5)],
+                "origin": origin,
+            }
+        depth = []
+        want = (depth_pixels or {}).get(name) or []
+        if want:
+            _rgb, dep = sim.render(width=size, height=size, camera_name=cam, depth=True)
+            real = np.nan_to_num(
+                get_real_depth_map(sim, np.asarray(dep))[::-1], nan=0.0
+            )
+            r_c2w = c2w[:3, :3]
+            for u, v in want:
+                c, r = int(math.floor(u)), int(math.floor(v))
+                ray_c = np.array(
+                    [(u - k[0, 2]) / k[0, 0], (v - k[1, 2]) / k[1, 1], 1.0]
+                )
+                hit = _mm_ray(sim, c2w[:3, 3], r_c2w @ ray_c)
+                depth.append(
+                    {
+                        "uv": [float(u), float(v)],
+                        "rendered_z_m": float(real[r, c]),
+                        "ray_z_m": None
+                        if hit["dist"] is None
+                        else hit["dist"] / float(np.linalg.norm(ray_c)),
+                        "ray_body": hit["body"],
+                    }
+                )
+        out[name] = {
+            "intrinsic": k.tolist(),
+            "cam2world": c2w.tolist(),
+            "points": pts,
+            "bodies": found,
+            "depth": depth,
+        }
+    return out
+
+
+def _mm_set_body(rob, name: str, pos, quat_xyzw=None) -> dict:
+    """Teleport a free-jointed body (``name``, or ``name_main``) to a world pose, zero its
+    velocity and run ``sim.forward()`` (privileged test set-up)."""
+    sim = rob.sim
+    m = _model(sim)
+    for candidate in (name, f"{name}_main"):
+        try:
+            b = sim.model.body_name2id(candidate)
+            break
+        except Exception:  # noqa: BLE001
+            b = None
+    if b is None:
+        raise ValueError(f"no body {name!r}")
+    j = int(m.body_jntadr[b])
+    if j < 0 or int(m.jnt_type[j]) != 0:
+        raise ValueError(f"{name!r} has no free joint")
+    q, dof = int(m.jnt_qposadr[j]), int(m.jnt_dofadr[j])
+    data = sim.data
+    data.qpos[q : q + 3] = np.asarray(pos, dtype=np.float64).reshape(3)
+    if quat_xyzw is not None:
+        x, y, z, w = np.asarray(quat_xyzw, dtype=np.float64).reshape(4)
+        data.qpos[q + 3 : q + 7] = [w, x, y, z]
+    data.qvel[dof : dof + 6] = 0.0
+    sim.forward()
+    return {
+        "body": sim.model.body_id2name(b),
+        "pos": np.asarray(sim.data.body_xpos[b]).tolist(),
+    }
+
+
+def _motormind_worker(env_fn):
+    """Wrap a LIBERO worker ``env_fn`` so the env answers MotorMind mode's ``mm_*`` calls
+    (through the worker's ``env_call``, target ``self``). Like ``_exposing_poses``, nothing
+    raises in the worker (an exception there kills it): a failure comes back as ``{"error"}``."""
+
+    def fn():
+        env = env_fn()
+
+        def sim_env():
+            rob = env
+            while hasattr(rob, "env"):
+                rob = rob.env
+            return rob
+
+        def safe(f):
+            def call(*args, **kwargs):
+                try:
+                    return f(sim_env(), *args, **kwargs)
+                except Exception as e:  # noqa: BLE001
+                    return {"error": f"{type(e).__name__}: {e}"}
+
+            return call
+
+        env.mm_static = safe(_mm_static)
+        env.mm_mount_side = safe(_mm_mount_side)
+        env.mm_frames = safe(_mm_frames)
+        env.mm_truth = safe(_mm_truth)
+        env.mm_rays = safe(_mm_rays)
+        env.mm_project = safe(_mm_project)
+        env.mm_set_body = safe(_mm_set_body)
+        env.mm_scene = safe(lambda rob: {"table_top": rig.table_top(*_mm_scene(rob))})
+        return env
+
+    return fn
+
+
 def make_env(
     task_id: int,
     seed: int,
@@ -338,7 +795,8 @@ def make_env(
     class SeededLiberoEnv(LiberoEnv):
         def get_env_fns(self):
             return [
-                _exposing_poses(_seeding_globals(fn)) for fn in super().get_env_fns()
+                _motormind_worker(_exposing_poses(_seeding_globals(fn)))
+                for fn in super().get_env_fns()
             ]
 
     return SeededLiberoEnv(
@@ -385,6 +843,11 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         ik_motion: motion.MotionPlanner | None = None,
         geometry: bool = False,
         align_wrist: bool = False,
+        side_camera: bool = False,
+        settle_ticks: int = 0,
+        mm_home: str = "refuse",
+        mm_truth: str | None = None,
+        privileged: bool = False,
     ):
         self._env = env
         self._env_idx = 0
@@ -456,6 +919,19 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             if align_wrist
             else None
         )
+        # MotorMind mode (env.mm_observe / env.mm_run_step, motormind_rig.py): the side camera
+        # mounted after every reset, the zero-action steps after every reset, what the model's
+        # `home` does, where the privileged ground truth goes, and the test RPCs (--privileged).
+        if mm_home not in MM_HOME:
+            raise ValueError(f"--mm-home must be one of {MM_HOME}, not {mm_home!r}")
+        if int(settle_ticks) < 0:
+            raise ValueError("--settle-ticks must be >= 0")
+        self._side_camera = bool(side_camera)
+        self._settle_ticks = int(settle_ticks)
+        self._mm_home = mm_home
+        self._mm_truth = mm_truth
+        self._privileged = bool(privileged)
+        self._mm_reset_state()
         super().__init__()
 
     def _register_rpc(self) -> None:
@@ -506,8 +982,24 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
                 "env.home_pose": self.home_pose,
                 "env.open_gripper": self.open_gripper,
                 "env.close_gripper": self.close_gripper,
+                # MotorMind mode (packages/embodied modes/motormind): the observation and one
+                # segment of an action, in the robot base frame (rpc contract: DESIGN 3-5).
+                "env.mm_observe": self.mm_observe,
+                "env.mm_run_step": self.mm_run_step,
             }
         )
+        if self._privileged:
+            # MotorMind's interface checks: ground truth, segmentation, forced failures. Never
+            # in an observation; only a test's own client calls them.
+            self._rpc.update(
+                {
+                    "env.mm_debug_project": self.mm_debug_project,
+                    "env.mm_debug_stall": self.mm_debug_stall,
+                    "env.mm_debug_table": self.mm_debug_table,
+                    "env.mm_debug_truth": self.mm_debug_truth,
+                    "env.mm_debug_set_body": self.mm_debug_set_body,
+                }
+            )
         for name in TOOL_MOTIONS:
             self._rpc[name] = self._for_tools(
                 name.removeprefix("env."), self._rpc[name]
@@ -647,15 +1139,29 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
 
     # ---- gym-like surface ----
 
-    def reset(self):
+    def reset(self, tool_call: bool = False):
+        """Reset the episode: RLinf's reset (the task's initial state), then with --side-camera
+        the side camera's mount and with --settle-ticks that many zero-action steps (gripper
+        open). ``info["settle_ticks"]`` counts those steps; with ``tool_call`` ``info`` also
+        carries them as ``transitions`` (as a tool motion's result does), so pi's video, step
+        count and success latch see them."""
+        info = self._reset_env()
+        self._grip = -1.0
+        steps = self._mm_begin_episode(self._grip, record=bool(tool_call))
+        info["settle_ticks"] = self._mm_settled
+        if tool_call:
+            info["transitions"] = steps
+        return self._last_obs, info
+
+    def _reset_env(self) -> dict:
         obs, info = self._env.reset()
         obs = self._strip_obs(to_numpy_tree(obs))
         self._base_pose = None
         self._terminated = self._truncated = False
-        self._grip = -1.0
         self._last_obs = obs
         self._home = (self._eef(), self._quat_xyzw())
-        return obs, to_numpy_tree(info)
+        info = to_numpy_tree(info)
+        return dict(info) if isinstance(info, dict) else {}
 
     def _succeeded(self, info) -> np.bool_:
         """LIBERO's success at or before this step. With ``ignore_terminations`` RLinf zeroes
@@ -668,6 +1174,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         term = self._succeeded(info)
         trunc = self._strip(to_numpy_tree(trunc))
         self._absorb(obs, bool(term), bool(np.any(trunc)))
+        self._mm_tick(obs)
         self._count_run_steps([bool(term)])
         if self._record is not None:
             self._record.append(
@@ -712,6 +1219,8 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         term = np.array([self._succeeded(i) for i in info], dtype=bool)
         trunc = self._strip(to_numpy_tree(trunc))
         self._absorb(obs_list[-1], bool(term.any()), bool(np.any(trunc)))
+        for o in obs_list:
+            self._mm_tick(o)
         self._count_run_steps([bool(t) for t in term])
         obs_field = obs_list if return_all_frames else obs_list[-1]
         return (
@@ -973,7 +1482,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         Returns:
             dict with ``eef_pos`` [x, y, z] (m, world frame), ``eef_quat_xyzw``, ``yaw`` (rad,
             about world +z), ``gripper_width`` (sum of the two finger joints: about 0.08 open,
-            below 0.01 closed on nothing), ``gripper_cmd`` (-1 open / +1 close, the last command),
+            below 0.01 closed on nothing), ``gripper_cmd`` (-1 open / +1 close / 0 hold, the last command),
             ``terminated`` (LIBERO judged the task done; it stays true) and ``truncated`` (the
             episode's step limit ended it).
         """
@@ -982,7 +1491,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             "eef_quat_xyzw": [round(float(v), 5) for v in self._quat_xyzw()],
             "yaw": round(self._yaw(), 4),
             "gripper_width": round(self._gripper_width(), 4),
-            "gripper_cmd": int(self._grip),
+            "gripper_cmd": float(self._grip),
             "terminated": self._terminated,
             "truncated": self._truncated,
         }
@@ -2033,6 +2542,750 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             left_out=plan.get("left_out") or (),
         )
 
+    # ---- MotorMind mode (env.mm_observe / env.mm_run_step; motormind_rig.py) ----------------
+    #
+    # Everything is in the robot's base frame (robot0_base, read once), metres and radians; the
+    # model's millimetres and degrees are pi's (modes/motormind/command.ts). One segment per
+    # env.mm_run_step: pi splits an action and checks its cancel flag between segments; `stop`
+    # interrupts a segment between ticks. The frame clock advances CONTROL_DT per env step
+    # (settle steps included) and never goes back, not even at a reset.
+
+    def _mm_reset_state(self) -> None:
+        self._mm_clock = 0.0
+        self._mm_ticks = 0
+        self._mm_episode = 0
+        self._mm_settled = 0
+        self._mm_obs_id = 0
+        self._mm_opening: float | None = None
+        self._mm_opening_step = 0.0
+        self._mm_rig: dict | None = None
+        self._mm_table: dict | None = None
+        self._mm_side: dict | None = None
+        self._mm_homes = {"asked": 0, "refused": 0, "reset": 0}
+        self._mm_stall_s = 0.0
+
+    def _mm_tick(self, obs) -> None:
+        """Per env step: the frame clock, the episode's step count and the finger gap's change
+        (``moving``) from the step's state (eef 3, axis-angle 3, finger joints 2)."""
+        self._mm_clock += rig.CONTROL_DT
+        self._mm_ticks += 1
+        st = obs.get("states") if isinstance(obs, dict) else None
+        if st is not None and np.size(st) >= 8:
+            gap = rig.opening_m(np.asarray(st, dtype=np.float64).reshape(-1)[6:8])
+            if self._mm_opening is not None:
+                self._mm_opening_step = abs(gap - self._mm_opening)
+            self._mm_opening = gap
+
+    def _worker_call(self, method: str, *args, **kwargs):
+        worker = self._env.env.workers[self._env_idx]
+        out = worker.env_call(method, args=list(args), kwargs=kwargs, target="self")
+        if isinstance(out, dict) and isinstance(out.get("error"), str):
+            raise RuntimeError(f"{method} failed in the env worker: {out['error']}")
+        return out
+
+    def _settle(self, n: int, grip: float) -> int:
+        """``n`` zero-action steps with gripper channel ``grip`` (fewer at the episode's end or
+        a stop)."""
+        k = 0
+        while k < int(n) and self._live():
+            if self.stop_requested():
+                break
+            self._act([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(grip)])
+            k += 1
+        return k
+
+    def _mm_begin_episode(self, settle_grip: float, record: bool) -> list:
+        """After an env reset: a new episode id, the step count back to 0, the frame clock one
+        step on, the side camera mounted (--side-camera), then --settle-ticks zero steps with
+        ``settle_grip``. ``record``: the settle steps' transitions are returned (else they go to
+        a tool motion's record when one is open)."""
+        self._mm_episode += 1
+        self._mm_ticks = 0
+        self._mm_clock += rig.CONTROL_DT
+        self._mm_opening, self._mm_opening_step = None, 0.0
+        if self._side_camera:
+            try:
+                self._mm_side = self._worker_call(
+                    "mm_mount_side", "sideview", "agentview"
+                )
+            except Exception as e:  # noqa: BLE001  the original leaves the camera where it was
+                self._mm_side = {"mounted": False, "reason": str(e)}
+        own = record and self._record is None
+        if own:
+            self._record = []
+        try:
+            self._mm_settled = self._settle(self._settle_ticks, settle_grip)
+            return list(self._record) if own else []
+        finally:
+            if own:
+                self._record = None
+
+    def _mm_commission(self) -> dict:
+        """Read once, at the first MotorMind call: the base frame, the controller's limits and
+        reference frame, and the table height from the scene camera's depth."""
+        if self._mm_rig is None:
+            st = self._worker_call("mm_static")
+            base = st["base"]
+            if base.get("body") is None:
+                raise RuntimeError(
+                    f"MotorMind needs the robot base pose: the scene has none of {list(MM_BASE_BODIES)}"
+                )
+            self._mm_rig = {
+                "frame": rig.BaseFrame(
+                    np.asarray(base["pos"], dtype=np.float64),
+                    np.asarray(base["xmat"], dtype=np.float64).reshape(3, 3),
+                ),
+                "body": base["body"],
+                "output_max": np.asarray(st["output_max"], dtype=np.float64),
+                "ref_frame": st["ref_frame"],
+                "controller": st["controller"],
+                "dt": 1.0 / float(st["control_freq"]),
+            }
+            self._mm_measure_table(fail=False)
+        return self._mm_rig
+
+    def _mm_measure_table(self, fail: bool) -> dict:
+        """The table height (base frame) from every second pixel of the scene depth
+        (rig.table_height); ``fail`` keeps fewer points than it needs (mm_debug_table)."""
+        frame = self._mm_rig["frame"]
+        px = rig.CAMERA_PX
+        shot = self._worker_call(
+            "mm_frames", {"scene": MM_CAMERAS["scene"]}, px, ["scene"]
+        )["scene"]
+        k = rig.intrinsic(shot["fovy"], px, px)
+        c2b = frame.transform() @ rig.cam2world(shot["cam_xpos"], shot["cam_xmat"])
+        pts, _ = rig.back_project(shot["depth"], k, c2b, stride=rig.TABLE_STRIDE)
+        z = pts[:, 2]
+        if fail:
+            z = z[: rig.TABLE_MIN_POINTS - 1]
+        height = rig.table_height(z)
+        self._mm_table = {
+            "z_m": height,
+            "n_points": int(len(z)),
+            "forced_failure": bool(fail),
+        }
+        return self._mm_table
+
+    def _mm_pose(self) -> tuple[np.ndarray, np.ndarray]:
+        """The tool pose in the base frame (robot0_eef_pos, robot0_eef_quat xyzw)."""
+        frame = self._mm_commission()["frame"]
+        raw = self.raw_obs()
+        p = np.asarray(raw["robot0_eef_pos"], dtype=np.float64).reshape(3)
+        r = rig.quat_xyzw_matrix(raw["robot0_eef_quat"])
+        return frame.point(p), frame.rotation(r)
+
+    def _mm_opening_now(self) -> float:
+        return rig.opening_m(self.raw_obs()["robot0_gripper_qpos"])
+
+    def _mm_grasp(self) -> dict:
+        moving = self._mm_opening_step > rig.MOVING_PER_TICK_M
+        return rig.grasp_state(
+            rig.channel_name(self._grip), self._mm_opening_now(), moving
+        )
+
+    def _mm_cameras(self) -> list[str]:
+        return [n for n in MM_CAMERAS if n != "side" or self._side_camera]
+
+    def _mm_static_fields(self) -> dict:
+        """The fields every observation repeats unchanged: base pose, caps, limits, table,
+        degraded flags, the home mode and its counts."""
+        r = self._mm_rig
+        table = (self._mm_table or {}).get("z_m")
+        side = self._mm_side or {}
+        return {
+            "base_pose": {
+                "body": r["body"],
+                **rig.pose_dict(r["frame"].p, r["frame"].R),
+            },
+            "caps": rig.libero_caps(
+                r["output_max"], r["dt"], self._mm_home == "reset", table
+            ),
+            "output_max": [float(v) for v in r["output_max"]],
+            "osc_ref_frame": r["ref_frame"],
+            "control_dt_s": r["dt"],
+            "table_z_m": table,
+            "degraded": {
+                "table_z": table is None,
+                "side_mount": self._side_camera and not side.get("mounted", False),
+                "side_mount_reason": None
+                if not self._side_camera or side.get("mounted")
+                else side.get("reason", "not mounted yet"),
+            },
+            "camera_names": self._mm_cameras(),
+            "home_mode": self._mm_home,
+            "home": dict(self._mm_homes),
+        }
+
+    def _mm_aim(self, p: np.ndarray, aim) -> tuple[np.ndarray | None, str]:
+        """The point the aim marker shows (base frame): the caller's, else the table under the
+        tool, else none."""
+        if aim is not None:
+            return _finite("aim_base_m", aim).reshape(3), "given"
+        table = (self._mm_table or {}).get("z_m")
+        if table is not None:
+            return np.array([p[0], p[1], table]), "table"
+        return None, "none"
+
+    def _mm_images(self, p, r, aim, cameras) -> dict:
+        names = self._mm_cameras()
+        if cameras:
+            unknown = [c for c in cameras if c not in names]
+            if unknown:
+                raise ValueError(f"cameras must be among {names}, got {unknown}")
+            names = [n for n in names if n in cameras]
+        px = rig.CAMERA_PX
+        shots = self._worker_call(
+            "mm_frames",
+            {n: MM_CAMERAS[n] for n in names},
+            px,
+            ["wrist"] if "wrist" in names else [],
+        )
+        to_base = self._mm_rig["frame"].transform()
+        aim_p, source = self._mm_aim(p, aim)
+        out: dict[str, Any] = {"cameras": {}}
+        marked = []
+        for n in names:
+            s = shots[n]
+            k = rig.intrinsic(s["fovy"], px, px)
+            c2b = to_base @ rig.cam2world(s["cam_xpos"], s["cam_xmat"])
+            uv = None if aim_p is None else rig.project(k, c2b, aim_p)
+            imgs = rig.camera_images(s["rgb"], None if uv is None else uv[:2])
+            marked.append(imgs.pop("_marked"))
+            cam = {
+                "mujoco_camera": MM_CAMERAS[n],
+                "width": px,
+                "height": px,
+                "intrinsic": k.tolist(),
+                "cam2base": c2b.tolist(),
+                "timestamp": self._mm_clock,
+                "aim_px": None if uv is None else [uv[0], uv[1]],
+                **imgs,
+            }
+            if n == "wrist":
+                cam["depth_min_range_m"] = rig.DEPTH_MIN_RANGE_M
+                depth = rig.quantize_depth(s["depth"])
+                pts, _z = rig.back_project(depth, k, c2b)
+                # The minimum range applies to each return's distance from the camera.
+                rays = np.linalg.norm(pts - c2b[:3, 3], axis=1)
+                out["clearance"] = rig.clearance(pts, rays, p, r)
+            out["cameras"][n] = cam
+        out["aim"] = {
+            "source": source,
+            "base_m": None if aim_p is None else [float(v) for v in aim_p],
+        }
+        out["mosaic_jpeg"] = rig.mosaic(marked)
+        return out
+
+    def _mm_observation(
+        self, images: bool, aim=None, cameras=None, segment=None
+    ) -> dict:
+        """One MotorMind observation (a new ``obs_id``); a line of privileged truth goes to
+        --mm-truth under the same id."""
+        self._mm_obs_id += 1
+        p, r = self._mm_pose()
+        opening = self._mm_opening_now()
+        out: dict[str, Any] = {
+            "obs_id": self._mm_obs_id,
+            "frame_clock_s": self._mm_clock,
+            "episode_id": self._mm_episode,
+            "ticks": self._mm_ticks,
+            "settle_ticks": self._mm_settled,
+            "pose": rig.pose_dict(p, r),
+            "gripper": {
+                "opening_mm": opening * 1000.0,
+                "commanded": rig.channel_name(self._grip),
+                "channel": float(self._grip),
+                "moving": self._mm_opening_step > rig.MOVING_PER_TICK_M,
+            },
+            "grasp": self._mm_grasp(),
+            "terminated": bool(self._terminated),
+            "truncated": bool(self._truncated),
+            "episode_over": not self._live(),
+            **self._mm_static_fields(),
+        }
+        if images:
+            out.update(self._mm_images(p, r, aim, cameras))
+        self._mm_write_truth(out, segment)
+        return out
+
+    def _mm_write_truth(self, obs: dict, segment: dict | None) -> None:
+        """Append one line of privileged truth (--mm-truth), keyed by ``obs_id``. It never enters
+        an observation; a failure is logged and the call goes on."""
+        if not self._mm_truth:
+            return
+        try:
+            raw = self.raw_obs()
+            line = {
+                "obs_id": obs["obs_id"],
+                "kind": "segment" if segment else "observe",
+                "episode_id": obs["episode_id"],
+                "frame_clock_s": obs["frame_clock_s"],
+                "ticks": obs["ticks"],
+                "wall_time": time.time(),
+                "eef_pos_world": np.asarray(raw["robot0_eef_pos"]).reshape(3).tolist(),
+                "eef_quat_xyzw_world": np.asarray(raw["robot0_eef_quat"])
+                .reshape(4)
+                .tolist(),
+                "success_latched": bool(self._terminated),
+                **({"segment": segment} if segment else {}),
+                **self._worker_call("mm_truth"),
+            }
+            with open(self._mm_truth, "a", encoding="utf-8") as f:
+                f.write(json.dumps(_jsonable(line)) + "\n")
+        except Exception as e:  # noqa: BLE001  the truth log never breaks the episode
+            logger.warning("mm_truth.jsonl: %s", e)
+
+    def mm_observe(self, images: bool = True, aim_base_m=None, cameras=None) -> dict:
+        """MotorMind's observation, base frame. Always: ``obs_id``, ``frame_clock_s``,
+        ``episode_id``, ``ticks``, ``pose``, ``gripper``, ``grasp``, ``episode_over`` and the
+        static fields (``base_pose``, ``caps``, ``output_max``, ``table_z_m``, ``degraded``,
+        ...). ``images``: each camera's 768 render as ``marked768`` / ``marked512`` / ``raw512``
+        JPEGs with ``intrinsic`` and ``cam2base``, the wrist ``clearance``, the aim marker's
+        point (``aim_base_m``, default the table under the tool) and a 768x256 ``mosaic_jpeg``.
+        ``cameras`` limits the renders to some of scene / side / wrist."""
+        self._mm_commission()
+        return self._mm_observation(bool(images), aim_base_m, cameras)
+
+    def _mm_stall_wait(self) -> None:
+        s, self._mm_stall_s = self._mm_stall_s, 0.0
+        end = time.monotonic() + s
+        while time.monotonic() < end and not self.stop_requested():
+            time.sleep(min(0.05, max(0.0, end - time.monotonic())))
+
+    def mm_run_step(
+        self,
+        seg: dict,
+        observe: str = "state",
+        aim_base_m=None,
+        trace: bool = False,
+    ) -> dict:
+        """Run one segment of a MotorMind action (base frame, metres, radians).
+
+        ``seg["kind"]``:
+          - ``translate``: ``goal_position_m`` [3], ``axis`` [3] (the commanded direction),
+            ``speed`` (m/s), optional ``goal_rotation`` (3x3; default the pose's at the start),
+            ``distance_m`` (the segment's requested length; default the distance to the goal)
+            and ``push`` (a contact move: blocked ends as ``contact``);
+          - ``rotate``: ``goal_rotation`` (3x3), ``speed`` (rad/s), optional ``goal_position_m``
+            (default the position at the start);
+          - ``gripper``: ``state`` ``open`` / ``close``, optional ``open_to_mm`` (open until the
+            gap reaches it, then hold the channel at 0);
+          - ``wait``: ``seconds`` (round(seconds / 0.05) zero steps);
+          - ``home``: refused with --mm-home=refuse; with ``reset`` the scene resets.
+
+        Returns the measurement (``outcome`` done / contact / limited / refused,
+        ``abort_reason``, ``moved_m``, ``along_axis_m``, ``lateral_m``, ``turned_rad``, ...)
+        and ``observation`` (``observe``: ``state`` without images, ``full`` as
+        env.mm_observe). ``trace``: the per-tick poses (motormind_rig.replay_segment's input)."""
+        self._mm_commission()
+        if observe not in ("state", "full"):
+            raise ValueError("observe must be 'state' or 'full'")
+        kind = seg.get("kind") if isinstance(seg, dict) else None
+        if kind not in MM_KINDS:
+            raise ValueError(f"seg.kind must be one of {MM_KINDS}, got {kind!r}")
+        self._mm_stall_wait()
+        t0 = time.monotonic()
+        start_ticks = self._mm_ticks
+        episode = self._mm_episode
+        p0, r0 = self._mm_pose()
+        if kind == "home":
+            out = self._mm_home_step()
+        elif not self._live():
+            out = {
+                "outcome": "refused",
+                "abort_reason": "",
+                "message": "the episode is over (success latched or the step limit reached): nothing moved",
+            }
+        elif kind in ("translate", "rotate"):
+            out = self._mm_motion(seg, p0, r0, bool(trace))
+        elif kind == "gripper":
+            out = self._mm_gripper(seg)
+        else:
+            out = self._mm_wait(seg)
+        p1, r1 = self._mm_pose()
+        if "moved_m" not in out:
+            d = float(np.linalg.norm(p1 - p0)) if self._mm_episode == episode else 0.0
+            turned = rig.angle_between(r0, r1) if self._mm_episode == episode else 0.0
+            out.update(moved_m=d, along_axis_m=d, lateral_m=0.0, turned_rad=turned)
+        ticks = (
+            self._mm_ticks - start_ticks
+            if self._mm_episode == episode
+            else out.get("settle_ticks", 0)
+        )
+        out.update(
+            kind=kind,
+            ticks=ticks,
+            elapsed_s=time.monotonic() - t0,
+            frame_clock_s=self._mm_clock,
+            pose_before=rig.pose_dict(p0, r0),
+            pose_after=rig.pose_dict(p1, r1),
+            episode_id=self._mm_episode,
+        )
+        observation = self._mm_observation(
+            observe == "full",
+            aim_base_m,
+            segment={
+                "kind": kind,
+                "outcome": out["outcome"],
+                "abort_reason": out.get("abort_reason", ""),
+                "ticks": ticks,
+            },
+        )
+        out.update(
+            obs_id=observation["obs_id"],
+            grasp=observation["grasp"],
+            gripper=observation["gripper"],
+            episode_over=observation["episode_over"],
+            terminated=observation["terminated"],
+            truncated=observation["truncated"],
+            observation=observation,
+        )
+        return out
+
+    def _mm_motion(
+        self, seg: dict, p0: np.ndarray, r0: np.ndarray, trace: bool
+    ) -> dict:
+        r = self._mm_rig
+        kind = seg["kind"]
+        speed = float(_finite("speed", seg.get("speed", float("nan"))))
+        if speed <= 0:
+            raise ValueError("speed must be > 0")
+        goal_r = (
+            _finite("goal_rotation", seg["goal_rotation"]).reshape(3, 3)
+            if seg.get("goal_rotation") is not None
+            else r0
+        )
+        axis, distance = None, 0.0
+        if kind == "translate":
+            goal_p = _finite("goal_position_m", seg.get("goal_position_m")).reshape(3)
+            a = _finite("axis", seg.get("axis")).reshape(3)
+            if np.linalg.norm(a) < 1e-9:
+                raise ValueError("axis must not be the zero vector")
+            axis = a / np.linalg.norm(a)
+            given = seg.get("distance_m")
+            distance = float(
+                _finite(
+                    "distance_m",
+                    np.linalg.norm(goal_p - p0) if given is None else given,
+                )
+            )
+        else:
+            if seg.get("goal_rotation") is None:
+                raise ValueError("a rotate segment needs goal_rotation")
+            goal_p = (
+                _finite("goal_position_m", seg["goal_position_m"]).reshape(3)
+                if seg.get("goal_position_m") is not None
+                else p0
+            )
+        push = bool(seg.get("push", False))
+        segment = rig.Segment(
+            kind,
+            goal_p,
+            goal_r,
+            speed,
+            axis,
+            distance,
+            push,
+            holding=self._mm_grasp()["holding"] is True,
+        )
+        judge = rig.SegmentJudge(segment, p0, r0)
+        poses = [(p0, r0)]
+        commands: list[list[float]] = []
+        ticks, cancelled, budget = 0, False, False
+        p, rot = p0, r0
+        while self._live():
+            if self.stop_requested():
+                cancelled = True
+                break
+            dp, dr, arrived = rig.servo_step(
+                p,
+                rot,
+                segment,
+                float(r["output_max"][:3].max()),
+                float(r["output_max"][3:].max()),
+                r["dt"],
+            )
+            if arrived:
+                break
+            if ticks >= rig.SEGMENT_MAX_TICKS:
+                budget = True
+                break
+            self._act(
+                rig.osc_action(
+                    dp, dr, r["output_max"], self._grip, r["frame"].R, r["ref_frame"]
+                )
+            )
+            ticks += 1
+            p, rot = self._mm_pose()
+            if trace:
+                poses.append((p, rot))
+                commands.append([float(np.linalg.norm(dp)), float(np.linalg.norm(dr))])
+            if judge.tick(p, rot):
+                break
+        hold = 0
+        if judge.abort and not cancelled:
+            hold = self._settle(rig.HOLD_TICKS, self._grip)
+        p1, r1 = self._mm_pose()
+        out = rig.segment_result(segment, p0, r0, p1, r1, judge.abort)
+        out.update(
+            servo_ticks=ticks,
+            hold_ticks=hold,
+            lateral_limit_m=judge.limit,
+            crept=judge.crept,
+            tick_budget_exhausted=budget,
+            cancelled=cancelled,
+            speed=speed,
+            push=push,
+        )
+        if cancelled:
+            out["message"] = "stopped: " + out["message"]
+        if kind == "translate" and not push:
+            out["axis"] = [float(v) for v in axis]
+        if trace:
+            out["trace"] = {
+                "poses": [
+                    {"position_m": q.tolist(), "rotation": m.tolist()} for q, m in poses
+                ],
+                "end": {"position_m": p1.tolist(), "rotation": r1.tolist()},
+                "commanded": commands,
+                "segment": {
+                    "kind": kind,
+                    "goal_position_m": goal_p.tolist(),
+                    "goal_rotation": np.asarray(goal_r).tolist(),
+                    "speed": speed,
+                    "axis": None if axis is None else axis.tolist(),
+                    "distance_m": distance,
+                    "push": push,
+                    "holding": segment.holding,
+                },
+            }
+        return out
+
+    def _mm_gripper(self, seg: dict) -> dict:
+        state = seg.get("state")
+        if state not in ("open", "close"):
+            raise ValueError("a gripper segment's state must be 'open' or 'close'")
+        asked = seg.get("open_to_mm")
+        if asked is not None and state != "open":
+            raise ValueError("open_to_mm goes with state 'open'")
+        detail: dict[str, Any] = {}
+        if asked is None:
+            self._grip = 1.0 if state == "close" else -1.0
+            self._settle(rig.GRIPPER_SETTLE_TICKS, self._grip)
+        else:
+            want = float(_finite("open_to_mm", asked)) / 1000.0
+            self._grip = -1.0
+            n = 0
+            while (
+                n < rig.OPEN_TO_MAX_TICKS and self._live() and not self.stop_requested()
+            ):
+                if self._mm_opening_now() >= want:
+                    break
+                self._act([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0])
+                n += 1
+            self._grip = (
+                0.0  # hold: the fingers stay at this gap until the next gripper command
+            )
+            self._settle(rig.GRIPPER_SETTLE_TICKS, self._grip)
+            detail["asked_mm"] = want * 1000.0
+            detail["opening_ticks"] = n
+        grasp = self._mm_grasp()
+        opening = self._mm_opening_now() * 1000.0
+        detail["opening_mm"] = opening
+        if asked is not None:
+            msg = f"opened to {opening:.1f} mm (asked {detail['asked_mm']:.1f} mm), holding the gap"
+        elif state == "close":
+            word = {
+                True: "holding something",
+                False: "nothing held",
+                None: "grasp unknown",
+            }
+            msg = f"{word[grasp['holding']]} -- {grasp['reason']}"
+        else:
+            msg = f"opened to {opening:.1f} mm"
+        return {"outcome": "done", "abort_reason": "", "message": msg, "detail": detail}
+
+    def _mm_wait(self, seg: dict) -> dict:
+        seconds = float(_finite("seconds", seg.get("seconds", float("nan"))))
+        if seconds < 0:
+            raise ValueError("seconds must be >= 0")
+        n = self._settle(round(seconds / rig.CONTROL_DT), self._grip)
+        return {"outcome": "done", "abort_reason": "", "message": f"waited {n} steps"}
+
+    def _mm_home_step(self) -> dict:
+        """The model's ``home``: refused (--mm-home=refuse), or the original's scene reset
+        (``reset``): env reset, the side camera re-mounted, the settle steps with the gripper
+        command from before the reset, then the gripper commanded open (no step)."""
+        self._mm_homes["asked"] += 1
+        if self._mm_home != "reset":
+            self._mm_homes["refused"] += 1
+            return {
+                "outcome": "refused",
+                "abort_reason": "",
+                "message": "home is not available (--mm-home=refuse): nothing moved",
+            }
+        grip = self._grip
+        self._reset_env()
+        self._mm_begin_episode(grip, record=False)
+        self._grip = -1.0
+        self._mm_homes["reset"] += 1
+        return {
+            "outcome": "done",
+            "abort_reason": "",
+            "message": "env.reset()",
+            "episode_reset": True,
+            "settle_ticks": self._mm_settled,
+            "obs": self._last_obs,
+        }
+
+    # ---- MotorMind's privileged test RPCs (--privileged) --------------------------------------
+
+    def mm_debug_stall(self, seconds: float) -> dict:
+        """The next env.mm_run_step first sleeps ``seconds`` (a stop ends the sleep): a client
+        timeout with the motion's outcome unknown."""
+        self._mm_stall_s = max(0.0, float(_finite("seconds", seconds)))
+        return {"stall_s": self._mm_stall_s}
+
+    def mm_debug_table(self, fail: bool | None = None, xy_base_m=None) -> dict:
+        """The table calibration and its truth. ``fail`` true measures again with fewer points
+        than it needs (``table_z_m`` null, ``degraded.table_z``), false measures again normally,
+        null keeps the current value. Truth: the top of the static geom the side mount picks
+        (``geom_top_z_base_m``), and rays cast straight down from 1 m above the base at
+        ``xy_base_m`` ([[x, y], ...], base frame; default a 3 x 3 grid 0.15 m apart around the
+        side camera's aim point): each hit on a geom the cameras draw, and ``ray_z_base_m`` the
+        median height of the hits on that geom's body (null when none hit it, e.g. the arm or an
+        object is in the way). The collision top and the visible top differ in some scenes."""
+        self._mm_commission()
+        if fail is not None:
+            self._mm_measure_table(bool(fail))
+        frame = self._mm_rig["frame"]
+        ax, ay = rig.SIDE_AIM_BASE_XY
+        xys = (
+            [[ax + dx, ay + dy] for dx in (-0.15, 0, 0.15) for dy in (-0.15, 0, 0.15)]
+            if xy_base_m is None
+            else _finite("xy_base_m", xy_base_m).reshape(-1, 2).tolist()
+        )
+        origins = [frame.world_point([x, y, 1.0]).tolist() for x, y in xys]
+        hits = self._worker_call(
+            "mm_rays", origins, [(-frame.R[:, 2]).tolist()] * len(origins)
+        )
+        top = self._worker_call("mm_scene")["table_top"]
+        rays = [
+            {
+                "xy_base_m": [float(v) for v in xy],
+                "z_base_m": None if h["dist"] is None else 1.0 - h["dist"],
+                "body": h["body"],
+                "geom": h["geom"],
+            }
+            for xy, h in zip(xys, hits)
+        ]
+        # The rays see what the cameras see: the table body's visible geoms, not the collision box
+        # the side mount picks (its top is ``geom_top_z_base_m``).
+        on_top = [
+            r["z_base_m"]
+            for r in rays
+            if top is not None
+            and r["body"] == top.get("body")
+            and r["z_base_m"] is not None
+        ]
+        return {
+            **dict(self._mm_table or {}),
+            "table_z_m": (self._mm_table or {}).get("z_m"),
+            "degraded": self._mm_table is None or self._mm_table.get("z_m") is None,
+            "truth": {
+                "rays": rays,
+                "ray_z_base_m": float(np.median(on_top)) if on_top else None,
+                "geom_top_z_base_m": None
+                if top is None
+                else float(
+                    frame.point([origins[0][0], origins[0][1], top["top_z"]])[2]
+                ),
+                "geom": None if top is None else top.get("name"),
+                "body": None if top is None else top.get("body"),
+            },
+        }
+
+    def mm_debug_project(
+        self, points_base_m=None, bodies=None, cameras=None, depth_pixels=None
+    ) -> dict:
+        """Per camera: the K and cam2base of the observation, each base-frame point's pixel
+        (continuous u = column, v = row of the upright 768 image) and the body the segmentation
+        render shows there; for each body-name prefix its pixel count, centroid and projected
+        origin; for ``depth_pixels`` ({camera: [[u, v], ...]}) the depth the server reads there
+        (quantised to mm for the wrist, as clearance uses it) and a ray-cast truth, both as
+        camera z in metres."""
+        self._mm_commission()
+        frame = self._mm_rig["frame"]
+        names = self._mm_cameras() if not cameras else list(cameras)
+        for n in names:
+            if n not in self._mm_cameras():
+                raise ValueError(f"camera {n!r} is not one of {self._mm_cameras()}")
+        pts = [frame.world_point(p).tolist() for p in (points_base_m or [])]
+        raw = self._worker_call(
+            "mm_project",
+            {n: MM_CAMERAS[n] for n in names},
+            rig.CAMERA_PX,
+            pts,
+            list(bodies or []),
+            depth_pixels or {},
+        )
+        to_base = frame.transform()
+        out = {}
+        for n, cam in raw.items():
+            for d in cam["depth"]:
+                if n == "wrist":
+                    d["server_z_m"] = float(
+                        rig.quantize_depth(np.array([d["rendered_z_m"]]))[0]
+                    )
+                else:
+                    d["server_z_m"] = d["rendered_z_m"]
+            out[n] = {
+                **cam,
+                "cam2base": (to_base @ np.asarray(cam["cam2world"])).tolist(),
+            }
+        return out
+
+    def mm_debug_truth(self, state: bool = False) -> dict:
+        """Ground truth now: the task objects (world and base frame), LIBERO's goal predicates
+        and instant success, the tool's world pose, finger joints, sim time and robosuite's step
+        counter, the side camera's last mount (with its pose before the mount), the episode's
+        counters; ``state`` adds the flattened sim state (initial-state comparisons)."""
+        self._mm_commission()
+        frame = self._mm_rig["frame"]
+        truth = self._worker_call("mm_truth", bool(state))
+        for pose in truth.get("objects", {}).values():
+            pose["pos_base"] = frame.point(pose["pos"]).tolist()
+        raw = self.raw_obs()
+        return {
+            **truth,
+            "eef_pos_world": np.asarray(raw["robot0_eef_pos"]).reshape(3).tolist(),
+            "eef_quat_xyzw_world": np.asarray(raw["robot0_eef_quat"])
+            .reshape(4)
+            .tolist(),
+            "gripper_qpos_obs": np.asarray(raw["robot0_gripper_qpos"])
+            .reshape(-1)
+            .tolist(),
+            "side_mount": self._mm_side,
+            "episode_id": self._mm_episode,
+            "ticks": self._mm_ticks,
+            "settle_ticks": self._mm_settled,
+            "frame_clock_s": self._mm_clock,
+            "success_latched": bool(self._terminated),
+            "truncated": bool(self._truncated),
+            "grip_channel": float(self._grip),
+        }
+
+    def mm_debug_set_body(self, name: str, position_m, quat_xyzw=None) -> dict:
+        """Teleport a free-jointed object to a world pose (velocity zeroed; test set-up)."""
+        return self._worker_call(
+            "mm_set_body",
+            str(name),
+            _finite("position_m", position_m).reshape(3).tolist(),
+            None
+            if quat_xyzw is None
+            else _finite("quat_xyzw", quat_xyzw).reshape(4).tolist(),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Main
@@ -2076,6 +3329,37 @@ def main():
         "default device to (physical CUDA ordinal).",
     )
     add_perception_arguments(p)
+    # MotorMind mode (env.mm_observe / env.mm_run_step).
+    p.add_argument(
+        "--side-camera",
+        action="store_true",
+        help="mount LIBERO's sideview on the robot base's +Y side after every reset and serve it "
+        "as MotorMind's `side` camera",
+    )
+    p.add_argument(
+        "--settle-ticks",
+        type=int,
+        default=0,
+        help="zero-action env steps after every reset (MotorMind: 32)",
+    )
+    p.add_argument(
+        "--mm-home",
+        choices=MM_HOME,
+        default="refuse",
+        help="what MotorMind's `home` does: refuse it (default) or reset the scene",
+    )
+    p.add_argument(
+        "--mm-truth",
+        default=None,
+        help="append one line of privileged ground truth per MotorMind observation to this "
+        "JSONL file (mm_truth.jsonl; never shown to the model)",
+    )
+    p.add_argument(
+        "--privileged",
+        action="store_true",
+        help="serve MotorMind's interface-check RPCs (env.mm_debug_*: ground truth, "
+        "segmentation, forced failures)",
+    )
     args = p.parse_args()
 
     # --cuda-device (else the deployment's, else the first CUDA_VISIBLE_DEVICES entry) pins CUDA
@@ -2102,6 +3386,9 @@ def main():
             "task": args.task,
             "seed": args.seed,
             "max_episode_steps": args.max_episode_steps,
+            "side_camera": args.side_camera,
+            "settle_ticks": args.settle_ticks,
+            "mm_home": args.mm_home,
         },
         ik_reach=reach.reach_from_args(args, "panda_libero"),
         ik_motion=motion.planner_from_args(args, "panda_libero"),
@@ -2109,6 +3396,11 @@ def main():
         grasp=urls_from_args(args),
         geometry=args.geometry,
         align_wrist=args.align_wrist,
+        side_camera=args.side_camera,
+        settle_ticks=args.settle_ticks,
+        mm_home=args.mm_home,
+        mm_truth=args.mm_truth,
+        privileged=args.privileged,
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth,
     # on the views the grasp planner and code mode read (its own env.segment stays).

@@ -4,7 +4,14 @@
 		"env.raw_obs",
 		"env.plan_motion",
 		"env.check_motion",
-		"env.release_held"
+		"env.release_held",
+		"env.mm_observe",
+		"env.mm_run_step",
+		"env.mm_debug_project",
+		"env.mm_debug_stall",
+		"env.mm_debug_table",
+		"env.mm_debug_truth",
+		"env.mm_debug_set_body"
 	],
 	"primitives": [
 		{

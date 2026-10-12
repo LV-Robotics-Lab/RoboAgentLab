@@ -191,6 +191,15 @@ digest changes (the robot moved).
 | `env.preview_reach` | `pos` float[3] (m, world frame), kw `quat_xyzw=null` (null = the current gripper orientation) | reach preview (below); `status: "unknown"` without `--ik` |
 | `env.plan_motion` | `pos` float[3] (m, world), kw `quat_xyzw=null`, `target_yaw=null` (rad) | `--ik` only: `{"status": "planned" \| "blocked" \| "unknown", "message", "waypoints": [[x, y, z, qx, qy, qz, qw], ...] (world TCP poses, goal last, at most 10), "path_m", "backend", "obstacles", "left_out"}` (collision-free motion, below) |
 | `env.check_motion` | kw `segment=null` (a waypoint index of the last `env.plan_motion`) | `--ik` only: `{"status": "clear" \| "contact" \| "unknown", "min_clearance_m", "nearest", "message"}` for the current joints and the planned ones at `segment` |
+| `env.mm_observe` | kw `images=true`, `aim_base_m=null`, `cameras=null` | MotorMind mode's observation in the `robot0_base` frame (m, rad): pose, gripper, grasp, frame clock, caps, table height, degraded flags; with `images` three 768 renders (scene / side / wrist) as marked and raw JPEGs with `intrinsic` and `cam2base`, the wrist clearance and a 768x256 mosaic |
+| `env.mm_run_step` | kw `seg` (one segment: `kind` translate / rotate / gripper / wait / home), `observe="state"`, `aim_base_m=null`, `trace=false`, `tool_call` | the segment's measurement (`outcome` done / contact / limited / refused, `abort_reason`, `moved_m`, `along_axis_m`, `lateral_m`, `turned_rad`, ticks, ...) and the observation after it |
+
+`env.reset` takes kw `tool_call=false`; `info["settle_ticks"]` counts the zero-action steps of
+`--settle-ticks`, and with `tool_call` `info["transitions"]` carries them. `--side-camera`,
+`--settle-ticks`, `--mm-home refuse|reset` and `--mm-truth <jsonl>` configure MotorMind mode;
+`--privileged` adds its test RPCs (`env.mm_debug_project`, `env.mm_debug_stall`,
+`env.mm_debug_table`, `env.mm_debug_truth`, `env.mm_debug_set_body`). The full field list is in
+`robots/libero/env_server.py` (MotorMind section) and `robots/libero/motormind_rig.py`.
 
 `env.preview_reach` (libero-env, franka-env, franka-polymetis-env; `--ik <url>` names the `ik`
 service, robot model `panda_libero` for LIBERO and `panda` for the Frankas) solves IK for the
