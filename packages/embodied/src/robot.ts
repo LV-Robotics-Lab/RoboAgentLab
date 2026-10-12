@@ -35,6 +35,12 @@ import { VLM_COST_EVENT } from "./modes/units/vlm.ts";
 import { type VdmSpec, vdm } from "./observation/vdm.ts";
 import { episodeVideo } from "./observation/video.ts";
 import { type ViserSpec, viserView } from "./observation/viser.ts";
+import {
+	FLAG as CACHE_BREAKPOINTS,
+	cacheBreakpoints,
+	cacheBreakpointsError,
+	markBreakpoints,
+} from "./planner/cache-breakpoints.ts";
 import { CLOSED_LOOP, closedLoop, NON_MOTION, OBSERVE, RESETS } from "./planner/closed-loop.ts";
 import { CONTEXT_VERSION_ENTRY, gitCommit, gitDirty, sha256, usedTemplates } from "./planner/context-version.ts";
 import { ensemble } from "./planner/ensemble.ts";
@@ -396,6 +402,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		description:
 			"Send earlier turns' thinking back with every request (true / false / none / frames; false keeps only the latest turn's, none not even that, frames until the camera frames before it are stubbed; pi's own behaviour is true)",
 	});
+	pi.registerFlag(CACHE_BREAKPOINTS, {
+		type: "string",
+		default: "false",
+		description:
+			"Mark the task message and the newest message as explicit prompt-cache breakpoints for NInfer (true / false; ./planner/cache-breakpoints.ts)",
+	});
 	pi.registerFlag("max-turns", {
 		type: "string",
 		default: String(spec.budget?.turns ?? 0),
@@ -747,6 +759,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				configProblem(pi) ??
 				paramsError(pi) ??
 				replayThinkingError(pi) ??
+				cacheBreakpointsError(pi) ??
 				mem?.configError() ??
 				tr.configError() ??
 				un?.configError() ??
@@ -1038,6 +1051,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		replayThinking(pi)
 			? undefined
 			: dropReplayedThinking(event.messages, keepThinkingFrom(pi, event.messages, stubText)),
+	);
+	// Prefixes the endpoint should keep for the next turn (./planner/cache-breakpoints.ts).
+	pi.on("before_provider_request", (event, ctx) =>
+		cacheBreakpoints(pi) && ctx.model?.api === "openai-completions" ? markBreakpoints(event.payload) : undefined,
 	);
 	pi.on("input", (_event, ctx) => {
 		if (ready) return undefined;

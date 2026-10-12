@@ -288,8 +288,13 @@ regression. `true` is pi's behaviour, `none` drops the latest turn's too, `frame
 thinking together with the camera frames before it. Only the request changes, never the session; signed thinking,
 Anthropic's and OpenAI Responses' included, is never dropped; `src/planner/replay-thinking.ts`).
 The defaults rewrite earlier turns every request (the previous answer's thinking, the oldest kept
-frame), so an endpoint's prefix cache reuses almost nothing. `--replay-thinking=frames --image-trim-every N`
-keeps each request a continuation of the previous one, answer included, between cuts every N frames.
+frame), so an endpoint's prefix cache reuses almost nothing (NInfer on LIBERO: 4.5% of the planner's
+prompt tokens). With `--replay-thinking=none --image-trim-every N` each request is a continuation of the
+previous one between cuts every N frames (`frames` instead of `none` also replays each answer as
+generated until its cut: a larger context, more compactions); `--cache-breakpoints=true` also asks
+NInfer to keep the task message and the newest message as cached prefixes
+(`src/planner/cache-breakpoints.ts`). For NInfer: `--replay-thinking=none --image-trim-every 8
+--cache-breakpoints=true` (72% on the same LIBERO cells).
 
 `--tier <S1..M4>` is a CaP-X tier in one flag (`src/infra/tiers.ts`): four orthogonal axes, each an
 existing flag you may also set alone. Turns: single = `--max-turns 1` (one program, then the
