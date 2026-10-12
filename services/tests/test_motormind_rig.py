@@ -71,6 +71,10 @@ def test_lateral_limit_follows_the_four_rules():
     )  # vertical: <= 5 mm
     assert rig.lateral_limit(0.05, True, z) == pytest.approx(0.015)  # payload wins
     assert rig.lateral_limit(0.0, False, x) is None
+    # Vertical is the original's |axis_z| > 0.99: 10 deg off vertical is a slanted move.
+    slant = np.array([math.sin(math.radians(10)), 0, -math.cos(math.radians(10))])
+    assert not rig.is_vertical(slant) and rig.is_vertical([0, 0.1, -0.995])
+    assert rig.lateral_limit(0.05, False, slant) == pytest.approx(0.015)
 
 
 def test_servo_step_caps_both_channels_at_speed_dt_and_arrives_within_tolerance():
@@ -132,6 +136,20 @@ def test_a_translation_that_stops_advancing_is_blocked_after_eight_slow_ticks():
     # Within 9 mm of the goal a slow tick is no stall.
     late = advance([0.0025] * 17 + [0.0] * 20)
     assert rig.replay_segment(seg(), late)["abort_reason"] == ""
+
+
+def test_a_tick_outside_the_stall_conditions_keeps_the_count():
+    # The goal is 9.5 mm away after four 2.5 mm ticks; four slow ticks count, a sideways step
+    # brings the tool within 9 mm of the goal for three ticks (the count waits), then back out:
+    # four more slow ticks make eight, at tick 15 (a reset count would need tick 19).
+    s = seg(goal_p=np.array([0.01, 0.0095, 0.0]))
+    xs = [0.0025 * i for i in range(1, 5)] + [0.01] * 11
+    ys = [0.0] * 8 + [0.001] * 3 + [0.0] * 4
+    poses = [(np.zeros(3), DOWN)] + [
+        (np.array([x, y, 0.0]), DOWN) for x, y in zip(xs, ys)
+    ]
+    out = rig.replay_segment(s, poses)
+    assert out["abort_reason"] == "blocked" and out["abort_tick"] == 15
 
 
 def test_sideways_drift_beyond_the_limit_skids_and_a_downward_one_is_blocked():
@@ -198,6 +216,13 @@ def test_grasp_state():
     held = rig.grasp_state("close", 0.031, False)
     assert held["holding"] is True and 0 < held["closed_fraction"] < 1
     assert rig.opening_m([0.039, -0.039]) == pytest.approx(0.078)
+    # closed_fraction is 0 at the closed end and 1 wide open (the original's field).
+    assert rig.grasp_state("open", 0.0788, False)["closed_fraction"] == pytest.approx(
+        1.0
+    )
+    assert rig.grasp_state("close", 0.0012, False)["closed_fraction"] == pytest.approx(
+        0.0152, abs=1e-4
+    )
 
 
 def test_table_height_is_the_refined_mode_and_needs_a_hundred_points():
@@ -310,41 +335,73 @@ def test_depth_is_quantised_like_the_16_bit_millimetre_image():
     assert d.tolist() == pytest.approx([0.21, 0.0, 65.535, 0.0])
 
 
-def wrist_points(depth_m: float, tool_z: float = 1.2):
-    """A wrist camera at the tool point looking straight down at a flat table: the returns and
-    their distances from the camera."""
+def wrist_points(depth_m, tool_z: float = 1.2):
+    """A wrist camera at the tool point looking straight down (``depth_m``: a number for a flat
+    table, or a depth image): the returns in the base frame and in the camera frame."""
     k = rig.intrinsic(75.0, 768, 768)
     c2w = rig.cam2world([0.0, 0.0, tool_z], np.eye(3))
-    pts, _z = rig.back_project(np.full((768, 768), depth_m), k, c2w)
-    return pts, np.linalg.norm(pts - c2w[:3, 3], axis=1)
+    d = np.broadcast_to(np.asarray(depth_m, dtype=np.float64), (768, 768))
+    cam, _z = rig.back_project(d, k, np.eye(4))
+    return cam @ c2w[:3, :3].T + c2w[:3, 3], cam
 
 
 def test_clearance_reads_the_cylinder_below_the_tool():
-    pts, rng = wrist_points(0.30)
-    out = rig.clearance(pts, rng, [0, 0, 1.2], DOWN)
+    pts, cam = wrist_points(0.30)
+    out = rig.clearance(pts, cam, [0, 0, 1.2], DOWN)
     assert out["seen"] and out["mm"] == pytest.approx(300.0, abs=0.01)
     assert out["surface_z_m"] == pytest.approx(0.9) and out["jaws_down"]
     assert out["n_points"] >= rig.CLEARANCE_MIN_POINTS and not out["near_min_range"]
     near = rig.clearance(*wrist_points(0.25), [0, 0, 1.2], DOWN)
     assert near["seen"] and near["near_min_range"]
-    # Inside the minimum range: the returns are cut, the reading is a floor, not a surface.
+    # Inside the minimum range nothing returns: blind, a floor and not a surface.
     blind = rig.clearance(*wrist_points(0.15), [0, 0, 1.2], DOWN)
     assert not blind["seen"] and blind["at_range_floor"] and blind["mm"] is None
+    assert blind["near_min_range"]
     floor = rig.clearance(*wrist_points(0.2115), [0, 0, 1.2], DOWN)
     assert not floor["seen"] and floor["at_range_floor"]
-    # The fingertips (a few mm past the tool point, inside the minimum range) are the robot's
-    # own: they are cut but do not blind the reading.
-    fingers = np.array([[0.035, 0.0, 1.2 - 0.007], [-0.035, 0.0, 1.2 - 0.009]] * 200)
-    with_fingers = rig.clearance(
-        np.concatenate([pts, fingers]),
-        np.concatenate([rng, np.full(len(fingers), 0.105)]),
-        [0, 0, 1.2],
-        DOWN,
-    )
-    assert with_fingers["seen"] and with_fingers["n_cut"] == 0
     # Points off the axis do not count.
-    few = rig.clearance(pts + [0.5, 0, 0], rng, [0, 0, 1.2], DOWN)
+    few = rig.clearance(pts + [0.5, 0, 0], cam, [0, 0, 1.2], DOWN)
     assert not few["seen"] and few["n_points"] == 0
+
+
+def test_clearance_compares_depth_not_ray_length_and_counts_only_the_band_under_it():
+    # An object top at 0.209 m depth under the tool, the table at 0.30 m around it: its returns
+    # sit in the 2 mm band under the minimum range, so the table beside it is no reading.
+    d = np.full((768, 768), 0.30)
+    d[364:404, 364:404] = 0.209
+    out = rig.clearance(*wrist_points(d), [0, 0, 1.2], DOWN)
+    assert not out["seen"] and out["n_cut"] >= 10 and out["at_range_floor"]
+    # The fingertips about 0.1 m from the lens are below the band: they neither count nor cut.
+    d = np.full((768, 768), 0.30)
+    d[364:404, 300:330] = 0.105
+    fingers = rig.clearance(*wrist_points(d), [0, 0, 1.2], DOWN)
+    assert fingers["seen"] and fingers["n_cut"] == 0
+    # Near the minimum range is the mean return's distance from the lens (0.262 m here), not
+    # the mean ray length (longer off the axis: 0.2635 m, past 1.25 x 0.21).
+    pts, cam = wrist_points(0.262)
+    out = rig.clearance(pts, cam, [0, 0, 1.2], DOWN)
+    assert out["seen"] and out["near_min_range"]
+
+
+def test_the_aim_spot_is_the_table_then_the_clearance_then_tracked_then_200_mm():
+    p = [0.5, 0.0, 0.3]
+    spot, depth, source = rig.aim_point(p, DOWN, 0.05)
+    assert source == "table" and depth == pytest.approx(0.25)
+    assert spot == pytest.approx([0.5, 0.0, 0.05])
+    # Below the table's height + 20 mm the spot stays 20 mm under the tool.
+    assert rig.aim_point([0.5, 0, 0.06], DOWN, 0.05)[1] == pytest.approx(0.02)
+    # Within 45 deg of vertical the axis counts as straight down.
+    tilt = rig.axis_angle_matrix([0, math.radians(30), 0]) @ DOWN
+    assert rig.aim_point(p, tilt, 0.05)[0] == pytest.approx([0.5, 0.0, 0.05])
+    # Tilted further: no table level; the clearance, then the tracked one, then 0.2 m along it.
+    side = rig.axis_angle_matrix([0, math.radians(60), 0]) @ DOWN
+    a = rig.approach_axis(side)
+    spot, depth, source = rig.aim_point(p, side, 0.05, clearance_mm=120.0)
+    assert (source, depth) == ("clearance", pytest.approx(0.12))
+    assert spot == pytest.approx(np.asarray(p) + a * 0.12)
+    assert rig.aim_point(p, side, 0.05, tracked_m=0.09)[1:] == (0.09, "tracked")
+    assert rig.aim_point(p, side, None)[1:] == (0.2, "default")
+    assert rig.aim_point(p, DOWN, None)[1:] == (0.2, "default")
 
 
 def decode(b64: str) -> np.ndarray:
@@ -376,7 +433,9 @@ def test_rotations():
     assert np.allclose(rig.quat_xyzw_matrix(q), r)
     assert np.allclose(quat_wxyz_matrix(rig.matrix_quat_wxyz(r)), r)
     assert rig.angle_between(np.eye(3), rz(20)) == pytest.approx(math.radians(20))
-    assert rig.jaws_down(DOWN) and not rig.jaws_down(np.eye(3))
+    assert rig.jaws_down(DOWN) and not rig.jaws_down(
+        rig.axis_angle_matrix([0, math.radians(60), 0]) @ DOWN
+    )
 
 
 def test_caps_copy_the_original_table_and_follow_the_home_mode():
@@ -386,6 +445,7 @@ def test_caps_copy_the_original_table_and_follow_the_home_mode():
     assert caps["reach_m"] == 0.78 and caps["gripper_open_span_m"] == 0.0788
     assert caps["tilt_limits_deg"]["pitch_up"] == 53.6 and caps["table_z_m"] == -0.012
     assert not caps["supports_home"] and "no home" in caps["notes"][-1]
+    assert "after that no action is accepted" in caps["notes"][1]
     assert rig.libero_caps([0.05] * 6, 0.05, True, None)["supports_home"]
 
 
@@ -404,9 +464,12 @@ class MmArm:
     per unit of travel, fingers that move 8 mm per step toward +1 closed (on an object of
     ``obj`` width) / -1 open, and 0 holding; truncation after ``max_steps`` steps."""
 
-    def __init__(self, max_steps: int = 10_000, obj: float = 0.0005):
+    def __init__(
+        self, max_steps: int = 10_000, obj: float = 0.0005, success_at: int = 0
+    ):
         self.max_steps = max_steps
         self.obj = obj
+        self.success_at = success_at
         self.workers = [self]
         self.calls: list[str] = []
         self._fresh()
@@ -442,7 +505,8 @@ class MmArm:
         }
 
     def _info(self):
-        return {"episode": {"success_once": np.array([False])}}
+        done = bool(self.success_at) and self.steps >= self.success_at
+        return {"episode": {"success_once": np.array([done])}}
 
     def reset(self):
         self._fresh()
@@ -539,7 +603,7 @@ class MmArm:
 
 
 def mm_facade(**kw) -> LiberoEnvFacade:
-    arm_kw = {k: kw.pop(k) for k in ("max_steps", "obj") if k in kw}
+    arm_kw = {k: kw.pop(k) for k in ("max_steps", "obj", "success_at") if k in kw}
     f = LiberoEnvFacade(MmArm(**arm_kw), meta={}, **kw)
     f.reset()
     return f
@@ -590,7 +654,16 @@ def test_observation_is_in_the_base_frame_with_calibration_images_and_clearance(
     # (the table under the tool) is the image centre, the clearance is 200 mm.
     assert wrist["aim_px"] == pytest.approx([384, 384], abs=1e-6)
     assert out["clearance"]["seen"] is False  # 0.2 m is inside the 0.21 m minimum range
-    assert out["aim"]["source"] == "table"
+    assert out["aim"]["source"] == "table" and out["aim"]["depth_m"] == pytest.approx(
+        0.2
+    )
+    assert out["config"] == {
+        "side_camera": True,
+        "settle_ticks": 0,
+        "mm_home": "refuse",
+        "max_episode_steps": None,
+        "truth": None,
+    }
     assert decode(out["mosaic_jpeg"]).shape == (256, 768, 3)
     assert out["gripper"]["commanded"] == "open" and out["grasp"]["holding"] is None
     nxt = f.mm_observe(images=False)
@@ -725,7 +798,10 @@ def test_the_gripper_closes_judges_the_grasp_and_holds_a_partial_opening():
 
 def test_wait_steps_seconds_over_the_control_period():
     f = mm_facade()
+    # The original's count: at least one step, the seconds over the period truncated.
     assert f.mm_run_step(seg={"kind": "wait", "seconds": 0.5})["ticks"] == 10
+    assert f.mm_run_step(seg={"kind": "wait", "seconds": 0.3})["ticks"] == 5
+    assert f.mm_run_step(seg={"kind": "wait", "seconds": 0.02})["ticks"] == 1
 
 
 def test_home_is_refused_by_default_and_resets_the_scene_as_a_variant():
@@ -758,6 +834,47 @@ def test_after_the_episode_ends_motion_is_refused():
     assert (
         again["outcome"] == "refused" and again["ticks"] == 0 and again["episode_over"]
     )
+
+
+def test_a_segment_runs_to_its_end_through_the_success_latch():
+    f = mm_facade(success_at=5)
+    out = translate(f, [1, 0, 0], 50)
+    # Success latched at the 5th step; the segment still ran to its goal (the original reads the
+    # task at the segment's end).
+    assert out["outcome"] == "done" and out["ticks"] > 5
+    assert len(out["transitions"]) == out["ticks"]
+    assert [t["terminated"] for t in out["transitions"]].index(True) == 4
+    assert out["terminated"] and out["episode_over"] and not out["truncated"]
+    again = translate(f, [1, 0, 0], 10)
+    assert again["outcome"] == "refused" and again["ticks"] == 0
+    # The hold after an abort and a gripper's settle run through it too.
+    g = mm_facade(success_at=3)
+    assert g.mm_run_step(seg={"kind": "gripper", "state": "close"})["ticks"] == 32
+
+
+def test_a_tool_call_whose_reply_was_lost_hands_its_steps_back():
+    f = mm_facade()
+    first = translate(f, [1, 0, 0], 10, delivered=0)
+    n1 = len(first["transitions"])
+    assert first["call_id"] == 1 and first["late_steps"] == 0 and n1 > 0
+    # pi never got that reply (it still says 0): the next call starts with its steps.
+    second = translate(f, [1, 0, 0], 10, delivered=0)
+    assert second["late_steps"] == n1 and second["call_id"] == 2
+    assert len(second["transitions"]) == n1 + second["ticks"]
+    # Delivered: nothing comes back twice.
+    obs = f.mm_observe(images=False, delivered=2)
+    assert obs["transitions"] == [] and obs["call_id"] is None
+    third = translate(f, [1, 0, 0], 10, delivered=2)
+    assert third["late_steps"] == 0
+    # Lost again, the observation returns them and keeps them until it is acknowledged.
+    lost = f.mm_observe(images=False, delivered=2)
+    assert len(lost["transitions"]) == third["ticks"] and lost["call_id"] == 4
+    assert f.mm_observe(images=False, delivered=4)["transitions"] == []
+    # A caller that does not take part (no `delivered`) leaves what is kept alone.
+    kept = translate(f, [1, 0, 0], 10, delivered=4)
+    f.mm_observe(images=False)
+    translate(f, [1, 0, 0], 10)
+    assert len(f.mm_observe(images=False, delivered=0)["transitions"]) == kept["ticks"]
 
 
 def test_bad_segments_are_errors():

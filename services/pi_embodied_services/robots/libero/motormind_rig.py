@@ -33,7 +33,7 @@ The pieces:
   :func:`grasp_state`);
 - the side camera's mount and the table-top pick it aims at (:func:`side_mount`,
   :func:`table_top`), the table height from scene depth (:func:`table_height`);
-- the wrist clearance cylinder (:func:`clearance`);
+- the wrist clearance cylinder and the aim marker's spot (:func:`clearance`, :func:`aim_point`);
 - camera calibration and projection (:func:`intrinsic`, :func:`cam2world`, :func:`project`);
 - the images the model is shown: JPEG round trip, the aim marker, 512 versions and the
   three-view mosaic (:func:`camera_images`, :func:`mosaic`);
@@ -77,9 +77,9 @@ PAYLOAD_LATERAL_M = 0.015
 VERTICAL_LATERAL_M = 0.005
 #: A downward move that drifts sideways having advanced at most this along its axis is blocked.
 DOWN_BLOCKED_ALONG_M = 0.003
-#: |axis_z| at or above this counts as a vertical move (an interpretation: the specs say
-#: "vertical" without a tolerance; MotorMind's up/down words are exact).
-VERTICAL_AXIS_Z = 0.9
+#: |axis_z| above this counts as a vertical move (the original's test; its up/down words are
+#: exact, an axis 8 deg or more off vertical is not vertical).
+VERTICAL_AXIS_Z = 0.99
 #: Creep: position change + this weight x turn below CREEP_EPS for more than CREEP_TICKS ticks
 #: ends the loop (no abort reason).
 CREEP_EPS = 1e-5
@@ -108,22 +108,24 @@ SIDE_AIM_BASE_XY = (0.47, 0.0)
 SIDE_ELEVATION_DEG = 35.0
 SIDE_SIGN_Y = 1.0
 STANDS_BELOW_M = 0.03
-#: Wrist depth: the simulated minimum range, and the clearance cylinder around the approach
-#: axis (radius, the band beyond the tool point that is skipped, the fewest returns).
+#: Wrist depth: the simulated minimum range (compared with each pixel's depth, camera z), the
+#: depth image's quantum, the band above the minimum range that is a floor and not a surface
+#: (in quanta), and the clearance cylinder around the approach axis (radius, the band beyond the
+#: tool point that is skipped, the fewest returns).
 DEPTH_MIN_RANGE_M = 0.21
 DEPTH_QUANTUM_M = 0.001
 FLOOR_BAND_QUANTA = 2
 CLEARANCE_RADIUS_M = 0.040
 CLEARANCE_BEYOND_M = 0.005
 CLEARANCE_MIN_POINTS = 50
-#: The Panda's fingertips reach this far past the tool point (measured in LIBERO: cut returns of
-#: the fingers at 6-9 mm along the approach axis, radius up to 40 mm, range ~0.105 m; robosuite
-#: 1.4.1 and 1.5 share the gripper geometry). Cut returns this close are the robot's own fingers:
-#: they do not count toward the blind-zone rule (else the wrist is blind at every height).
-SELF_REACH_M = 0.012
 NEAR_MIN_RANGE_FACTOR = 1.25
-#: Jaws count as pointing down within this of vertical.
+#: Jaws count as pointing down within this of vertical: the approach axis then snaps to straight
+#: down (heights, the aim marker).
 DOWN_WITHIN_DEG = 45.0
+#: The aim marker's depth below the tool: at least this above the table; without a table or a
+#: clearance reading, this guess.
+AIM_MIN_DEPTH_M = 0.02
+AIM_DEFAULT_DEPTH_M = 0.20
 #: Render size, the size most roles are sent, JPEG quality, and the aim marker's colour.
 CAMERA_PX = 768
 MODEL_PX = 512
@@ -267,8 +269,44 @@ def approach_axis(r: Any) -> np.ndarray:
 
 
 def jaws_down(r: Any) -> bool:
-    """Whether the approach axis is within DOWN_WITHIN_DEG of straight down."""
-    return float(-approach_axis(r)[2]) >= math.cos(math.radians(DOWN_WITHIN_DEG))
+    """Whether the approach axis is within DOWN_WITHIN_DEG of vertical (it then counts as
+    straight down: :func:`snapped_axis`)."""
+    a = approach_axis(r)
+    return abs(float(a[2])) >= math.cos(math.radians(DOWN_WITHIN_DEG)) * float(
+        np.linalg.norm(a)
+    )
+
+
+def snapped_axis(r: Any) -> np.ndarray:
+    """The approach axis as heights and the aim read it: straight down (0, 0, -1) within
+    DOWN_WITHIN_DEG of vertical, else the unit axis itself."""
+    a = approach_axis(r)
+    a = a / float(np.linalg.norm(a))
+    return np.array([0.0, 0.0, -1.0]) if jaws_down(r) else a
+
+
+def aim_point(
+    p: Any,
+    r: Any,
+    table_z: float | None,
+    clearance_mm: float | None = None,
+    tracked_m: float | None = None,
+) -> tuple[np.ndarray, float, str]:
+    """The spot the aim marker shows (base frame): the tool point moved along the snapped approach
+    axis by a depth. The depth is the height above the table when the table is known and the
+    jaws point down (at least AIM_MIN_DEPTH_M), else the wrist clearance, else the caller's
+    tracked clearance, else AIM_DEFAULT_DEPTH_M. Returns the point, the depth and its source."""
+    p = np.asarray(p, dtype=np.float64).reshape(3)
+    axis = snapped_axis(r)
+    if table_z is not None and jaws_down(r):
+        depth, source = max(AIM_MIN_DEPTH_M, float(p[2]) - float(table_z)), "table"
+    elif clearance_mm:
+        depth, source = float(clearance_mm) / 1000.0, "clearance"
+    elif tracked_m:
+        depth, source = float(tracked_m), "tracked"
+    else:
+        depth, source = AIM_DEFAULT_DEPTH_M, "default"
+    return p + axis * depth, depth, source
 
 
 def pose_dict(p: Any, r: Any) -> dict:
@@ -480,33 +518,38 @@ def table_height(z: Any) -> float | None:
 
 def clearance(
     points: Any,
-    ranges: Any,
+    cam_points: Any,
     tool_p: Any,
     tool_r: Any,
     min_range: float = DEPTH_MIN_RANGE_M,
 ) -> dict:
-    """The free distance below the tool from the wrist camera's returns (``points`` in the base
-    frame, ``ranges`` each return's distance from the camera, metres): returns within CLEARANCE_RADIUS_M of the
-    approach axis and more than CLEARANCE_BEYOND_M past the tool point. Returns closer than
-    ``min_range`` are cut (the simulated sensor's blind zone). Blind (``seen`` false,
-    ``at_range_floor``) with fewer than CLEARANCE_MIN_POINTS returns, when the cut returns reach
-    a fifth of that (cut returns within SELF_REACH_M past the tool point are the fingers and do
-    not count), or when the nearest return lies within FLOOR_BAND_QUANTA depth quanta above
-    the minimum range (a lower bound, not a surface). Otherwise ``mm`` is the nearest distance
-    along the approach axis, ``median_mm`` the median, ``surface_z_m`` (jaws down) the base-frame
-    height of that surface, and ``near_min_range`` is set when the mean range is at most
-    NEAR_MIN_RANGE_FACTOR times the minimum range. Ranges are ray lengths, not depth z: the
-    0.21 m minimum range is the ray from the wrist camera to the point under the tool."""
+    """The free distance below the tool from the wrist camera's returns: ``points`` in the base
+    frame and the same returns in the camera frame (``cam_points``, OpenCV axes: z is the pixel's
+    depth), metres, every pixel with a depth. The cylinder is the returns within
+    CLEARANCE_RADIUS_M of the approach axis and more than CLEARANCE_BEYOND_M past the tool point;
+    a return counts when its depth is at least ``min_range`` (the simulated sensor returns nothing
+    nearer). Blind (``seen`` false, ``at_range_floor`` and ``near_min_range`` set) with fewer than
+    CLEARANCE_MIN_POINTS counted returns; and when what is under the tool is inside the minimum
+    range: a fifth of that many cylinder returns sit in the depth band just under it
+    ([min_range - FLOOR_BAND_QUANTA quanta, min_range): ``n_cut``), or the nearest counted
+    return's depth lies within FLOOR_BAND_QUANTA quanta above it (a lower bound, not a surface).
+    The robot's own fingertips sit far nearer (about 0.1 m) and count in neither. Otherwise
+    ``mm`` is the nearest distance along the approach axis, ``median_mm`` the median,
+    ``surface_z_m`` (jaws down: :func:`snapped_axis`) the base-frame height of that surface, and
+    ``near_min_range`` is set when the mean counted return (camera frame) is at most
+    NEAR_MIN_RANGE_FACTOR times the minimum range from the lens."""
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    rng = np.asarray(ranges, dtype=np.float64).reshape(-1)
+    cam = np.asarray(cam_points, dtype=np.float64).reshape(-1, 3)
+    depth = cam[:, 2]
     p0 = np.asarray(tool_p, dtype=np.float64).reshape(3)
     a = approach_axis(tool_r)
     rel = pts - p0
     along = rel @ a
     radial = np.linalg.norm(rel - np.outer(along, a), axis=1)
-    cone = (along > CLEARANCE_BEYOND_M) & (radial <= CLEARANCE_RADIUS_M)
-    cut = cone & (rng < min_range) & (along > SELF_REACH_M)
-    kept = cone & (rng >= min_range)
+    cone = (along > CLEARANCE_BEYOND_M) & (radial < CLEARANCE_RADIUS_M)
+    band = FLOOR_BAND_QUANTA * DEPTH_QUANTUM_M
+    kept = cone & (depth >= min_range)
+    cut = cone & (depth >= min_range - band) & (depth < min_range)
     n, n_cut = int(kept.sum()), int(cut.sum())
     out: dict[str, Any] = {
         "seen": False,
@@ -520,20 +563,25 @@ def clearance(
         "min_range_m": float(min_range),
         "jaws_down": jaws_down(tool_r),
     }
+    blind = {"at_range_floor": True, "near_min_range": True}
     if n < CLEARANCE_MIN_POINTS:
-        out["at_range_floor"] = True
-        out["reason"] = (
-            f"{n} returns in the cylinder (fewer than {CLEARANCE_MIN_POINTS})"
-        )
-        return out
-    if n_cut * 5 >= CLEARANCE_MIN_POINTS:
-        out["at_range_floor"] = True
-        out["reason"] = f"{n_cut} returns cut by the {min_range:.2f} m minimum range"
-        return out
-    if float(rng[kept].min()) <= min_range + FLOOR_BAND_QUANTA * DEPTH_QUANTUM_M:
-        out["at_range_floor"] = True
-        out["reason"] = "the nearest return sits at the minimum range"
-        return out
+        return {
+            **out,
+            **blind,
+            "reason": f"{n} returns in the cylinder (fewer than {CLEARANCE_MIN_POINTS})",
+        }
+    if n_cut >= max(CLEARANCE_MIN_POINTS // 5, 1):
+        return {
+            **out,
+            **blind,
+            "reason": f"{n_cut} returns just under the {min_range:.2f} m minimum range",
+        }
+    if float(depth[kept].min()) <= min_range + band:
+        return {
+            **out,
+            **blind,
+            "reason": "the nearest return sits at the minimum range",
+        }
     d = along[kept]
     near = float(d.min())
     out.update(
@@ -541,7 +589,8 @@ def clearance(
         mm=near * 1000.0,
         median_mm=float(np.median(d)) * 1000.0,
         near_min_range=bool(
-            float(rng[kept].mean()) <= NEAR_MIN_RANGE_FACTOR * min_range
+            float(np.linalg.norm(cam[kept].mean(axis=0)))
+            <= NEAR_MIN_RANGE_FACTOR * min_range
         ),
     )
     if out["jaws_down"]:
@@ -576,7 +625,8 @@ def grasp_state(
     None; at most EMPTY_BAND_M is empty, anything wider is holding."""
     out = {
         "opening_mm": opening * 1000.0,
-        "closed_fraction": float(max(0.0, 1.0 - opening / open_span)),
+        # 0 at the closed end, 1 wide open (the original's field: its rules read < 0.5 as shut).
+        "closed_fraction": float(opening / open_span),
         "commanded": commanded,
     }
     if commanded != "close":
@@ -614,7 +664,7 @@ def grasp_state(
 def is_vertical(axis: Any) -> bool:
     return (
         axis is not None
-        and abs(float(np.asarray(axis).reshape(3)[2])) >= VERTICAL_AXIS_Z
+        and abs(float(np.asarray(axis).reshape(3)[2])) > VERTICAL_AXIS_Z
     )
 
 
@@ -694,13 +744,17 @@ def osc_action(
 
 @dataclass
 class SegmentJudge:
-    """The per-tick checks of a segment, fed the tool pose after every tick (``tick``): blocked
-    (a translation that stopped advancing along its axis: after STALL_SETTLE_TICKS ticks, a tick
-    advancing less than STALL_FRACTION of the best tick while still LIMITED_M from the goal
-    counts, STALL_TICKS counting ticks in a row abort), skidded (sideways drift from the segment's
-    start beyond the lateral limit; a downward move that advanced at most DOWN_BLOCKED_ALONG_M is
-    blocked instead), and creep (position change + CREEP_ROT_WEIGHT x turn below CREEP_EPS for
-    more than CREEP_TICKS ticks: the loop ends without an abort)."""
+    """The per-tick checks of a segment, fed the tool pose after every tick (``tick``).
+
+    - blocked: a translation that stopped advancing along its axis. Once past
+      STALL_SETTLE_TICKS ticks, with a best tick so far and still LIMITED_M from the goal, a tick
+      advancing less than STALL_FRACTION of the best counts and one advancing more resets the
+      count; a tick outside those conditions (near the goal, say) leaves the count as it is.
+      STALL_TICKS counts abort.
+    - skidded: sideways drift from the segment's start beyond the lateral limit; a downward move
+      that advanced at most DOWN_BLOCKED_ALONG_M is blocked instead.
+    - creep: position change + CREEP_ROT_WEIGHT x turn below CREEP_EPS for more than CREEP_TICKS
+      ticks: the loop ends without an abort."""
 
     seg: Segment
     p0: np.ndarray
@@ -737,18 +791,14 @@ class SegmentJudge:
             rate = float(step @ a)
             self.best = max(self.best, rate)
             far = float(np.linalg.norm(self.seg.goal_p - p)) > LIMITED_M
-            if (
-                self.ticks > STALL_SETTLE_TICKS
-                and self.best > 0
-                and far
-                and rate < STALL_FRACTION * self.best
-            ):
-                self.stalls += 1
-            else:
-                self.stalls = 0
-            if self.stalls >= STALL_TICKS:
-                self.abort = "blocked"
-                return "abort"
+            if self.ticks > STALL_SETTLE_TICKS and self.best > 0 and far:
+                if rate < STALL_FRACTION * self.best:
+                    self.stalls += 1
+                    if self.stalls >= STALL_TICKS:
+                        self.abort = "blocked"
+                        return "abort"
+                else:
+                    self.stalls = 0
             if self.limit is not None:
                 d = p - self.p0
                 along = float(d @ a)
@@ -943,7 +993,7 @@ def libero_caps(
     max_t, max_r = float(om[:3].max()), float(om[3:].max())
     notes = [
         "A motion that stops making progress ends on its own and reports how far it went.",
-        "The episode has a step horizon; after it ends only home (when available) is accepted.",
+        "The episode ends at success or at its step horizon; after that no action is accepted.",
         "home resets the whole scene (env.reset())."
         if supports_home
         else "There is no home: a new episode starts only from a fresh scene reset by the harness.",

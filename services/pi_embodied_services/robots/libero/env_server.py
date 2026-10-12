@@ -605,8 +605,8 @@ def _mm_project(
     depth_pixels=None,
 ) -> dict:
     """Per camera (name -> MuJoCo camera): its segmentation render (upright), each world point's
-    pixel and the body seen there, each body prefix's pixel count and centroid and its first
-    body's origin projected, and for ``depth_pixels`` (name -> [[u, v], ...]) the rendered depth
+    pixel and the body seen there, each body prefix's pixel count, centroid and bounding box and
+    its first body's origin projected, and for ``depth_pixels`` (name -> [[u, v], ...]) the rendered depth
     and a ray-cast distance along the same pixel ray (both as camera z, metres)."""
     from robosuite.utils.camera_utils import get_real_depth_map
 
@@ -669,6 +669,14 @@ def _mm_project(
                 "centroid_uv": None
                 if not len(rows)
                 else [float(cols.mean() + 0.5), float(rows.mean() + 0.5)],
+                "bbox_uv": None
+                if not len(rows)
+                else [
+                    float(cols.min()),
+                    float(rows.min()),
+                    float(cols.max() + 1),
+                    float(rows.max() + 1),
+                ],
                 "origin": origin,
             }
         depth = []
@@ -2548,7 +2556,15 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
     # model's millimetres and degrees are pi's (modes/motormind/command.ts). One segment per
     # env.mm_run_step: pi splits an action and checks its cancel flag between segments; `stop`
     # interrupts a segment between ticks. The frame clock advances CONTROL_DT per env step
-    # (settle steps included) and never goes back, not even at a reset.
+    # (settle steps included) and never goes back, not even at a reset. A segment runs to its end
+    # through LIBERO's success latch (the original reads the task at a segment's end, the truth
+    # log's `success_now`); only the step horizon or a stop cuts it, and once the episode is over
+    # the next segment is refused.
+    #
+    # Hand-back: pi passes `delivered`, the `call_id` of the last reply it received. A tool call
+    # whose reply never arrived (pi's RPC timed out while the server ran the segment) keeps its
+    # env steps here, and the next mm call returns them first, so pi's step count, success latch
+    # and video miss none.
 
     def _mm_reset_state(self) -> None:
         self._mm_clock = 0.0
@@ -2563,6 +2579,8 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         self._mm_side: dict | None = None
         self._mm_homes = {"asked": 0, "refused": 0, "reset": 0}
         self._mm_stall_s = 0.0
+        self._mm_call = 0
+        self._mm_unacked: dict | None = None
 
     def _mm_tick(self, obs) -> None:
         """Per env step: the frame clock, the episode's step count and the finger gap's change
@@ -2583,11 +2601,16 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             raise RuntimeError(f"{method} failed in the env worker: {out['error']}")
         return out
 
+    def _mm_running(self) -> bool:
+        """Whether a MotorMind segment in progress may take another step: until the step horizon
+        (a success latch does not cut it short)."""
+        return not self._truncated
+
     def _settle(self, n: int, grip: float) -> int:
-        """``n`` zero-action steps with gripper channel ``grip`` (fewer at the episode's end or
-        a stop)."""
+        """``n`` zero-action steps with gripper channel ``grip`` (fewer at the step horizon or a
+        stop)."""
         k = 0
-        while k < int(n) and self._live():
+        while k < int(n) and self._mm_running():
             if self.stop_requested():
                 break
             self._act([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(grip)])
@@ -2603,6 +2626,8 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         self._mm_ticks = 0
         self._mm_clock += rig.CONTROL_DT
         self._mm_opening, self._mm_opening_step = None, 0.0
+        # The last episode's undelivered steps are no longer pi's to count.
+        self._mm_unacked = None
         if self._side_camera:
             try:
                 self._mm_side = self._worker_call(
@@ -2714,19 +2739,29 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             "camera_names": self._mm_cameras(),
             "home_mode": self._mm_home,
             "home": dict(self._mm_homes),
+            # How this server was started: pi checks it against its own flags when it attaches.
+            "config": {
+                "side_camera": self._side_camera,
+                "settle_ticks": self._settle_ticks,
+                "mm_home": self._mm_home,
+                "max_episode_steps": self._meta.get("max_episode_steps"),
+                "truth": self._mm_truth or None,
+            },
         }
 
-    def _mm_aim(self, p: np.ndarray, aim) -> tuple[np.ndarray | None, str]:
-        """The point the aim marker shows (base frame): the caller's, else the table under the
-        tool, else none."""
+    def _mm_aim(self, p, r, aim, clearance_mm, tracked) -> dict:
+        """The point the aim marker shows (base frame): the caller's ``aim_base_m``, else
+        rig.aim_point (the table, the wrist clearance, the caller's tracked clearance
+        ``aim_tracked_m``, 0.2 m)."""
         if aim is not None:
-            return _finite("aim_base_m", aim).reshape(3), "given"
-        table = (self._mm_table or {}).get("z_m")
-        if table is not None:
-            return np.array([p[0], p[1], table]), "table"
-        return None, "none"
+            return {"point": _finite("aim_base_m", aim).reshape(3), "source": "given"}
+        t = None if tracked is None else float(_finite("aim_tracked_m", tracked))
+        point, depth, source = rig.aim_point(
+            p, r, (self._mm_table or {}).get("z_m"), clearance_mm, t
+        )
+        return {"point": point, "depth_m": depth, "source": source}
 
-    def _mm_images(self, p, r, aim, cameras) -> dict:
+    def _mm_images(self, p, r, aim, cameras, tracked=None) -> dict:
         names = self._mm_cameras()
         if cameras:
             unknown = [c for c in cameras if c not in names]
@@ -2741,14 +2776,27 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             ["wrist"] if "wrist" in names else [],
         )
         to_base = self._mm_rig["frame"].transform()
-        aim_p, source = self._mm_aim(p, aim)
         out: dict[str, Any] = {"cameras": {}}
+        if "wrist" in names:
+            # The clearance first: with no table it sets the aim marker's depth.
+            s = shots["wrist"]
+            k = rig.intrinsic(s["fovy"], px, px)
+            c2b = to_base @ rig.cam2world(s["cam_xpos"], s["cam_xmat"])
+            depth = rig.quantize_depth(s["depth"])
+            cam_pts, _z = rig.back_project(depth, k, np.eye(4))
+            out["clearance"] = rig.clearance(
+                cam_pts @ c2b[:3, :3].T + c2b[:3, 3], cam_pts, p, r
+            )
+        aim_at = self._mm_aim(
+            p, r, aim, (out.get("clearance") or {}).get("mm"), tracked
+        )
+        aim_p = aim_at["point"]
         marked = []
         for n in names:
             s = shots[n]
             k = rig.intrinsic(s["fovy"], px, px)
             c2b = to_base @ rig.cam2world(s["cam_xpos"], s["cam_xmat"])
-            uv = None if aim_p is None else rig.project(k, c2b, aim_p)
+            uv = rig.project(k, c2b, aim_p)
             imgs = rig.camera_images(s["rgb"], None if uv is None else uv[:2])
             marked.append(imgs.pop("_marked"))
             cam = {
@@ -2763,21 +2811,17 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             }
             if n == "wrist":
                 cam["depth_min_range_m"] = rig.DEPTH_MIN_RANGE_M
-                depth = rig.quantize_depth(s["depth"])
-                pts, _z = rig.back_project(depth, k, c2b)
-                # The minimum range applies to each return's distance from the camera.
-                rays = np.linalg.norm(pts - c2b[:3, 3], axis=1)
-                out["clearance"] = rig.clearance(pts, rays, p, r)
             out["cameras"][n] = cam
         out["aim"] = {
-            "source": source,
-            "base_m": None if aim_p is None else [float(v) for v in aim_p],
+            "source": aim_at["source"],
+            "base_m": [float(v) for v in aim_p],
+            **({"depth_m": aim_at["depth_m"]} if "depth_m" in aim_at else {}),
         }
         out["mosaic_jpeg"] = rig.mosaic(marked)
         return out
 
     def _mm_observation(
-        self, images: bool, aim=None, cameras=None, segment=None
+        self, images: bool, aim=None, cameras=None, segment=None, tracked=None
     ) -> dict:
         """One MotorMind observation (a new ``obs_id``); a line of privileged truth goes to
         --mm-truth under the same id."""
@@ -2804,7 +2848,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             **self._mm_static_fields(),
         }
         if images:
-            out.update(self._mm_images(p, r, aim, cameras))
+            out.update(self._mm_images(p, r, aim, cameras, tracked))
         self._mm_write_truth(out, segment)
         return out
 
@@ -2835,16 +2879,52 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         except Exception as e:  # noqa: BLE001  the truth log never breaks the episode
             logger.warning("mm_truth.jsonl: %s", e)
 
-    def mm_observe(self, images: bool = True, aim_base_m=None, cameras=None) -> dict:
+    def mm_observe(
+        self,
+        images: bool = True,
+        aim_base_m=None,
+        cameras=None,
+        aim_tracked_m=None,
+        delivered=None,
+    ) -> dict:
         """MotorMind's observation, base frame. Always: ``obs_id``, ``frame_clock_s``,
         ``episode_id``, ``ticks``, ``pose``, ``gripper``, ``grasp``, ``episode_over`` and the
         static fields (``base_pose``, ``caps``, ``output_max``, ``table_z_m``, ``degraded``,
-        ...). ``images``: each camera's 768 render as ``marked768`` / ``marked512`` / ``raw512``
-        JPEGs with ``intrinsic`` and ``cam2base``, the wrist ``clearance``, the aim marker's
-        point (``aim_base_m``, default the table under the tool) and a 768x256 ``mosaic_jpeg``.
-        ``cameras`` limits the renders to some of scene / side / wrist."""
+        ``config``, ...). ``images``: each camera's 768 render as ``marked768`` / ``marked512`` /
+        ``raw512`` JPEGs with ``intrinsic`` and ``cam2base``, the wrist ``clearance``, the aim
+        marker (``aim_base_m``, else rig.aim_point with the caller's tracked clearance
+        ``aim_tracked_m``) and a 768x256 ``mosaic_jpeg``. ``cameras`` limits the renders to some
+        of scene / side / wrist. ``delivered``: pi's hand-back (``transitions`` of an mm tool
+        call whose reply it never received, and the ``call_id`` that keeps them)."""
         self._mm_commission()
-        return self._mm_observation(bool(images), aim_base_m, cameras)
+        late = self._mm_hand_back(delivered)
+        out = self._mm_observation(
+            bool(images), aim_base_m, cameras, tracked=aim_tracked_m
+        )
+        if delivered is not None:
+            out["transitions"] = late
+            out["call_id"] = self._mm_keep(late)
+        return out
+
+    def _mm_hand_back(self, delivered) -> list:
+        """The env steps of the last mm tool call whose reply pi did not receive: its kept steps
+        when ``delivered`` is not that call's id ([] when it is, or nothing is kept). None:
+        the caller does not take part (a test's own client), and what is kept stays."""
+        if delivered is None:
+            return []
+        held, self._mm_unacked = self._mm_unacked, None
+        if held is None or int(delivered) == held["id"]:
+            return []
+        return held["transitions"]
+
+    def _mm_keep(self, transitions: list) -> int | None:
+        """Keep an mm tool call's env steps until pi acknowledges the reply (``delivered``);
+        returns the reply's ``call_id`` (None when it carries no step)."""
+        if not transitions:
+            return None
+        self._mm_call += 1
+        self._mm_unacked = {"id": self._mm_call, "transitions": transitions}
+        return self._mm_call
 
     def _mm_stall_wait(self) -> None:
         s, self._mm_stall_s = self._mm_stall_s, 0.0
@@ -2858,6 +2938,8 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         observe: str = "state",
         aim_base_m=None,
         trace: bool = False,
+        aim_tracked_m=None,
+        delivered=None,
     ) -> dict:
         """Run one segment of a MotorMind action (base frame, metres, radians).
 
@@ -2870,19 +2952,29 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             (default the position at the start);
           - ``gripper``: ``state`` ``open`` / ``close``, optional ``open_to_mm`` (open until the
             gap reaches it, then hold the channel at 0);
-          - ``wait``: ``seconds`` (round(seconds / 0.05) zero steps);
+          - ``wait``: ``seconds`` (max(1, int(seconds / 0.05)) zero steps);
           - ``home``: refused with --mm-home=refuse; with ``reset`` the scene resets.
 
         Returns the measurement (``outcome`` done / contact / limited / refused,
         ``abort_reason``, ``moved_m``, ``along_axis_m``, ``lateral_m``, ``turned_rad``, ...)
         and ``observation`` (``observe``: ``state`` without images, ``full`` as
-        env.mm_observe). ``trace``: the per-tick poses (motormind_rig.replay_segment's input)."""
+        env.mm_observe, ``aim_*`` as there). ``trace``: the per-tick poses
+        (motormind_rig.replay_segment's input). As a tool call (``tool_call``) with
+        ``delivered``: ``transitions`` begin with the steps of an mm call whose reply pi never
+        received (``late_steps`` of them), and ``call_id`` keeps them until the next call."""
         self._mm_commission()
         if observe not in ("state", "full"):
             raise ValueError("observe must be 'state' or 'full'")
         kind = seg.get("kind") if isinstance(seg, dict) else None
         if kind not in MM_KINDS:
             raise ValueError(f"seg.kind must be one of {MM_KINDS}, got {kind!r}")
+        handing = self._record is not None and delivered is not None
+        late = self._mm_hand_back(delivered) if handing else []
+        if kind == "home":
+            # A scene reset starts a new episode: the old one's undelivered steps go nowhere.
+            late = []
+        if late:
+            self._record.extend(late)
         self._mm_stall_wait()
         t0 = time.monotonic()
         start_ticks = self._mm_ticks
@@ -2930,6 +3022,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
                 "abort_reason": out.get("abort_reason", ""),
                 "ticks": ticks,
             },
+            tracked=aim_tracked_m,
         )
         out.update(
             obs_id=observation["obs_id"],
@@ -2940,6 +3033,10 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             truncated=observation["truncated"],
             observation=observation,
         )
+        if handing:
+            # A home's steps start the new episode: not kept for a hand-back.
+            kept = None if kind == "home" else self._mm_keep(self._record)
+            out.update(late_steps=len(late), call_id=kept)
         return out
 
     def _mm_motion(
@@ -2993,7 +3090,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         commands: list[list[float]] = []
         ticks, cancelled, budget = 0, False, False
         p, rot = p0, r0
-        while self._live():
+        while self._mm_running():
             if self.stop_requested():
                 cancelled = True
                 break
@@ -3077,7 +3174,9 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             self._grip = -1.0
             n = 0
             while (
-                n < rig.OPEN_TO_MAX_TICKS and self._live() and not self.stop_requested()
+                n < rig.OPEN_TO_MAX_TICKS
+                and self._mm_running()
+                and not self.stop_requested()
             ):
                 if self._mm_opening_now() >= want:
                     break
@@ -3109,7 +3208,8 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         seconds = float(_finite("seconds", seg.get("seconds", float("nan"))))
         if seconds < 0:
             raise ValueError("seconds must be >= 0")
-        n = self._settle(round(seconds / rig.CONTROL_DT), self._grip)
+        # The original's count: at least one step, the seconds over the period truncated.
+        n = self._settle(max(1, int(seconds / rig.CONTROL_DT)), self._grip)
         return {"outcome": "done", "abort_reason": "", "message": f"waited {n} steps"}
 
     def _mm_home_step(self) -> dict:
@@ -3211,9 +3311,9 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         """Per camera: the K and cam2base of the observation, each base-frame point's pixel
         (continuous u = column, v = row of the upright 768 image) and the body the segmentation
         render shows there; for each body-name prefix its pixel count, centroid and projected
-        origin; for ``depth_pixels`` ({camera: [[u, v], ...]}) the depth the server reads there
-        (quantised to mm for the wrist, as clearance uses it) and a ray-cast truth, both as
-        camera z in metres."""
+        origin; for ``depth_pixels`` ({camera: [[u, v], ...]}) the depth the observation reads
+        there (``server_z_m``: the same render and, for the wrist, the same millimetre quantising
+        the clearance uses) and a ray-cast truth, both as camera z in metres."""
         self._mm_commission()
         frame = self._mm_rig["frame"]
         names = self._mm_cameras() if not cameras else list(cameras)
@@ -3230,15 +3330,23 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             depth_pixels or {},
         )
         to_base = frame.transform()
+        want = [n for n in raw if raw[n]["depth"]]
+        shots = (
+            self._worker_call(
+                "mm_frames", {n: MM_CAMERAS[n] for n in want}, rig.CAMERA_PX, want
+            )
+            if want
+            else {}
+        )
         out = {}
         for n, cam in raw.items():
-            for d in cam["depth"]:
+            if cam["depth"]:
+                seen = shots[n]["depth"]
                 if n == "wrist":
-                    d["server_z_m"] = float(
-                        rig.quantize_depth(np.array([d["rendered_z_m"]]))[0]
-                    )
-                else:
-                    d["server_z_m"] = d["rendered_z_m"]
+                    seen = rig.quantize_depth(seen)
+                for d in cam["depth"]:
+                    c, r = int(math.floor(d["uv"][0])), int(math.floor(d["uv"][1]))
+                    d["server_z_m"] = float(seen[r, c])
             out[n] = {
                 **cam,
                 "cam2base": (to_base @ np.asarray(cam["cam2world"])).tolist(),
