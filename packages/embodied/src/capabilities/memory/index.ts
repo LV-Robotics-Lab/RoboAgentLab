@@ -74,6 +74,11 @@ export type MemoryOptions = {
 	/** Directories the agent may also read and search, e.g. the robot's saved state images. */
 	readable?: () => string[];
 	/**
+	 * The robot's prompt has a memory-free form, so `--memory-profile off` may turn memory off: no
+	 * memory section, no file tools, no sync, no recipe export. Without it `off` refuses the start.
+	 */
+	optional?: boolean;
+	/**
 	 * Whether the robot has a published corpus on Hugging Face (default true). Without one, runs
 	 * default to the local profile, and a local corpus exploration has not written yet is empty, not an error.
 	 */
@@ -233,7 +238,10 @@ function say(ctx: ExtensionContext, text: string, level: "info" | "warning" | "e
 }
 
 export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
-	pi.registerFlag("memory-profile", { type: "string", description: "hf (evaluation default) | local" });
+	pi.registerFlag("memory-profile", {
+		type: "string",
+		description: "hf (evaluation default) | local | off (no memory: no section, file tools, sync or recipe)",
+	});
 	pi.registerFlag("auto-merge-memory", {
 		type: "boolean",
 		default: false,
@@ -242,7 +250,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	let root = "";
 	let home = "";
 	let outputDir = "";
-	let profile: "hf" | "local" = "hf";
+	let profile: "hf" | "local" | "off" = "hf";
 	let cell: { tag: string; reference: string } | undefined;
 	let guard: Guard | undefined;
 	/** The memory files the agent read this episode: path under the corpus -> SHA-256 when read (../context-version.ts). */
@@ -284,8 +292,19 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		const explore = opts.explore?.() ?? false;
 		const explicit = str(pi.getFlag("memory-profile"));
 		const requested = explicit || (explore || opts.published === false ? "local" : "hf");
-		if (requested !== "hf" && requested !== "local") throw new Error(`unknown --memory-profile ${requested}`);
+		if (requested !== "hf" && requested !== "local" && requested !== "off")
+			throw new Error(`unknown --memory-profile ${requested}`);
 		if (explore && requested === "hf") throw new Error("--explore cannot be used with --memory-profile hf");
+		if (requested === "off") {
+			if (explore) throw new Error("--explore writes memory: it cannot run with --memory-profile off");
+			if (!opts.optional)
+				throw new Error(
+					`--memory-profile off: ${opts.robot ?? "libero"}'s prompt reads memory and has no form without it`,
+				);
+			// No guard: a file tool is refused (none is active), and nothing is synced or exported.
+			profile = "off";
+			return;
+		}
 		profile = requested;
 		if (profile === "hf") locate(ctx, true);
 		guard = {
@@ -340,7 +359,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 
 	// Once the run has settled (continuations such as DISTIL included): export the recipe, merge drafts.
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (!cell || !outputDir) return;
+		if (!cell || !outputDir || profile === "off") return;
 		const branch = ctx.sessionManager.getBranch();
 		const commands = recipe(branch, new Set(opts.primitives ?? []));
 		const path = join(outputDir, `${cell.tag}_recipe.jsonl`);
@@ -418,8 +437,12 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	});
 
 	return {
-		/** Built-in tools the agent uses on memory; add them to setActiveTools. */
-		tools: ["read", "ls", "grep", "find", "write", ...(opts.audit ? ["write_audit"] : [])],
+		/** Built-in tools the agent uses on memory; add them to setActiveTools (none with --memory-profile off). */
+		get tools(): string[] {
+			return profile === "off"
+				? []
+				: ["read", "ls", "grep", "find", "write", ...(opts.audit ? ["write_audit"] : [])];
+		},
 		/** Why memory could not be established this session (no corpus, a bad cell tag or profile); robot.ts fails the start with it. */
 		configError: () => problem,
 		/** The memory files the agent read this episode, with their SHA-256 at the time. */
@@ -427,9 +450,9 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		get profile() {
 			return profile;
 		},
-		/** The memory section of an evaluation prompt, rendered and closed by ./required.md; undefined without a cell (nothing to read). */
+		/** The memory section of an evaluation prompt, rendered and closed by ./required.md; undefined without a cell (nothing to read) or with memory off. */
 		section(): string | undefined {
-			if (!cell) return undefined;
+			if (!cell || profile === "off") return undefined;
 			return this.render(`${(opts.prompt?.(profile) ?? SECTION).trim()}\n\n${REQUIRED}`, { task: "" });
 		},
 		/** Fill {{memory_dir}}, {{memory_inbox}}, {{memory_profile}}, {{output_dir}}, {{recipe_tag}}, {{reference_tag}} and `extra`. */

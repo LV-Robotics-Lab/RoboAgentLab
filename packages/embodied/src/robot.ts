@@ -990,7 +990,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			...(prompts.length > 1 ? { system_prompts_sha256: prompts } : {}),
 			templates: usedTemplates({
 				explore: exploring(),
-				memoryProfile: mem && spec.memory?.cell?.() ? mem.profile : undefined,
+				memoryProfile: mem && spec.memory?.cell?.() && mem.profile !== "off" ? mem.profile : undefined,
 				code: co?.mode() !== undefined,
 				units: un?.mode() !== undefined,
 			}),

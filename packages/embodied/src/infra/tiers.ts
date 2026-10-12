@@ -24,8 +24,8 @@
  * code but call a tool or pick an action each step, so their settings are multi-turn with image
  * feedback and differ in the primitives' level (the `api` axis by analogy): Show-Harness's action
  * units, HumanCLAW's paper mode, RPent's tools with memory and a VLA skill, OpenETA's tools with
- * visual differencing, XPolicyLab's policy (`capx-<tier>` is `--tier <tier>` under the preset
- * spelling). A preset needs the modules it stands for mounted, is mutually exclusive with `--tier`,
+ * visual differencing, XPolicyLab's policy, MotorMind's mission with its side camera, settle ticks,
+ * horizon and no cross-task memory (`capx-<tier>` is `--tier <tier>` under the preset spelling). A preset needs the modules it stands for mounted, is mutually exclusive with `--tier`,
  * and is recorded as `preset` with the same `axes`. `src/scripts/params-match.mjs` and
  * `tier-flags.mjs` import the same tables, so the eval scripts expand a choice exactly as the robot does.
  */
@@ -75,7 +75,7 @@ export function axesFlags(axes: Axes): Expansion {
 }
 
 /** What a preset needs the robot to have (`Caps`). */
-export type Need = "units" | "humanclaw" | "memory" | "vla" | "vdm" | "xpolicy";
+export type Need = "units" | "humanclaw" | "memory" | "vla" | "vdm" | "xpolicy" | "motormind";
 type Preset = {
 	axes: Axes;
 	flags: Expansion;
@@ -111,6 +111,23 @@ export const PRESETS: Record<string, Preset> = {
 		flags: { code: null, units: null, vdm: false, "vdm-video": false },
 		needs: ["xpolicy"],
 		requires: { flag: "xpolicy", hint: "ws://host:port (the policy server)" },
+	},
+	// MotorMind's faithful setting (pi-embodied-work/docs/motormind/DESIGN.md §1.6); a run without the
+	// preset is a labelled variant (the result's `motormind.variant`).
+	motormind: {
+		axes: { turns: "multi", feedback: "image", api: "raw" },
+		flags: {
+			mm: "true",
+			"libero-side-camera": "true",
+			"libero-settle-ticks": "32",
+			"libero-max-steps": "300000",
+			"memory-profile": "off",
+			units: null,
+			code: null,
+			vdm: false,
+			"vdm-video": false,
+		},
+		needs: ["motormind"],
 	},
 };
 export const PRESET_NAMES = [...Object.keys(PRESETS), ...TIER_NAMES.map((n) => `capx-${n}`)];
@@ -204,6 +221,8 @@ export type Caps = {
 	robot: string;
 	code: boolean;
 	units: boolean;
+	/** The robot mounts MotorMind mode (its spec's `motormind`). */
+	motormind?: boolean;
 	vdm: boolean;
 	groundTruth: boolean;
 	memory: boolean;
@@ -229,6 +248,7 @@ const NEEDS: Record<Need, (caps: Caps) => string | undefined> = {
 	vdm: (caps) => (caps.vdm ? undefined : `describes each change with VDM (--vdm), which ${caps.robot} does not mount`),
 	xpolicy: (caps) =>
 		caps.xpolicy ? undefined : `runs an XPolicyLab policy (--xpolicy), which ${caps.robot} does not mount`,
+	motormind: (caps) => (caps.motormind ? undefined : `runs MotorMind mode (--mm), which ${caps.robot} does not mount`),
 };
 
 /** Why `caps` cannot run the choice, else undefined. */

@@ -312,6 +312,42 @@ test("--libero-prompt compact keeps the short prompt; an unknown variant fails t
 	assert.deepEqual(bad.active(), []);
 });
 
+test("--memory-profile off: neither prompt reads memory, points to it or asks for the audit; no file tools", async (t) => {
+	for (const variant of ["rpent", "compact"]) {
+		const s = await session(t, { "libero-prompt": variant, "memory-profile": "off" });
+		const { systemPrompt } = await s.emit("before_agent_start", { systemPrompt: "base" });
+		assert.doesNotMatch(
+			systemPrompt,
+			/write_audit|see Memory|# Memory|MEMORY PROFILE|READ MEMORY FIRST|LOCAL MEMORY LAYER|MEMORY\.md|READ THE GUIDES|write the audit|\{\{\w+\}\}/,
+			variant,
+		);
+		assert.ok(!systemPrompt.includes(s.memoryDir), variant);
+		assert.match(
+			systemPrompt,
+			variant === "rpent" ? /call `finish`/ : /^1\. Inspect, then act\. Start with `view_env_state`\./m,
+		);
+		// The workflow is still numbered 1..n.
+		const steps = [...systemPrompt.matchAll(/^(\d+)\. [A-Z]{3,}/gm)].map((m) => Number(m[1]));
+		const workflow = steps.slice(steps.lastIndexOf(1));
+		assert.deepEqual(
+			workflow,
+			workflow.map((_, i) => i + 1),
+			variant,
+		);
+		assert.deepEqual(
+			s.active().filter((n) => ["read", "ls", "grep", "find", "write", "write_audit"].includes(n)),
+			[],
+		);
+		// Nothing reaches the file tools either (no guard roots: refused).
+		assert.equal(
+			(await s.emit("tool_call", { toolName: "read", input: { path: join(s.memoryDir, "MEMORY.md") } }))?.block,
+			true,
+		);
+	}
+	// Exploration writes memory: it cannot run without it.
+	assert.deepEqual((await session(t, { explore: true, "memory-profile": "off" })).active(), []);
+});
+
 test("--explore with the RPent prompt: the robot's own prompt is empty and exploration's is RPent's explore", async (t) => {
 	const s = await session(t, { explore: true });
 	const { systemPrompt } = await s.emit("before_agent_start", { systemPrompt: "" });

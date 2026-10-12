@@ -440,9 +440,9 @@ test("a robot that cannot serve the tier refuses to start", async () => {
 type Chosen = Exclude<ReturnType<typeof choose>, undefined>;
 
 test("the presets expand to each repository's native flags; capx-<tier> is that tier", () => {
-	assert.deepEqual(Object.keys(PRESETS), ["showharness", "humanclaw", "rpent", "openeta", "xpolicylab"]);
+	assert.deepEqual(Object.keys(PRESETS), ["showharness", "humanclaw", "rpent", "openeta", "xpolicylab", "motormind"]);
 	assert.deepEqual(
-		PRESET_NAMES.slice(5),
+		PRESET_NAMES.slice(6),
 		TIER_NAMES.map((n) => `capx-${n}`),
 	);
 	const multi = (api: string, feedback = "image") => ({ turns: "multi", feedback, api });
@@ -471,7 +471,7 @@ test("the presets expand to each repository's native flags; capx-<tier> is that 
 	assert.deepEqual(capx.flags, axesFlags(TIERS.M3));
 	assert.match(
 		String((choose("", "capx-S9") as { error: string }).error),
-		/no such preset; the presets are showharness, humanclaw, rpent, openeta, xpolicylab, capx-S1/,
+		/no such preset; the presets are showharness, humanclaw, rpent, openeta, xpolicylab, motormind, capx-S1/,
 	);
 	assert.match(String((choose("", "rlbench") as { error: string }).error), /--preset rlbench: no such preset/);
 });
@@ -587,7 +587,7 @@ test("--preset reads as the repository's flags, records preset and axes, and ref
 	const unknown = await toy({ preset: "rlbench" });
 	assert.match(
 		String(unknown.refused),
-		/^--preset rlbench: no such preset; the presets are showharness, humanclaw, rpent, openeta, xpolicylab, capx-S1, /,
+		/^--preset rlbench: no such preset; the presets are showharness, humanclaw, rpent, openeta, xpolicylab, motormind, capx-S1, /,
 	);
 });
 

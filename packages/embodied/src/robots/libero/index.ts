@@ -95,6 +95,7 @@ export const GUIDES = fileURLToPath(new URL("./guides", import.meta.url));
  * profile, and `#.` workflow steps are numbered in order. `[tool:x]` blocks are the robot base's.
  */
 export function renderRpent(text: string, profile: string, parts = RPENT.system): string {
+	if (profile === "off") text = RPENT_OFF.reduce((t, [from, to]) => t.replace(from, to), text);
 	const shared = new Map(
 		[...parts.matchAll(/^\[part:([\w-]+)\]\n([\s\S]*?)\n\[\/part:\1\]$/gm)].map((m) => [m[1], m[2]]),
 	);
@@ -112,6 +113,45 @@ export function renderRpent(text: string, profile: string, parts = RPENT.system)
 		.replace(/^#\. /gm, () => `${++n}. `)
 		.replace(/\n{3,}/g, "\n\n");
 }
+/**
+ * `--memory-profile off` (no memory, no file tools, no audit): RPent's prompt without its memory
+ * reading, the guides it reads with `read`, and the audit before `finish`; its `[memory:*]` blocks
+ * drop with the profile. Applied to the template, before the workflow is numbered.
+ */
+const RPENT_OFF: [RegExp, string][] = [
+	[/^\[part:step-guides\]\n[\s\S]*?^\[\/part:step-guides\]\n/m, ""],
+	[
+		/\*\*STOP instead and write the audit\*\* \(success or honest\n> `terminated:false`\)/,
+		"**STOP instead and call `finish`** (success or an honest\n> failure)",
+	],
+	[/ For your task, FIRST read the solved seed-0 reference[\s\S]*?consult BOTH before planning\./, ""],
+	[/; files are read and written with `read`, `ls`, `grep`, `find`\n {2}and `write`\./, "."],
+	[/ and the relevant memory\/guides BEFORE your first/, " BEFORE your first"],
+	[
+		/STOP and write the audit\n {3}\(success or honest `terminated:false`\), then call `finish`\./,
+		"STOP and call `finish`\n   (success or an honest failure).",
+	],
+	[/apply the manipulation offsets from memory to the PERCEIVED/, "apply the manipulation offsets to the PERCEIVED"],
+	[
+		/do NOT reset — write an honest\n {3}stuck-audit \(`terminated:false`\) and call `finish`\./,
+		"do NOT reset — call `finish` with an\n   honest failure summary.",
+	],
+	[
+		/(#\. WHEN top-level `terminated == true` in the latest tool result):\n[\s\S]*?\(NO reset, NO second attempt\.\)/,
+		"$1, call `finish`.\n   If your single attempt does not solve it, call `finish` with an honest summary of\n   what you tried in this one episode and where it stalled. (NO reset, NO second attempt.)",
+	],
+	[
+		/- Save the audit BEFORE calling `finish`\.\n- Stop immediately after writing the audit and calling `finish`\./,
+		"- Stop immediately after calling `finish`.",
+	],
+	[/^- audit: .*\n- recipe: .*\n/m, ""],
+	[/Read `MEMORY\.md` and the guides, then call/, "Call"],
+];
+/** `--memory-profile off` with the compact prompt: its two references to the Memory section and the audit go (DESIGN §7.1). */
+const COMPACT_OFF: [RegExp, string][] = [
+	[/ Read memory first \(see Memory\), then start with `view_env_state`\./, " Start with `view_env_state`."],
+	[/call `write_audit` \(see Memory\), then call `finish`/, "call `finish`"],
+];
 /** The compact prompt's single-episode lines, which its exploration replaces rather than contradicts. */
 const REWRITE: [RegExp, string][] = [
 	[
@@ -548,6 +588,8 @@ export default function libero(pi: ExtensionAPI) {
 			},
 			// Both prompts carry their own memory reading (RPent's WORKFLOW step, the compact memory text).
 			inPrompt: true,
+			// Both have a form without it (--memory-profile off: RPENT_OFF, COMPACT_OFF).
+			optional: true,
 		},
 		video: true,
 		flywheel: {
@@ -588,12 +630,13 @@ export default function libero(pi: ExtensionAPI) {
 		},
 		start: startEpisode,
 		prompt: () => {
-			if (variant() === "rpent")
-				return exploring() ? "" : mem.render(cellVars(renderRpent(RPENT.system, mem.profile)));
+			const profile = mem.profile;
+			if (variant() === "rpent") return exploring() ? "" : mem.render(cellVars(renderRpent(RPENT.system, profile)));
 			const system = COMPACT.system.replaceAll("{{task_language}}", language);
 			// Exploration appends its own memory instructions.
 			if (exploring()) return system;
-			return `${system}\n\n${mem.render(COMPACT.memory[mem.profile], { task: robot.task.task })}`;
+			if (profile === "off") return COMPACT_OFF.reduce((t, [from, to]) => t.replace(from, to), system);
+			return `${system}\n\n${mem.render(COMPACT.memory[profile], { task: robot.task.task })}`;
 		},
 		result: () => ({
 			...skillsOff(skills),
