@@ -7,7 +7,11 @@
 # With E2E_GPU set (nvidia-smi's ordinal), a robot starts only once that GPU has MIN_FREE MiB free
 # (default 8000; polled without any lock, up to WAIT_S seconds, default 3600): the light-simulator rule of a
 # shared GPU. A robot rendered on the CPU (E2E_GPU unset in its env file) does not wait. Model loads
-# (the LIBERO --serve-models case) take PI_EMBODIED_GPU_LOCK themselves.
+# (the LIBERO --serve-models case) take PI_EMBODIED_GPU_LOCK themselves. With E2E_LOCK set (a lock
+# file), each robot's run holds it (flock) while it renders.
+# libero-mm is MotorMind mode's interface checks on LIBERO (DESIGN §8, C1-C18); it writes what it
+# measures to $MM_STEP1_OUT/report.json (default <checkout>/.local/runs/mm-step1/<date>/):
+#   E2E_GPU=1 MIN_FREE=8000 E2E_LOCK=.local/locks/gpu1.lock test/gpu-e2e.sh libero-mm=.local/tools/embodied-env.sh
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 services=$(cd "$here/../../services" && pwd)
@@ -33,7 +37,7 @@ for arg in "$@"; do
 		fi
 		echo "== $robot $(date +%T)"
 		cd "$here"
-		node --test --test-timeout=2400000 --experimental-strip-types test/gpu-e2e.test.ts
+		${E2E_LOCK:+flock "$E2E_LOCK"} node --test --test-timeout=2400000 --experimental-strip-types test/gpu-e2e.test.ts
 	) || rc=1
 done
 exit $rc
