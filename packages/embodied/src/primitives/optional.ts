@@ -13,15 +13,20 @@ export const EXTRAS = ["waypoints", "align-wrist", "grasp-advisor", "object-memo
 const pureFlag = (v: unknown) => v === true || v === "true" || v === "pure";
 
 /**
- * Pure units or code mode (--units=true / --code=true) leaves the model only `act` / `run_code`:
- * an extra turned on there would not be mounted, so the robot refuses to start (fails closed) with
- * the reason instead of recording a flag that had no effect.
+ * Pure units, code or MotorMind mode (--units=true / --code=true / --mm=true) leaves the model only
+ * `act` / `run_code` / `mm_observe` and `mm_act`: an extra turned on there would not be mounted, so
+ * the robot refuses to start (fails closed) with the reason instead of recording a flag that had no
+ * effect.
  */
 export function extrasInPureMode(pi: ExtensionAPI): string | undefined {
-	const mode = pureFlag(pi.getFlag("units")) ? "--units" : pureFlag(pi.getFlag("code")) ? "--code" : undefined;
 	const on = EXTRAS.filter((f) => pi.getFlag(f) === true);
-	if (!mode || !on.length) return undefined;
-	return `${on.map((f) => `--${f}`).join(", ")} cannot run in pure ${mode} mode (only act / run_code are mounted); use ${mode}=both or drop them`;
+	if (!on.length) return undefined;
+	const extras = on.map((f) => `--${f}`).join(", ");
+	if (pi.getFlag("mm") === "true" || pi.getFlag("mm") === true)
+		return `${extras} cannot run in MotorMind mode (only mm_observe, mm_act and finish are mounted); drop them`;
+	const mode = pureFlag(pi.getFlag("units")) ? "--units" : pureFlag(pi.getFlag("code")) ? "--code" : undefined;
+	if (!mode) return undefined;
+	return `${extras} cannot run in pure ${mode} mode (only act / run_code are mounted); use ${mode}=both or drop them`;
 }
 
 export function optionalTools<D extends { name: string } = ToolDef>(

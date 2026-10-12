@@ -192,23 +192,8 @@ export function axisAngle(r: Mat3): { axis: Vec3; angle: number } {
 	return { axis: unit(w), angle };
 }
 
-/** Rotation matrix of an xyzw quaternion (normalized first), as LIBERO reports `robot0_eef_quat`. */
-export function quatToMatrix(q: readonly number[]): Mat3 {
-	const n = Math.hypot(q[0], q[1], q[2], q[3]);
-	if (!(n > 0)) throw new Error("zero-norm quaternion");
-	const [x, y, z, w] = q.map((v) => v / n);
-	return [
-		[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-		[2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-		[2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-	];
-}
-
 /** A world pose in the base frame: `R_bᵀ(p - p_b)`, `R_bᵀ R` (what the env server reports as `pose`). */
 export function toBase(base: Pose, world: Pose): Pose {
 	const rt = transpose(base.rotation);
 	return { position_m: apply(rt, sub(world.position_m, base.position_m)), rotation: matmul(rt, world.rotation) };
 }
-
-/** A base-frame vector in the world frame: `R_b v` (a displacement; no translation). */
-export const baseToWorld = (base: Pose, v: readonly number[]): Vec3 => apply(base.rotation, v);

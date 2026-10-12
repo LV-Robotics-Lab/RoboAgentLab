@@ -18,7 +18,8 @@ export const GRIPPER_SETTLE_TICKS = 32;
 
 /**
  * What the robot accepts (MotorMind's `Capabilities`, LIBERO values from spec-adapter §4.9). The env
- * server's `env.mm_observe` returns them as static fields; `supports_home` follows `--mm-home`.
+ * server's `env.mm_observe` returns them as static fields, the only copy; `supports_home` follows
+ * the server's `--mm-home`.
  */
 export type Caps = {
 	max_translation_m: number;
@@ -47,33 +48,33 @@ export type Caps = {
 	notes: string[];
 };
 
-/** LIBERO's capability table as MotorMind measured it (robosuite 1.4.1; C18 re-measures it here). */
-export const LIBERO_CAPS: Caps = {
-	max_translation_m: 0.05,
-	max_rotation_rad: 0.5,
-	max_speed_m_s: 1.0,
-	max_rotation_speed_rad_s: 10,
-	default_speed_m_s: 0.05,
-	default_rotation_speed_rad_s: Math.PI / 3,
-	control_point_offset_m: 0,
-	table_z_m: null,
-	supports_contact_stop: true,
-	contact_stop_trusted: true,
-	supports_home: false,
-	gripper_gap_measured: true,
-	gripper_open_span_m: 0.0788,
-	gripper_pad_length_m: 0.017,
-	comfortable_reach_m: 0.727,
-	reach_m: 0.78,
-	tilt_limits_deg: { roll_cw: 88.6, roll_ccw: 83.7, pitch_down: 91.7, pitch_up: 53.6 },
-	tilted_floor_m: 0.1,
-	tilt_reach_deg: 80,
-	max_object_height_m: 0.16,
-	subgoal_median_s: 21.0,
-	subgoal_verdict_s: 4.6,
-	arrival_tolerance_m: 0.003,
-	notes: [],
-};
+/** Every field `Caps` has: the env server's table must carry them all (its `caps` is the only source). */
+export const CAPS_FIELDS: readonly (keyof Caps)[] = [
+	"max_translation_m",
+	"max_rotation_rad",
+	"max_speed_m_s",
+	"max_rotation_speed_rad_s",
+	"default_speed_m_s",
+	"default_rotation_speed_rad_s",
+	"control_point_offset_m",
+	"table_z_m",
+	"supports_contact_stop",
+	"contact_stop_trusted",
+	"supports_home",
+	"gripper_gap_measured",
+	"gripper_open_span_m",
+	"gripper_pad_length_m",
+	"comfortable_reach_m",
+	"reach_m",
+	"tilt_limits_deg",
+	"tilted_floor_m",
+	"tilt_reach_deg",
+	"max_object_height_m",
+	"subgoal_median_s",
+	"subgoal_verdict_s",
+	"arrival_tolerance_m",
+	"notes",
+];
 
 /** Speeds when neither the action nor the capabilities give one (MotorMind's own fallbacks). */
 export const FALLBACK_SPEED_M_S = 0.0125;
@@ -164,6 +165,7 @@ export type Segment = {
 
 /** done / contact / limited / refused / skipped, as the env server reports a segment; failed = the call raised. */
 export type Outcome = "done" | "contact" | "limited" | "refused" | "skipped" | "failed";
+/** `closed_fraction`: 0 at the closed end, 1 wide open (opening over the open span). */
 export type Grasp = { holding: boolean | null; reason: string; closed_fraction?: number | null };
 
 /** A segment as measured, normalized from the RPC reply (SI units). */
@@ -196,15 +198,26 @@ export type Measured = {
 	timed_out?: boolean;
 };
 
+/** The aim marker's depth when neither the table nor the wrist clearance gives one: the caller's tracked clearance (m). */
+export type Aim = { aim_tracked_m?: number };
+
 /** The robot's side of the mode (`RobotSpec.motormind`): both run only while the robot lock is held. */
 export type MotorMindSpec = {
 	/** `env.mm_observe`: the observation of DESIGN §3.1 (static fields included). */
-	observe: () => Promise<Record<string, unknown>>;
+	observe: (o?: Aim) => Promise<Record<string, unknown>>;
 	/**
 	 * `env.mm_run_step` for one segment; `observe` is the observation after it: `state` (numbers) or
 	 * `full` (with the camera images). A `home` that resets the scene starts the robot's episode over.
 	 */
-	runStep: (segment: Segment, o: { timeoutMs: number; observe: "state" | "full" }) => Promise<Record<string, unknown>>;
+	runStep: (
+		segment: Segment,
+		o: { timeoutMs: number; observe: "state" | "full" } & Aim,
+	) => Promise<Record<string, unknown>>;
+	/**
+	 * The env server configuration the robot's flags ask for (the observation's `config`, key by key):
+	 * a server it attached to that runs otherwise fails the start.
+	 */
+	expect?: () => Record<string, unknown>;
 	/** The env server's endpoint (`URL[#token=HEX]`), for tests that read privileged truth beside the robot. */
 	endpoint?: () => string | undefined;
 	/** The env server's privileged truth log (`mm_truth.jsonl`, one line per observation), read at the end. */

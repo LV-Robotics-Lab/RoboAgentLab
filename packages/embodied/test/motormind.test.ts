@@ -8,8 +8,6 @@
 
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -57,20 +55,41 @@ import {
 	translationAxis,
 	way,
 } from "../src/modes/motormind/frames.ts";
-import {
-	type Caps,
-	LIBERO_CAPS,
-	MOTORMIND_EVENT,
-	type MotorMindHandle,
-	type Pose,
-} from "../src/modes/motormind/index.ts";
+import { type Caps, MOTORMIND_EVENT, type MotorMindHandle, type Pose } from "../src/modes/motormind/index.ts";
 import { CLOSED_LOOP_ENTRY } from "../src/planner/closed-loop.ts";
 import { RESULT_ENTRY } from "../src/robot.ts";
 import libero from "../src/robots/libero/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
 import { deployFlags } from "./helpers/deployment.ts";
+import { type Call, f32, fakeEnv, nd } from "./sim-stub.ts";
 
-const CAPS: Caps = { ...LIBERO_CAPS, supports_home: false };
+/** LIBERO's capability table as env_server.py sends it (motormind_rig.libero_caps, the original's values). */
+const CAPS: Caps = {
+	max_translation_m: 0.05,
+	max_rotation_rad: 0.5,
+	max_speed_m_s: 1.0,
+	max_rotation_speed_rad_s: 10,
+	default_speed_m_s: 0.05,
+	default_rotation_speed_rad_s: Math.PI / 3,
+	control_point_offset_m: 0,
+	table_z_m: 0,
+	supports_contact_stop: true,
+	contact_stop_trusted: true,
+	supports_home: false,
+	gripper_gap_measured: true,
+	gripper_open_span_m: 0.0788,
+	gripper_pad_length_m: 0.017,
+	comfortable_reach_m: 0.727,
+	reach_m: 0.78,
+	tilt_limits_deg: { roll_cw: 88.6, roll_ccw: 83.7, pitch_down: 91.7, pitch_up: 53.6 },
+	tilted_floor_m: 0.1,
+	tilt_reach_deg: 80,
+	max_object_height_m: 0.16,
+	subgoal_median_s: 21.0,
+	subgoal_verdict_s: 4.6,
+	arrival_tolerance_m: 0.003,
+	notes: [],
+};
 const AT: Pose = { position_m: [0.45, 0, 0.3], rotation: IDENTITY };
 const close = (a: number, b: number, tol = 1e-9) => assert.ok(Math.abs(a - b) <= tol, `${a} != ${b} (tol ${tol})`);
 const closeVec = (a: readonly number[], b: readonly number[], tol = 1e-9) => {
@@ -189,6 +208,10 @@ test("C4: speeds are SI and bounded per tick: 25 mm/s sends at most 1.25 mm a ti
 	close(tickLimit({ kind: "rotate", speed: 10 }, CAPS), 0.5);
 	const wait = segmentsFor(toDelta(parseAction({ type: "wait", seconds: 0.52 }), CAPS), AT, CAPS);
 	assert.deepEqual([wait.length, wait[0].ticks], [1, 10]);
+	// The original's count: at least one tick, the seconds over the period truncated.
+	const ticks = (seconds: number) =>
+		segmentsFor(toDelta(parseAction({ type: "wait", seconds }), CAPS), AT, CAPS)[0].ticks;
+	assert.deepEqual([ticks(0.3), ticks(0.02)], [5, 1]);
 	const grip = segmentsFor(toDelta(parseAction({ type: "gripper", state: "close", width_mm: 30 }), CAPS), AT, CAPS);
 	assert.equal(grip.length, 1);
 	assert.equal(grip[0].state, "close");
@@ -224,7 +247,7 @@ test("C4: a measurement comes back in SI units and reads in mm (2 decimals) and 
 	)[0];
 	assert.equal(report(measured({ outcome: "contact", abort_reason: "blocked" }, push)).axis, undefined);
 	const grip = segmentsFor(toDelta(parseAction({ type: "gripper", state: "close" }), CAPS), AT, CAPS)[0];
-	assert.deepEqual(report(measured({ outcome: "done", detail: { opening_m: 0.0212 } }, grip)).detail, {
+	assert.deepEqual(report(measured({ outcome: "done", detail: { opening_mm: 21.2 } }, grip)).detail, {
 		opening_mm: 21.2,
 	});
 	assert.equal(measured({ outcome: "exploded" }, grip).outcome, "failed");
@@ -452,6 +475,28 @@ test("C5: the reach limit cuts a move to whole mm that fit and drops the rest; a
 		).shortened,
 		false,
 	);
+	// Each move is judged from where it starts, and what fits is measured against the reach: from 790 mm
+	// out, 10 mm further is refused (the 5 mm slack does not make room to cut it to), and after 30 mm back
+	// a 34 mm move out again is cut to the 20 mm that end inside the reach.
+	assert.match(
+		String(
+			fitToReach(toDeltas({ type: "move", direction: "forward", distance_mm: 10 }, CAPS), outside, CAPS).refused,
+		),
+		/would end 800 mm from the base, past the 780 mm reach, and no part of it fits/,
+	);
+	const back = fitToReach(
+		toDeltas(
+			[
+				{ type: "move", direction: "backward", distance_mm: 30 },
+				{ type: "move", direction: "forward", distance_mm: 34 },
+			],
+			CAPS,
+		),
+		outside,
+		CAPS,
+	);
+	assert.equal(back.shortened, true);
+	close(back.deltas[1].magnitude, 0.02, 1e-12);
 	// Vertical moves never change the horizontal reach.
 	assert.equal(
 		fitToReach(toDeltas({ type: "move", direction: "up", distance_mm: 300 }, CAPS), outside, CAPS).shortened,
@@ -556,12 +601,30 @@ test("--preset motormind expands to the faithful flags and needs a robot with Mo
 // the robot side, on a fake LIBERO env server
 
 type Handler = (event: any, ctx: any) => unknown;
-const nd = (dtype: string, shape: number[], data: Buffer) => ({ __ndarray__: data.toString("base64"), dtype, shape });
-const f32 = (v: number[], shape = [v.length]) => nd("float32", shape, Buffer.from(Float32Array.from(v).buffer));
+type Json = Record<string, any>;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** An image as the env server sends one: base64 JPEG bytes (a marker and an end; nothing decodes it). */
+const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
 
-/** A fake LIBERO env server with MotorMind's two RPCs: a segment reaches its goal in ticks of max_step. */
-async function fakeEnv(o: { mm?: boolean; maxSteps?: number } = {}) {
+/** The configuration a server pi starts for `values` reports (`config`), as env_server.py's static fields carry it. */
+function startedWith(values: Record<string, unknown>): Json {
+	const preset = values.preset === "motormind";
+	return {
+		side_camera: String(values["libero-side-camera"] ?? (preset ? "true" : "false")) === "true",
+		settle_ticks: Number(values["libero-settle-ticks"] ?? (preset ? 32 : 0)),
+		mm_home: String(values["mm-home"] ?? "refuse"),
+		max_episode_steps: Number(values["libero-max-steps"] ?? (preset ? 300000 : 10000)),
+		truth: null,
+	};
+}
+
+/**
+ * A fake LIBERO env server with MotorMind's two RPCs, answering in env_server.py's wire format: a
+ * segment reaches its goal in ticks of max_step, every tick one transition. Like the real one it keeps
+ * the steps of a tool call until the next call acknowledges the reply (`delivered`), and hands them
+ * back otherwise. `successAt`: LIBERO's success latches at that env step.
+ */
+async function fakeMmEnv(o: { mm?: boolean; maxSteps?: number; successAt?: number; config: Json }) {
 	const s = {
 		steps: 0,
 		clock: 0,
@@ -574,48 +637,62 @@ async function fakeEnv(o: { mm?: boolean; maxSteps?: number } = {}) {
 		delayMs: 0,
 		stallMs: 0,
 		over: false,
+		success: false,
+		call: 0,
+		unacked: undefined as { id: number; transitions: Json[] } | undefined,
 	};
 	const obs = () => ({
 		main_images: nd("uint8", [4, 4, 3], Buffer.alloc(48)),
 		wrist_images: nd("uint8", [4, 4, 3], Buffer.alloc(48)),
 		states: f32([...s.pos, 0, 0, 0, 0.04, -0.04]),
 	});
-	const transition = () => ({
-		action: f32([0, 0, 0, 0, 0, 0, -1]),
-		obs: obs(),
-		reward: 0,
-		terminated: false,
-		truncated: s.steps >= (o.maxSteps ?? 1e9),
-	});
-	const view = (value: number) => ({ marked512: nd("uint8", [8, 8, 3], Buffer.alloc(192, value)) });
-	const observation = () => ({
+	const transition = () => {
+		s.steps++;
+		s.clock += 0.05;
+		if (o.successAt && s.steps >= o.successAt) s.success = true;
+		const truncated = s.steps >= (o.maxSteps ?? 1e9);
+		return { action: f32([0, 0, 0, 0, 0, 0, -1]), obs: obs(), reward: 0, terminated: s.success, truncated };
+	};
+	const view = () => ({ marked768: JPEG, marked512: JPEG, raw512: JPEG });
+	const observation = (images = true) => ({
 		obs_id: ++s.obsId,
 		frame_clock_s: s.clock,
-		base_pose: { position_m: [-0.66, 0, 0.912], rotation: IDENTITY },
-		caps: { max_translation_m: 0.05, max_rotation_rad: 0.5 },
+		episode_id: 1,
+		ticks: s.steps,
+		base_pose: { position_m: [-0.66, 0, 0.912], rotation: IDENTITY, quat_xyzw: [0, 0, 0, 1] },
+		caps: { ...CAPS, supports_home: o.config.mm_home === "reset" },
 		output_max: [0.05, 0.05, 0.05, 0.5, 0.5, 0.5],
-		pose: { position_m: [...s.pos], rotation: s.rot },
-		gripper: { opening_mm: 80, commanded: "open", moving: false },
-		grasp: { holding: null, reason: "not closed" },
+		pose: { position_m: [...s.pos], rotation: s.rot, quat_xyzw: [0, 0, 0, 1] },
+		gripper: { opening_mm: 80, commanded: "open", channel: -1, moving: false },
+		grasp: { holding: null, reason: "not closed", opening_mm: 80, closed_fraction: 1.015 },
 		table_z_m: 0,
-		episode_over: s.over,
-		terminated: false,
+		terminated: s.success,
 		truncated: s.over,
-		cameras: { scene: view(10), side: view(20), wrist: view(30) },
-		degraded: {},
+		episode_over: s.over || s.success,
+		degraded: { table_z: false, side_mount: false, side_mount_reason: null },
+		config: o.config,
+		...(images ? { cameras: { scene: view(), side: view(), wrist: view() }, mosaic_jpeg: JPEG } : {}),
 	});
-	const answer = async (method: string, kwargs: Record<string, any>): Promise<unknown> => {
+	/** The env steps of a call whose reply pi did not receive (`delivered` is not its id). */
+	const handBack = (delivered: unknown): Json[] => {
+		if (typeof delivered !== "number") return [];
+		const held = s.unacked;
+		s.unacked = undefined;
+		return held && held.id !== delivered ? held.transitions : [];
+	};
+	const keep = (transitions: Json[]) => {
+		if (!transitions.length) return null;
+		s.unacked = { id: ++s.call, transitions };
+		return s.call;
+	};
+	const answer = async ({ method, kwargs }: Call): Promise<unknown> => {
 		if (method === "code.api") return codeApiReply("libero", kwargs.tier);
 		if (method === "env.reset") {
 			s.resets.push(kwargs);
-			s.steps = 0;
-			s.over = false;
-			s.pos = [0.45, 0, 0.3];
-			s.rot = IDENTITY;
+			Object.assign(s, { steps: 0, over: false, success: false, pos: [0.45, 0, 0.3], rot: IDENTITY });
+			s.unacked = undefined;
 			if (!kwargs.tool_call) return [obs(), {}];
 			const transitions = [transition(), transition(), transition()];
-			s.steps += 3;
-			s.clock += 0.15;
 			return [obs(), { transitions, settle_ticks: 3 }];
 		}
 		if (method === "env.get_task_language") return "put the bowl on the plate";
@@ -623,7 +700,8 @@ async function fakeEnv(o: { mm?: boolean; maxSteps?: number } = {}) {
 		if (method === "env.render_camera") {
 			const n = kwargs.height as number;
 			const rgb = nd("uint8", [n, n, 3], Buffer.alloc(n * n * 3, 40));
-			return kwargs.depth ? [rgb, f32(new Array(n * n).fill(1), [n, n])] : rgb;
+			const depth = nd("float32", [n, n], Buffer.from(new Float32Array(n * n).fill(1).buffer));
+			return kwargs.depth ? [rgb, depth] : rgb;
 		}
 		if (method === "env.get_camera_meta") {
 			const n = kwargs.height as number;
@@ -643,11 +721,16 @@ async function fakeEnv(o: { mm?: boolean; maxSteps?: number } = {}) {
 		}
 		if (method === "env.mm_observe") {
 			if (o.mm === false) throw new Error("no such method env.mm_observe");
-			return observation();
+			const late = handBack(kwargs.delivered);
+			const out = observation(kwargs.images !== false);
+			return kwargs.delivered === undefined ? out : { ...out, transitions: late, call_id: keep(late) };
 		}
 		if (method === "env.mm_run_step") {
 			const seg = kwargs.seg;
 			s.segments.push(seg);
+			// A home starts a new episode: the last one's undelivered steps are dropped, not handed back.
+			const held = handBack(kwargs.delivered);
+			const late = seg.kind === "home" ? [] : held;
 			if (s.stallMs) {
 				const ms = s.stallMs;
 				s.stallMs = 0;
@@ -655,38 +738,30 @@ async function fakeEnv(o: { mm?: boolean; maxSteps?: number } = {}) {
 			}
 			if (s.delayMs) await sleep(s.delayMs);
 			const after = () => {
-				const full = observation();
-				if (kwargs.observe === "full") return full;
-				const { cameras: _, ...state } = full;
-				return state;
+				const full = observation(kwargs.observe === "full");
+				return full;
+			};
+			const reply = (out: Json, fresh: Json[]) => {
+				const transitions = [...late, ...fresh];
+				return {
+					...out,
+					observation: after(),
+					...(kwargs.tool_call
+						? { transitions, late_steps: late.length, call_id: seg.kind === "home" ? null : keep(transitions) }
+						: {}),
+				};
 			};
 			if (seg.kind === "home") {
 				s.homes++;
-				s.steps = 0;
-				s.over = false;
-				s.pos = [0.45, 0, 0.3];
-				s.rot = IDENTITY;
-				const transitions = [transition(), transition(), transition()];
-				s.steps += 3;
-				return {
-					outcome: "done",
-					message: "env.reset()",
-					episode_reset: true,
-					settle_ticks: 3,
-					ticks: 3,
-					obs: obs(),
-					observation: after(),
-					...(kwargs.tool_call ? { transitions } : {}),
-				};
+				Object.assign(s, { steps: 0, over: false, success: false, pos: [0.45, 0, 0.3], rot: IDENTITY });
+				const settle = [transition(), transition(), transition()];
+				return reply(
+					{ outcome: "done", message: "env.reset()", episode_reset: true, settle_ticks: 3, ticks: 3, obs: obs() },
+					settle,
+				);
 			}
-			if (s.over)
-				return {
-					outcome: "refused",
-					message: "the episode is over",
-					episode_over: true,
-					observation: after(),
-					transitions: [],
-				};
+			if (s.over || s.success)
+				return reply({ outcome: "refused", message: "the episode is over", episode_over: true }, []);
 			let ticks = 1;
 			let moved = 0;
 			let along = 0;
@@ -703,67 +778,48 @@ async function fakeEnv(o: { mm?: boolean; maxSteps?: number } = {}) {
 				s.rot = seg.goal_rotation;
 			} else if (seg.kind === "gripper") ticks = 32;
 			else if (seg.kind === "wait") ticks = seg.ticks;
-			const transitions = Array.from({ length: ticks }, () => {
-				s.steps++;
-				return transition();
-			});
-			s.clock += ticks * 0.05;
+			const fresh = Array.from({ length: ticks }, transition);
 			s.over = s.steps >= (o.maxSteps ?? 1e9);
-			return {
-				outcome: "done",
-				abort_reason: "",
-				moved_m: moved,
-				along_axis_m: seg.kind === "translate" ? along : moved,
-				lateral_m: 0,
-				turned_rad: turned,
-				pose_after: { position_m: [...s.pos], rotation: s.rot },
-				ticks,
-				elapsed_s: 0.01,
-				frame_clock_s: s.clock,
-				...(seg.kind === "gripper"
-					? { detail: { opening_m: 0.0012 }, grasp: { holding: false, reason: "closed on nothing" } }
-					: {}),
-				episode_over: s.over,
-				observation: after(),
-				...(kwargs.tool_call ? { transitions } : {}),
-			};
+			return reply(
+				{
+					outcome: "done",
+					abort_reason: "",
+					moved_m: moved,
+					along_axis_m: seg.kind === "translate" ? along : moved,
+					lateral_m: 0,
+					turned_rad: turned,
+					pose_after: { position_m: [...s.pos], rotation: s.rot, quat_xyzw: [0, 0, 0, 1] },
+					ticks,
+					elapsed_s: 0.01,
+					frame_clock_s: s.clock,
+					...(seg.kind === "gripper"
+						? { detail: { opening_mm: 1.2 }, grasp: { holding: false, reason: "closed on nothing" } }
+						: {}),
+					episode_over: s.over || s.success,
+					terminated: s.success,
+				},
+				fresh,
+			);
 		}
-		return { status: "ok" };
+		return undefined;
 	};
-	const server: Server = createServer((req, res) => {
-		let body = "";
-		req.on("data", (c) => {
-			body += c;
-		});
-		req.on("end", async () => {
-			const { method, kwargs = {} } = JSON.parse(body);
-			try {
-				res.end(JSON.stringify({ ok: true, result: await answer(method, kwargs) }));
-			} catch (err) {
-				res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
-			}
-		});
-	});
-	server.keepAliveTimeout = 120_000;
-	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-	return {
-		url,
-		state: s,
-		close: () => {
-			server.closeAllConnections();
-			server.close();
-		},
-	};
+	const server = await fakeEnv(answer);
+	return { ...server, state: s };
 }
 
 /** LIBERO in a stub pi on the fake env (flags as on the command line); `model` is the session's model. */
 async function session(
 	t: { after: (fn: () => void) => void },
 	values: Record<string, unknown>,
-	o: { mm?: boolean; maxSteps?: number; model?: { provider: string; id: string } } = {},
+	o: {
+		mm?: boolean;
+		maxSteps?: number;
+		successAt?: number;
+		model?: { provider: string; id: string };
+		config?: Json;
+	} = {},
 ) {
-	const env = await fakeEnv(o);
+	const env = await fakeMmEnv({ ...o, config: { ...startedWith(values), ...o.config } });
 	t.after(env.close);
 	const cwd = mkdtempSync(join(tmpdir(), "motormind-"));
 	const flags: Record<string, unknown> = deployFlags({
@@ -836,6 +892,7 @@ async function session(
 		}
 	};
 	libero(pi);
+	const loaded = [...tools.keys()];
 	await emit("session_start", { reason: "startup" });
 	const finish = async () => {
 		await emit("before_agent_start", { prompt: "Solve the task.", systemPrompt: "" });
@@ -857,6 +914,9 @@ async function session(
 		flags: registered,
 		active: () => active,
 		handle: () => handle,
+		/** The tools registered at load, and now. */
+		loaded,
+		tools: () => [...tools.keys()],
 	};
 }
 
@@ -866,6 +926,8 @@ test("--preset motormind: pure mode is mm_observe, mm_act and finish; mm_act cut
 	const s = await session(t, { preset: "motormind" });
 	assert.equal(s.unavailable(), false, s.errors.join("\n"));
 	assert.deepEqual(s.active(), ["mm_observe", "mm_act", "finish"]);
+	// The tools are registered at the start that turns the mode on, not at load.
+	assert.ok(!s.loaded.some((n) => n.startsWith("mm_")), s.loaded.join(", "));
 	assert.equal(s.flags["memory-profile"], undefined, "the preset expands the flag, the raw value stays unset");
 	// The settle ticks of the reset count as env steps (and went to the recorder).
 	assert.deepEqual(s.env.state.resets, [{ tool_call: true }]);
@@ -874,7 +936,15 @@ test("--preset motormind: pure mode is mm_observe, mm_act and finish; mm_act cut
 	const o = body(seen);
 	assert.deepEqual(o.pose.position_mm, [450, 0, 300]);
 	assert.equal(o.caps.supports_home, false);
-	assert.equal(seen.content.filter((c: any) => c.type === "image").length, 1, "one mosaic image");
+	assert.equal(o.caps.reach_m, 0.78, "the server's capability table");
+	assert.deepEqual(
+		seen.content.filter((c: any) => c.type === "image").map((c: any) => c.mimeType),
+		["image/jpeg"],
+		"one mosaic image",
+	);
+	// tracked_mm goes to the server as the aim marker's tracked depth (m).
+	await s.call("mm_observe", { tracked_mm: 90 });
+	assert.equal(s.env.calls.filter((c) => c.method === "env.mm_observe").at(-1)?.kwargs.aim_tracked_m, 0.09);
 	const acted = await s.call("mm_act", { type: "move", direction: "left", distance_mm: 120, speed_mm_s: 25 });
 	assert.ok(!acted.isError, acted.content[0].text);
 	const r = body(acted);
@@ -894,6 +964,9 @@ test("--preset motormind: pure mode is mm_observe, mm_act and finish; mm_act cut
 	);
 	for (const x of sent) close(x.max_step, 0.00125, 1e-12);
 	assert.deepEqual(r.pose.position_mm, [450, 120, 300]);
+	// Every mm call says which reply it got last: each one acknowledges the one before.
+	const runs = s.env.calls.filter((c) => c.method === "env.mm_run_step").map((c) => c.kwargs.delivered);
+	assert.deepEqual(runs, [0, 1, 2]);
 	// Outside a robot tool the callbacks refuse to run: the lock is held only by a tool call.
 	const handle = s.handle();
 	assert.ok(handle, "the mode published its handle");
@@ -915,6 +988,24 @@ test("--preset motormind: pure mode is mm_observe, mm_act and finish; mm_act cut
 	assert.equal(result.motormind.ticks, 96);
 	assert.equal(result.motormind.status, null);
 	assert.deepEqual(result.motormind.home, { mode: "refuse", asked: 0, refused: 0, reset: 0 });
+});
+
+test("a success mid-segment: the segment runs to its end, then the episode is over", async (t) => {
+	// Success latches at env step 10 (3 settle steps, then the 7th of the first 40 mm segment's 16 ticks).
+	const s = await session(t, { preset: "motormind" }, { successAt: 10 });
+	const r = body(await s.call("mm_act", { type: "move", direction: "up", distance_mm: 120 }));
+	assert.deepEqual(
+		r.segments.map((x: any) => [x.outcome, x.ticks]),
+		[
+			["done", 16],
+			["refused", 0],
+			["refused", 0],
+		],
+	);
+	assert.equal(r.episode_over, true);
+	const result = await s.finish();
+	assert.deepEqual([result.terminated, result.success_step, result.env_steps], [true, 10, 3 + 16]);
+	assert.equal(result.motormind.status, "env_success");
 });
 
 test("a cancel stops mm_act at the next segment boundary: the segment in flight finishes, the rest are skipped", async (t) => {
@@ -946,7 +1037,8 @@ test("a cancel stops mm_act at the next segment boundary: the segment in flight 
 });
 
 test("a segment RPC that times out makes mm_act timed_out; the closed loop refuses mm_act until mm_observe", async (t) => {
-	const s = await session(t, { preset: "motormind", "mm-step-timeout": "1" });
+	// The stalled segment (env steps 4 to 19) latches success on the server after the RPC timed out.
+	const s = await session(t, { preset: "motormind", "mm-step-timeout": "1" }, { successAt: 12 });
 	s.env.state.stallMs = 1500;
 	const acted = await s.call("mm_act", { type: "move", direction: "down", distance_mm: 80 });
 	const r = body(acted);
@@ -974,7 +1066,11 @@ test("a segment RPC that times out makes mm_act timed_out; the closed loop refus
 		s.entries.filter((e) => e.type === CLOSED_LOOP_ENTRY).map((e) => e.data.kind),
 		["unknown_outcome", "refused", "reobserved"],
 	);
+	// The steps the server ran while pi had given up came back with the observation: the episode
+	// counts them, and their success.
+	assert.equal(body(seen).terminated, true);
 	const result = await s.finish();
+	assert.deepEqual([result.env_steps, result.terminated, result.success_step], [3 + 16, true, 12]);
 	assert.equal(result.motormind.timed_out, 1);
 	assert.deepEqual(result.unknown_outcomes, 1);
 	// mm-step-timeout differs from the faithful default: a labelled variant.
@@ -1019,28 +1115,57 @@ test("past the episode's end every segment is refused with episode_over", async 
 	assert.deepEqual([again.segments[0].outcome, again.episode_over], ["refused", true]);
 });
 
-test("the robot-side checks fail the start closed: another mode, a token budget, no mm RPCs, another model", async (t) => {
+test("the robot-side checks fail the start closed: another mode, exploration, extras, a token budget, no mm RPCs, another model, another server", async (t) => {
 	for (const [values, o] of [
 		[{ preset: "motormind", units: "true" }, {}],
 		[{ mm: "true", code: "true", "memory-profile": "off" }, {}],
+		[{ mm: "both", "memory-profile": "off" }, {}],
+		[{ mm: "1", "memory-profile": "off" }, {}],
+		[{ mm: "true", explore: true }, {}],
 		[{ preset: "motormind", "max-tokens": "1000" }, {}],
 		[{ preset: "motormind", waypoints: true }, {}],
 		[{ preset: "motormind", "mm-home": "arm" }, {}],
 		[{ preset: "motormind" }, { mm: false }],
 		[{ preset: "motormind" }, { model: { provider: "strata", id: "qwen3.8-flash-next" } }],
+		// --env-url attached to a server started otherwise than the flags say.
+		[{ preset: "motormind" }, { config: { side_camera: false } }],
+		[{ preset: "motormind" }, { config: { mm_home: "reset" } }],
+		[{ preset: "motormind" }, { config: { settle_ticks: 0, max_episode_steps: 10000 } }],
 	] as const) {
 		const s = await session(t, values, o);
 		assert.deepEqual(s.active(), [], JSON.stringify(values));
-		assert.ok(s.unavailable(), `${JSON.stringify(values)}: ${s.errors.join("; ")}`);
+		assert.ok(s.unavailable(), `${JSON.stringify([values, o])}: ${s.errors.join("; ")}`);
 	}
+	const why = async (values: Record<string, unknown>, o = {}) => (await session(t, values, o)).errors.join("; ");
+	assert.match(await why({ mm: "both", "memory-profile": "off" }), /--mm must be true or false/);
+	assert.match(await why({ mm: "true", explore: true }), /--explore cannot run in MotorMind mode/);
+	assert.match(await why({ preset: "motormind", waypoints: true }), /--waypoints cannot run in MotorMind mode/);
+	assert.match(
+		await why({ preset: "motormind" }, { config: { side_camera: false } }),
+		/runs with side_camera=false, but the flags ask for side_camera=true/,
+	);
 	const ok = await session(
 		t,
 		{ preset: "motormind" },
 		{ model: { provider: "motormind", id: "strata/qwen3.8-flash-next" } },
 	);
 	assert.equal(ok.unavailable(), false, ok.errors.join("\n"));
-	// Off, the tools are not served: tool mode never sees them.
+	// Off, the tools are neither registered nor served: tool mode never sees them.
 	const off = await session(t, { "memory-profile": "off" });
-	assert.ok(!off.active().some((n) => n.startsWith("mm_")), off.active().join(", "));
+	assert.ok(!off.tools().some((n) => n.startsWith("mm_")), off.tools().join(", "));
 	assert.ok(off.active().includes("move_to"));
+});
+
+test("the result's status: the robot or the model failing is an error", async (t) => {
+	const s = await session(t, { preset: "motormind" });
+	await s.emit("before_agent_start", { prompt: "Solve the task.", systemPrompt: "" });
+	await s.emit("agent_start");
+	await s.emit("message_end", {
+		message: { role: "assistant", stopReason: "error", errorMessage: "provider down", content: [] },
+	});
+	await s.emit("agent_end", { messages: [] });
+	await s.emit("session_shutdown", { reason: "quit" });
+	const result = s.entries.find((e) => e.type === RESULT_ENTRY)?.data;
+	assert.equal(result.planner_error, "provider down");
+	assert.equal(result.motormind.status, "error");
 });

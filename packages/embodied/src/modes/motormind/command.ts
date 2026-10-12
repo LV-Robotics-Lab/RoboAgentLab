@@ -400,10 +400,10 @@ export function toDeltas(payload: unknown, caps: Caps): Delta[] {
 /**
  * The reach limit (spec-executor §4.3), on the deltas in place from the tool at `start`: only the
  * horizontal distance to the base counts, and a push ends the check (contact decides where it
- * stops). A translation may end within the reach, or at most 5 mm further out than the tool is now; one
- * that would not is cut to what fits (whole mm, rounded down, so a re-sent number is not refused
- * again) and the rest dropped. Under 1 mm fitting it runs when it ends within the reach plus the
- * arrival tolerance, and is refused otherwise.
+ * stops). Each translation, from where the ones before it end, may end within the reach or at most
+ * 5 mm further out than it starts; one that would not is cut to what fits inside the reach (whole
+ * mm, rounded down, so a re-sent number is not refused again) and the rest dropped. Under 1 mm
+ * fitting it runs when it ends within the reach plus the arrival tolerance, and is refused otherwise.
  */
 export function fitToReach(
 	deltas: Delta[],
@@ -411,8 +411,6 @@ export function fitToReach(
 	caps: Caps,
 ): { deltas: Delta[]; shortened: boolean; refused?: string } {
 	let p: Vec3 = [...start.position_m];
-	// The slack is from where the tool is now: a command that started inside the reach ends within it.
-	const limit = Math.max(caps.reach_m, Math.hypot(p[0], p[1]) + REACH_SLACK_M);
 	for (let i = 0; i < deltas.length; i++) {
 		const d = deltas[i];
 		if (d.kind !== "translate" || !d.axis) continue;
@@ -421,14 +419,16 @@ export function fitToReach(
 		const horizontal = Math.hypot(d.axis[0], d.axis[1]);
 		const now = Math.hypot(p[0], p[1]);
 		const out = Math.hypot(end[0], end[1]);
-		if (horizontal < 1e-12 || out <= limit + 1e-12) {
+		// The slack is from where this move starts: one that starts past the reach may still edge out 5 mm.
+		if (horizontal < 1e-12 || out <= Math.max(caps.reach_m, now + REACH_SLACK_M) + 1e-12) {
 			p = end;
 			continue;
 		}
+		// What fits is measured against the reach itself.
 		const u = [d.axis[0] / horizontal, d.axis[1] / horizontal];
 		const b = p[0] * u[0] + p[1] * u[1];
-		const disc = b * b - (now * now - limit * limit);
-		const reach = disc >= 0 ? Math.max(0, -b + Math.sqrt(disc)) : 0;
+		const inside = caps.reach_m * caps.reach_m - now * now + b * b;
+		const reach = Math.max(0, Math.sqrt(Math.max(0, inside)) - b);
 		const fitsMm = Math.floor(reach * 1000 + 1e-9);
 		if (fitsMm < MIN_FIT_MM) {
 			if (out <= caps.reach_m + caps.arrival_tolerance_m) {
@@ -485,7 +485,8 @@ export function segmentsFor(d: Delta, start: Pose, caps: Caps): Segment[] {
 					...one,
 					kind: "wait",
 					seconds: d.seconds,
-					ticks: Math.round((d.seconds ?? 0) / DT),
+					// The server's count, as the original's: at least one tick, the seconds over the period truncated.
+					ticks: Math.max(1, Math.trunc((d.seconds ?? 0) / DT)),
 					duration_s: d.seconds ?? 0,
 				},
 			];
@@ -535,35 +536,16 @@ export const tickLimit = (d: Pick<Delta, "kind" | "speed">, caps: Caps) =>
 // ---------------------------------------------------------------------------
 // measurements
 
-const num = (...vs: unknown[]) => {
-	for (const v of vs) if (typeof v === "number" && Number.isFinite(v)) return v;
-	return undefined;
-};
+const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 
-/** A pose from the forms a reply may carry it in: `{position_m, rotation}`, `{pos, R}`, `{pos, quat_xyzw}`. */
+/** A pose as the env server sends it: `{position_m: [3], rotation: 3x3 rows}` (base frame). */
 export function poseOf(v: unknown): Pose | undefined {
 	if (!isObject(v)) return undefined;
-	const p = (v.position_m ?? v.position ?? v.pos ?? v.p) as unknown;
-	const r = (v.rotation ?? v.R ?? v.rot) as unknown;
+	const { position_m: p, rotation: r } = v;
 	if (!Array.isArray(p) || p.length !== 3) return undefined;
-	const position_m = p.map(Number) as Vec3;
-	if (Array.isArray(r) && r.length === 3 && r.every((row) => Array.isArray(row) && row.length === 3))
-		return { position_m, rotation: r.map((row: unknown[]) => row.map(Number)) as Mat3 };
-	const q = (v.quat_xyzw ?? v.quat) as unknown;
-	if (Array.isArray(q) && q.length === 4) {
-		const [x, y, z, w] = q.map(Number);
-		const n = Math.hypot(x, y, z, w) || 1;
-		const [a, b, c, d] = [x / n, y / n, z / n, w / n];
-		return {
-			position_m,
-			rotation: [
-				[1 - 2 * (b * b + c * c), 2 * (a * b - c * d), 2 * (a * c + b * d)],
-				[2 * (a * b + c * d), 1 - 2 * (a * a + c * c), 2 * (b * c - a * d)],
-				[2 * (a * c - b * d), 2 * (b * c + a * d), 1 - 2 * (a * a + b * b)],
-			],
-		};
-	}
-	return undefined;
+	if (!Array.isArray(r) || r.length !== 3 || !r.every((row) => Array.isArray(row) && row.length === 3))
+		return undefined;
+	return { position_m: p.map(Number) as Vec3, rotation: r.map((row: unknown[]) => row.map(Number)) as Mat3 };
 }
 
 const OUTCOMES: readonly Outcome[] = ["done", "contact", "limited", "refused", "skipped", "failed"];
@@ -573,21 +555,16 @@ export function measured(raw: Record<string, unknown>, seg: Segment): Measured {
 	const detail = isObject(raw.detail) ? raw.detail : {};
 	const outcome = String(raw.outcome ?? "failed") as Outcome;
 	const abort = String(raw.abort_reason ?? "");
-	const opening = num(
-		detail.opening_m,
-		num(detail.opening_mm) !== undefined ? (detail.opening_mm as number) / 1000 : undefined,
-	);
-	const asked = num(
-		detail.asked_m,
-		num(detail.asked_mm) !== undefined ? (detail.asked_mm as number) / 1000 : undefined,
-	);
+	// The gripper's detail comes in mm (`opening_mm`, `asked_mm`); kept in m like every measurement.
+	const opening = num(detail.opening_mm);
+	const asked = num(detail.asked_mm);
 	return {
 		kind: seg.kind,
 		label: seg.label,
 		outcome: OUTCOMES.includes(outcome) ? outcome : "failed",
 		abort_reason: abort === "blocked" || abort === "skidded" ? abort : "",
 		moved_m: num(raw.moved_m) ?? 0,
-		along_axis_m: num(raw.along_axis_m, raw.moved_m) ?? 0,
+		along_axis_m: num(raw.along_axis_m) ?? 0,
 		lateral_m: num(raw.lateral_m) ?? 0,
 		turned_rad: num(raw.turned_rad) ?? 0,
 		...(poseOf(raw.pose_after) ? { pose_after: poseOf(raw.pose_after) } : {}),
@@ -598,8 +575,8 @@ export function measured(raw: Record<string, unknown>, seg: Segment): Measured {
 		...(num(raw.hold_ticks) !== undefined ? { hold_ticks: num(raw.hold_ticks) } : {}),
 		elapsed_s: num(raw.elapsed_s) ?? 0,
 		...(num(raw.frame_clock_s) !== undefined ? { frame_clock_s: num(raw.frame_clock_s) } : {}),
-		...(opening !== undefined ? { opening_m: opening } : {}),
-		...(asked !== undefined ? { asked_m: asked } : {}),
+		...(opening !== undefined ? { opening_m: opening / 1000 } : {}),
+		...(asked !== undefined ? { asked_m: asked / 1000 } : {}),
 		...(isObject(raw.grasp) ? { grasp: raw.grasp as Grasp } : {}),
 		episode_over: raw.episode_over === true,
 		message: String(raw.message ?? ""),

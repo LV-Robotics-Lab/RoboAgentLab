@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { MM_TOOL_SCHEMAS } from "../src/modes/motormind/index.ts";
 import { units } from "../src/modes/units/index.ts";
 import { geometryDefs } from "../src/primitives/geometry.ts";
 import behavior from "../src/robots/behavior/index.ts";
@@ -72,6 +73,11 @@ const ROBOTS: Record<string, (pi: ExtensionAPI) => unknown> = {
 		),
 	geometry_agentview_wrist: geometryOf(["agentview", "wrist"]),
 	geometry_third_person_wrist: geometryOf(["third_person", "wrist"]),
+	// MotorMind mode's tools (../src/modes/motormind), which LIBERO registers at start with --mm=true.
+	motormind: (pi) => {
+		for (const t of MM_TOOL_SCHEMAS)
+			pi.registerTool({ ...t, execute: async () => ({ content: [], details: {} }) } as never);
+	},
 };
 type Tool = { name: string; description: string; parameters: unknown };
 

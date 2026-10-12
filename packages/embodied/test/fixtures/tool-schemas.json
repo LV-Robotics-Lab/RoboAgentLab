@@ -2668,97 +2668,6 @@
 				}
 			},
 			{
-				"name": "mm_observe",
-				"description": "MotorMind: observe the scene without moving. Returns the tool pose in the robot's base frame (mm; forward +X, left +Y, up +Z), the gripper opening and grasp state, the clearance under the tool, the table height, the frame clock, and one image with the scene, side and wrist views side by side.",
-				"parameters": {
-					"type": "object",
-					"properties": {}
-				}
-			},
-			{
-				"name": "mm_act",
-				"description": "MotorMind: run ONE action in the robot's base frame (mm, deg): move (direction or axis, distance_mm; stop_on_contact = a push), rotate (direction or axis, angle_deg, about the tool point), gripper (state), wait (seconds) or home. It is cut into equal segments (at most 50 mm or 0.5 rad each) whose measured outcome, along-axis and lateral motion, turn, opening and grasp come back with the observation after it; a segment that does not end done stops the rest of the action.",
-				"parameters": {
-					"type": "object",
-					"required": [
-						"type"
-					],
-					"properties": {
-						"type": {
-							"type": "string",
-							"enum": [
-								"move",
-								"rotate",
-								"gripper",
-								"home",
-								"wait"
-							]
-						},
-						"direction": {
-							"type": "string",
-							"description": "move: forward, backward, left (+Y), right, up, down; rotate: yaw_left, yaw_right (also clockwise / cw, anticlockwise / ccw), pitch_up, pitch_down, roll_ccw, roll_cw"
-						},
-						"axis": {
-							"type": "array",
-							"items": {
-								"type": "number"
-							},
-							"minItems": 3,
-							"maxItems": 3,
-							"description": "Instead of direction: [x, y, z] in the base frame"
-						},
-						"distance_mm": {
-							"type": "number",
-							"description": "move: how far (a positive magnitude)"
-						},
-						"angle_deg": {
-							"type": "number",
-							"description": "rotate: how far (a positive magnitude)"
-						},
-						"speed_mm_s": {
-							"type": "number"
-						},
-						"rot_speed_deg_s": {
-							"type": "number"
-						},
-						"stop_on_contact": {
-							"type": "boolean",
-							"description": "move: a push; ending against something is its result"
-						},
-						"state": {
-							"type": "string",
-							"enum": [
-								"open",
-								"close"
-							]
-						},
-						"width_mm": {
-							"type": "number",
-							"description": "gripper: parsed and ignored, as MotorMind does"
-						},
-						"seconds": {
-							"type": "number",
-							"description": "wait: how long"
-						},
-						"frame": {
-							"type": "string",
-							"description": "Always \"base\""
-						},
-						"note": {
-							"type": "string"
-						},
-						"label": {
-							"type": "string",
-							"description": "The executor's label for this action (default: the action's own)"
-						},
-						"open_to_mm": {
-							"type": "number",
-							"description": "gripper open: open only this wide (mm), then hold the fingers there"
-						}
-					}
-				}
-			},
-			{
 				"name": "reset",
 				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
 				"parameters": {
@@ -9272,6 +9181,108 @@
 						"execute_preview_id": {
 							"type": "string",
 							"description": "Execute a frozen close preview; give it alone"
+						}
+					}
+				}
+			}
+		],
+		"motormind": [
+			{
+				"name": "mm_observe",
+				"description": "MotorMind: observe the scene without moving. Returns the tool pose in the robot's base frame (mm; forward +X, left +Y, up +Z), the gripper opening and grasp state, the clearance under the tool, the table height, the frame clock, and one image with the scene, side and wrist views side by side.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"tracked_mm": {
+							"type": "number",
+							"description": "The clearance below the tool you track (mm): where the aim marker sits when neither the table height nor the wrist camera gives it"
+						}
+					}
+				}
+			},
+			{
+				"name": "mm_act",
+				"description": "MotorMind: run ONE action in the robot's base frame (mm, deg): move (direction or axis, distance_mm; stop_on_contact = a push), rotate (direction or axis, angle_deg, about the tool point), gripper (state), wait (seconds) or home. It is cut into equal segments (at most 50 mm or 0.5 rad each) whose measured outcome, along-axis and lateral motion, turn, opening and grasp come back with the observation after it; a segment that does not end done stops the rest of the action.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"type"
+					],
+					"properties": {
+						"type": {
+							"type": "string",
+							"enum": [
+								"move",
+								"rotate",
+								"gripper",
+								"home",
+								"wait"
+							]
+						},
+						"direction": {
+							"type": "string",
+							"description": "move: forward, backward, left (+Y), right, up, down; rotate: yaw_left, yaw_right (also clockwise / cw, anticlockwise / ccw), pitch_up, pitch_down, roll_ccw, roll_cw"
+						},
+						"axis": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Instead of direction: [x, y, z] in the base frame"
+						},
+						"distance_mm": {
+							"type": "number",
+							"description": "move: how far (a positive magnitude)"
+						},
+						"angle_deg": {
+							"type": "number",
+							"description": "rotate: how far (a positive magnitude)"
+						},
+						"speed_mm_s": {
+							"type": "number"
+						},
+						"rot_speed_deg_s": {
+							"type": "number"
+						},
+						"stop_on_contact": {
+							"type": "boolean",
+							"description": "move: a push; ending against something is its result"
+						},
+						"state": {
+							"type": "string",
+							"enum": [
+								"open",
+								"close"
+							]
+						},
+						"width_mm": {
+							"type": "number",
+							"description": "gripper: parsed and ignored, as MotorMind does"
+						},
+						"seconds": {
+							"type": "number",
+							"description": "wait: how long"
+						},
+						"frame": {
+							"type": "string",
+							"description": "Always \"base\""
+						},
+						"note": {
+							"type": "string"
+						},
+						"label": {
+							"type": "string",
+							"description": "The executor's label for this action (default: the action's own)"
+						},
+						"open_to_mm": {
+							"type": "number",
+							"description": "gripper open: open only this wide (mm), then hold the fingers there"
+						},
+						"tracked_mm": {
+							"type": "number",
+							"description": "The clearance below the tool you track (mm): where the aim marker sits when neither the table height nor the wrist camera gives it"
 						}
 					}
 				}

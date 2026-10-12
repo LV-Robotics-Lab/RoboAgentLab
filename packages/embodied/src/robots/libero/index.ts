@@ -524,8 +524,13 @@ export default function libero(pi: ExtensionAPI) {
 	let envStep = 0;
 	/** The env ticks the latest reset settled for (--libero-settle-ticks), part of `envStep`. */
 	let settled = 0;
-	/** MotorMind mode: the env server's privileged truth log for this session (--mm-truth). */
+	/** MotorMind mode: the env server's privileged truth log for this session (--mm-truth; the server's own when attached). */
 	let truthLog: string | undefined;
+	/**
+	 * MotorMind mode: the `call_id` of the last mm reply received. The env server keeps the env steps of
+	 * a call whose reply never arrived (an RPC timeout) and hands them back on the next mm call.
+	 */
+	let delivered = 0;
 	let language = "";
 	/** The gripper command units mode holds between units: -1 open, +1 closed. */
 	let grip = -1;
@@ -728,16 +733,36 @@ export default function libero(pi: ExtensionAPI) {
 			point: { cameras: ["agentview", "wrist"], locate: (camera, points) => locate(camera as Camera, points) },
 		},
 		// MotorMind mode (../../modes/motormind): the env server's mm RPCs; `home` (--mm-home reset) is the
-		// episode reset, after which the server has remounted the side camera and settled.
+		// episode reset, after which the server has remounted the side camera and settled. Every mm call
+		// says which reply it received last (`delivered`): the steps of one that never arrived come back
+		// first (`transitions`), to the video, the recorder, the step count and the success latch.
 		motormind: {
-			observe: async () => {
-				const o = await call<Json>(env, "env.mm_observe", {}, 120_000);
+			observe: async (aim = {}) => {
+				const { transitions, ...o } = await call<Json & { transitions?: Transition[] }>(
+					env,
+					"env.mm_observe",
+					{ ...aim, delivered },
+					120_000,
+				);
+				for (const t of transitions ?? []) {
+					record(t.action.toArray(), t.obs, scalar(t.reward), Boolean(t.terminated), Boolean(t.truncated));
+					absorb([t.obs, t.reward, Boolean(t.terminated), Boolean(t.truncated), {}], 1);
+				}
+				if (typeof o.call_id === "number") delivered = o.call_id;
+				// The server's success latch is the episode's: should a step still be missing here, latch now.
+				if (o.terminated === true && successStep === undefined) {
+					successStep = envStep;
+					terminated = true;
+				}
+				const config = o.config as { truth?: unknown } | undefined;
+				if (config) truthLog = typeof config.truth === "string" ? config.truth : undefined;
 				saveViews(o);
 				return o;
 			},
-			runStep: async (seg: Segment, { timeoutMs, observe }) => {
+			runStep: async (seg: Segment, { timeoutMs, observe, ...aim }) => {
 				if (seg.kind !== "home") {
-					const r = await serverMotion("env.mm_run_step", { seg, observe }, timeoutMs);
+					const r = await serverMotion("env.mm_run_step", { seg, observe, ...aim, delivered }, timeoutMs);
+					if (typeof r.call_id === "number") delivered = r.call_id;
 					if (r.observation) saveViews(r.observation as Json);
 					return r;
 				}
@@ -748,7 +773,12 @@ export default function libero(pi: ExtensionAPI) {
 					transitions,
 					obs: first,
 					...r
-				} = await call<Json>(env, "env.mm_run_step", { seg, observe, tool_call: true }, timeoutMs);
+				} = await call<Json>(
+					env,
+					"env.mm_run_step",
+					{ seg, observe, ...aim, delivered, tool_call: true },
+					timeoutMs,
+				);
 				if (r.episode_reset === true && first) {
 					newEpisode(first as Obs, { transitions, settle_ticks: r.settle_ticks });
 					fly.reset(flyObs(obs), flyMeta());
@@ -760,6 +790,13 @@ export default function libero(pi: ExtensionAPI) {
 			endpoint: () =>
 				env ? `${env.url.replace(/\/call$/, "")}${env.token ? `#token=${env.token}` : ""}` : undefined,
 			truth: () => truthLog,
+			// What the server must run with (it is pi's own unless --env-url attached to another).
+			expect: () => ({
+				side_camera: flagValue(pi.getFlag("libero-side-camera")) === "true",
+				settle_ticks: settleTicks(),
+				mm_home: String(pi.getFlag("mm-home") ?? "refuse").trim(),
+				max_episode_steps: Number(flag("libero-max-steps", "10000")),
+			}),
 		},
 		finish: {
 			description:
@@ -1909,6 +1946,8 @@ export default function libero(pi: ExtensionAPI) {
 		const mm = flagValue(pi.getFlag("mm")) === "true";
 		// One truth log per session, beside the cell's other outputs (a temp dir without an output dir).
 		truthLog = mm ? join(mem.render("{{output_dir}}") || tmpdir(), `${tag()}_mm_truth.jsonl`) : undefined;
+		// A fresh server numbers its replies from 1 again: an id kept from the last session could match one.
+		delivered = 0;
 		if (truthLog) {
 			mkdirSync(dirname(truthLog), { recursive: true });
 			rmSync(truthLog, { force: true });

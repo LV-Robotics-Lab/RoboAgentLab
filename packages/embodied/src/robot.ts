@@ -539,8 +539,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	let robotQueue: Promise<void> = Promise.resolve();
 	/** Robot calls running or waiting their turn. */
 	let robotCalls = 0;
-	/** Set while a call runs inside `exclusive`: what `spec.motormind`'s callbacks assert. */
-	const holding = new AsyncLocalStorage<boolean>();
+	/**
+	 * The lock a call inside `exclusive` holds, `held` until it releases it: what `spec.motormind`'s
+	 * callbacks assert. The async context alone would also admit a timer or promise the call created
+	 * that runs after the release.
+	 */
+	const holding = new AsyncLocalStorage<{ held: boolean }>();
 	async function exclusive<T>(sig: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
 		const before = robotQueue;
 		const waits = robotCalls > 0;
@@ -562,7 +566,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						resolve();
 					});
 				});
-			return await holding.run(true, run);
+			const lock = { held: true };
+			try {
+				return await holding.run(lock, run);
+			} finally {
+				lock.held = false;
+			}
 		} finally {
 			robotCalls--;
 			release();
@@ -686,7 +695,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const underLock =
 		<A extends unknown[], R>(what: string, fn: (...args: A) => Promise<R>) =>
 		async (...args: A): Promise<R> => {
-			if (holding.getStore() !== true)
+			if (holding.getStore()?.held !== true)
 				throw new Error(
 					`${name}: spec.motormind.${what} runs only under the robot lock (inside a robot tool call)`,
 				);
@@ -700,6 +709,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 					runStep: underLock("runStep", spec.motormind.runStep),
 					endpoint: spec.motormind.endpoint,
 					truth: spec.motormind.truth,
+					expect: spec.motormind.expect,
 				},
 				tool,
 				{
@@ -1105,6 +1115,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 							budget: outOfBudget,
 							finished: claimed !== undefined,
 							solved: spec.status?.().solved,
+							error: broken ?? plannerError,
 						}),
 						// Code mode (../code): `code` and `code_api`, so evaluations never mix it with tool runs.
 						...co?.result(),
