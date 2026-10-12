@@ -621,6 +621,14 @@ for (const suite of MM_SUITES)
 						),
 					},
 				});
+				// The depth the observation reads (its render, the wrist's millimetres) at each object's pixel, for
+				// the occlusion check below.
+				const inFrame = (uv: unknown): uv is number[] =>
+					Array.isArray(uv) && uv[0] >= 0 && uv[0] < 768 && uv[1] >= 0 && uv[1] < 768;
+				const centres: Record<string, number[][]> = {};
+				for (const cam of ["scene", "side", "wrist"])
+					centres[cam] = (dbg[cam].points as Json[]).filter((x) => inFrame(x.uv)).map((x) => x.uv);
+				const behind = await s.project({ depth_pixels: centres });
 				rec.C9 = {};
 				for (const cam of ["scene", "side", "wrist"]) {
 					const c = cams[cam];
@@ -649,8 +657,10 @@ for (const suite of MM_SUITES)
 						R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) +
 						R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
 					assert.ok(Math.abs(det - 1) < 1e-6, `C9 ${cam}: det ${det}`);
-					// Our projection of each object center lands where the server's segmentation render looks.
+					// Our projection of each object center lands where the server's segmentation render looks: on the
+					// object's own body, or on something nearer the camera than the center (it is hidden there).
 					const seen: Json[] = [];
+					const depthAt = behind[cam].depth as Json[];
 					names.forEach((n, i) => {
 						const ours = projectTo(k, c.cam2base, truthObj[n].pos_base);
 						const theirs = dbg[cam].points[i];
@@ -659,11 +669,36 @@ for (const suite of MM_SUITES)
 								Math.hypot(ours[0] - theirs.uv[0], ours[1] - theirs.uv[1]) <= 1,
 								`C9 ${cam} ${n}: ${ours} vs ${theirs.uv}`,
 							);
+						const own = typeof theirs.body === "string" && theirs.body.startsWith(n);
+						const d = inFrame(theirs.uv)
+							? depthAt.find((x) => x.uv[0] === theirs.uv[0] && x.uv[1] === theirs.uv[1])
+							: undefined;
+						const hidden = !own && d !== undefined && d.server_z_m > 0 && d.server_z_m < theirs.z_m;
+						// A hollow or open object (a rack, a basket) can show what is behind its center: the center
+						// still lies within the pixels the object covers.
+						const box = dbg[cam].bodies[n]?.bbox_uv as number[] | null | undefined;
+						const within =
+							!own &&
+							!hidden &&
+							!!box &&
+							inFrame(theirs.uv) &&
+							theirs.uv[0] >= box[0] - 2 &&
+							theirs.uv[0] <= box[2] + 2 &&
+							theirs.uv[1] >= box[1] - 2 &&
+							theirs.uv[1] <= box[3] + 2;
+						if (inFrame(theirs.uv))
+							assert.ok(
+								own || hidden || within,
+								`C9 ${cam} ${n}: its center projects onto ${theirs.body} at ${d?.server_z_m} m, behind it (${theirs.z_m} m) and outside its own pixels ${JSON.stringify(box)}`,
+							);
 						seen.push({
 							object: n,
 							uv: ours ?? null,
 							body: theirs.body,
-							own: typeof theirs.body === "string" && theirs.body.startsWith(n),
+							own,
+							hidden,
+							within,
+							...(d ? { depth_m: d.server_z_m, center_z_m: theirs.z_m } : {}),
 						});
 					});
 					// The tool point itself is a site in the segmentation (no body): the gripper is judged by its
@@ -675,10 +710,18 @@ for (const suite of MM_SUITES)
 							seen.some((x) => x.own),
 							`C9 ${cam}: no object center projects onto its own body: ${JSON.stringify(seen)}`,
 						);
+						assert.ok(
+							seen.some((x) => x.uv),
+							`C9 ${cam}: no object in the frame`,
+						);
 						assert.ok(gripper?.pixels > 0, `C9 ${cam}: no gripper pixels: ${JSON.stringify(gripper)}`);
 					}
 					rec.C9[cam] = {
 						K: k,
+						in_frame: seen.filter((x) => x.uv && inFrame(x.uv)).length,
+						own: seen.filter((x) => x.own).length,
+						hidden: seen.filter((x) => x.hidden).map((x) => `${x.object} behind ${x.body}`),
+						within_own_pixels: seen.filter((x) => x.within).map((x) => `${x.object} shows ${x.body}`),
 						objects: seen,
 						gripper: gripper ?? null,
 						tool_uv: tool ?? null,
@@ -1032,11 +1075,14 @@ for (const suite of MM_SUITES)
 				setTimeout(() => s.h.cancel("e2e cancel"), 300);
 				const cancelled = await s.act({ type: "move", direction: "backward", distance_mm: 200 });
 				s.h.clearCancel();
+				// The segment in flight when the cancel came ran to its end (50 mm), and nothing after it started.
 				assert.deepEqual(
-					outcomes(cancelled).slice(1),
-					["skipped", "skipped", "skipped"],
+					outcomes(cancelled),
+					["done", "skipped", "skipped", "skipped"],
 					JSON.stringify(cancelled.segments),
 				);
+				assert.ok(Math.abs(cancelled.segments[0].along_axis_mm - 50) <= 3, JSON.stringify(cancelled.segments[0]));
+				assert.ok(cancelled.cancelled?.latency_s > 0, `C14: ${JSON.stringify(cancelled.cancelled)}`);
 				assert.ok(cancelled.segments.slice(1).every((x: Json) => x.cancel_reason === "e2e cancel"));
 				rec.C14 = { cancelled: cancelled.cancelled, wall_s: (Date.now() - t0) / 1000 };
 				await s.act({ type: "move", direction: "forward", distance_mm: along(cancelled) });
@@ -1056,7 +1102,9 @@ for (const suite of MM_SUITES)
 					`C15: the observation (${o.obs_id}) ran before the action (${a.obs_id}) ended`,
 				);
 				await s.act({ type: "move", direction: "right", distance_mm: 60 });
-				// (a): a segment RPC that times out leaves the outcome unknown; the gate wants mm_observe.
+				// (a): a segment RPC that times out leaves the outcome unknown; the gate wants mm_observe. The
+				// server still runs the segment: its steps come back to pi's episode with the observation.
+				const stepsBefore = [s.status.at(-1)?.step as number, (await s.truthNow()).ticks as number];
 				await s.truth.call("env.mm_debug_stall", { seconds: 15 });
 				const stalled = await s.call("mm_act", { type: "move", direction: "down", distance_mm: 20 });
 				const sb = JSON.parse(stalled.content[0].text);
@@ -1077,7 +1125,16 @@ for (const suite of MM_SUITES)
 					details: seen.details,
 				});
 				assert.equal(await s.emit("tool_call", { toolName: "mm_act", input: {} }), undefined);
-				rec.C15 = { concurrent: { act_obs: a.obs_id, observe_obs: o.obs_id }, timed_out: sb.segments[0] };
+				await s.emit("tool_execution_end", { toolName: "mm_observe" });
+				const stepsAfter = [s.status.at(-1)?.step as number, (await s.truthNow()).ticks as number];
+				const ran = [stepsAfter[0] - stepsBefore[0], stepsAfter[1] - stepsBefore[1]];
+				assert.ok(ran[1] > 0, `C15: the stalled segment never ran: ${ran}`);
+				assert.equal(ran[0], ran[1], `C15: pi counted ${ran[0]} of the server's ${ran[1]} env steps`);
+				rec.C15 = {
+					concurrent: { act_obs: a.obs_id, observe_obs: o.obs_id },
+					timed_out: sb.segments[0],
+					steps_after_timeout: { pi: ran[0], server: ran[1] },
+				};
 
 				// C4 (per tick): segments built here, run with the server's trace: no tick sends more than v * 0.05.
 				const caps = s.latest().caps;
@@ -1207,7 +1264,8 @@ for (const suite of MM_SUITES)
 				shut = true;
 				await s.emit("session_shutdown", { reason: "quit" });
 				const video = s.entries.find((e) => e.type === "episode_video")?.data;
-				if (video) assert.equal(video.frames, result.env_steps);
+				assert.ok(video, "C16: no episode video was written");
+				assert.equal(video.frames, result.env_steps);
 				rec.C16 = {
 					env_steps: result.env_steps,
 					settle_ticks: result.settle_ticks,
@@ -1327,7 +1385,11 @@ test("libero-mm C18 (R): capability constants", { skip: skip(MM), timeout: 2_400
 	}
 });
 
-/** C17 in a real `pi -p` (the stub always has a UI): a MotorMind start that cannot run exits 1. */
+/**
+ * C17 in a real `pi -p` (the stub always has a UI): a MotorMind start that cannot run exits 1. The
+ * reverse check (a motormind/* model without --mm) is the provider's, M2's: until it is registered pi
+ * itself refuses the model, so that case is only recorded here.
+ */
 test(
 	"libero-mm C17: the real pi -p fails closed on a MotorMind setting it cannot run",
 	{ skip: skip(MM), timeout: 600_000 },
@@ -1364,9 +1426,10 @@ test(
 		const cases = {
 			mm_without_motormind_model: run(["--mm=true", "--memory-profile=off", "--model", model]),
 			preset_with_side_camera_off: run(["--preset", "motormind", "--libero-side-camera=false", "--model", model]),
-			motormind_model_without_mm: run(["--memory-profile=off", "--model", `motormind/${model}`]),
 		};
-		mmRecord("C17_cli", cases);
+		// M2: the provider's own check. Recorded only (pi refuses the unknown model before the robot loads).
+		const pending = run(["--memory-profile=off", "--model", `motormind/${model}`]);
+		mmRecord("C17_cli", { ...cases, motormind_model_without_mm: { ...pending, pending: "M2" } });
 		assert.equal(cases.mm_without_motormind_model.code, 1);
 		assert.match(cases.mm_without_motormind_model.stderr, /--mm runs the MotorMind mission/);
 		assert.equal(cases.preset_with_side_camera_off.code, 1);
@@ -1374,7 +1437,5 @@ test(
 			cases.preset_with_side_camera_off.stderr,
 			/--preset motormind sets --libero-side-camera=true, but --libero-side-camera=false was given/,
 		);
-		// Before M2 registers the motormind provider, pi itself refuses the model; after, the provider's check does.
-		assert.notEqual(cases.motormind_model_without_mm.code, 0);
 	},
 );
