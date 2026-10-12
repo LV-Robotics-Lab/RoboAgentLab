@@ -278,13 +278,18 @@ Shared modules:
   (`--vdm-video-frames` sampled) instead of the before/after pair (CaP-X's video differencing).
 - `src/robots/libero/flash.ts`: Flash replay without an LLM (`--model flash/replay`).
 
-What the planner's context carries between turns is three flags of the base, all recorded in `params`:
-`--keep-images N` (the latest camera frames; older ones become a stub), `--anchor-image` (the first
-frame too) and `--replay-thinking true|false` (default `false`: a request carries only the latest
+What the planner's context carries between turns is four flags of the base, all recorded in `params`:
+`--keep-images N` (the latest camera frames; older ones become a stub), `--image-trim-every N` (stub
+them N at a time instead of every turn, default 0), `--anchor-image` (the first frame too) and
+`--replay-thinking true|false|none|frames` (default `false`: a request carries only the latest
 turn's thinking; pi itself replays every earlier turn's, which an openai-completions endpoint such as
 NInfer / vLLM with Qwen's template counts as prompt tokens, ~36% of the planner's input on the fixed
-regression. `true` is pi's behaviour. Only the request changes, never the session; signed thinking,
+regression. `true` is pi's behaviour, `none` drops the latest turn's too, `frames` drops a turn's
+thinking together with the camera frames before it. Only the request changes, never the session; signed thinking,
 Anthropic's and OpenAI Responses' included, is never dropped; `src/planner/replay-thinking.ts`).
+The defaults rewrite earlier turns every request (the previous answer's thinking, the oldest kept
+frame), so an endpoint's prefix cache reuses almost nothing. `--replay-thinking=frames --image-trim-every N`
+keeps each request a continuation of the previous one, answer included, between cuts every N frames.
 
 `--tier <S1..M4>` is a CaP-X tier in one flag (`src/infra/tiers.ts`): four orthogonal axes, each an
 existing flag you may also set alone. Turns: single = `--max-turns 1` (one program, then the

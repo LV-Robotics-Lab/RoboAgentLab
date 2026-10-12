@@ -7,7 +7,14 @@
  * vLLM with Qwen's) counts it as prompt tokens. On the fixed Qwen regression that was ~36% of the
  * planner's input (docs/reports, SoL-Pi A/B). The model does not read its own earlier reasoning as
  * instructions, so with `false` (the default) a request keeps only the latest assistant message's
- * thinking; `true` is pi's own behaviour. pi-ai's compat has no such switch (`requiresThinkingAsText`
+ * thinking; `true` is pi's own behaviour; `none` leaves out the latest assistant message's thinking too;
+ * `frames` keeps it until the camera frames before it are stubbed. `false` rewrites the history every
+ * turn (the previous answer loses its thinking in the next request), so an endpoint's prefix cache never
+ * reuses past it: NInfer's Qwen3.8 is a hybrid recurrent model that reuses only exact checkpoints at
+ * earlier prompt frontiers. `true` and `none` are append-only, and so is `frames` between the image cuts
+ * of `--image-trim-every` (../robot.ts); `true` and `frames` also replay the answer exactly as generated,
+ * which NInfer's most dependable checkpoint (the previous request's endpoint) needs.
+ * pi-ai's compat has no such switch (`requiresThinkingAsText`
  * rewrites thinking, nothing omits it), and a models.json field would not be recorded in `params`, so
  * it is a flag and a `context` handler (../robot.ts): only the outgoing request changes, the session
  * keeps every block, and `params` records the value for params-match.mjs.
@@ -36,13 +43,17 @@ export function unsigned(block: { type: string } & Partial<Omit<ThinkingContent,
 }
 
 /**
- * `messages` with the unsigned thinking of every openai-completions assistant message before the last
- * assistant message left out, or undefined when nothing would change (the context is left alone).
- * New arrays, never edited in place: the session's messages are untouched.
+ * `messages` with the unsigned thinking of every openai-completions assistant message before index
+ * `keepFrom` left out (default: the last assistant message, which keeps its thinking), or undefined when
+ * nothing would change (the context is left alone). New arrays, never edited in place: the session's
+ * messages are untouched.
  */
-export function dropReplayedThinking(messages: readonly AgentMessage[]): { messages: AgentMessage[] } | undefined {
-	let last = -1;
-	for (let i = messages.length - 1; i >= 0; i--)
+export function dropReplayedThinking(
+	messages: readonly AgentMessage[],
+	keepFrom?: number,
+): { messages: AgentMessage[] } | undefined {
+	let last = keepFrom ?? -1;
+	for (let i = messages.length - 1; i >= 0 && keepFrom === undefined; i--)
 		if (messages[i].role === "assistant") {
 			last = i;
 			break;
@@ -61,8 +72,27 @@ export function dropReplayedThinking(messages: readonly AgentMessage[]): { messa
 /** The flag's value, true or false; pi stores a flag's command-line value verbatim, so a bare `--replay-thinking` reads true. */
 export const replayThinking = (pi: ExtensionAPI) => String(pi.getFlag(FLAG)) === "true";
 
-/** Why the flag's value is refused (not true / false), else undefined. */
+/**
+ * Where the context handler starts keeping thinking, by `--replay-thinking`: undefined (false: the last
+ * assistant message), the end (none), or right after the newest tool result whose camera frame became
+ * `stub` (frames: thinking leaves together with the frames it saw, so with `--image-trim-every` both
+ * change on the same request and the history only grows in between).
+ */
+export function keepThinkingFrom(pi: ExtensionAPI, messages: readonly AgentMessage[], stub: string) {
+	const v = String(pi.getFlag(FLAG));
+	if (v === "none") return messages.length;
+	if (v !== "frames") return undefined;
+	let from = 0;
+	messages.forEach((m, i) => {
+		if (m.role === "toolResult" && m.content.some((p) => p.type === "text" && p.text === stub)) from = i + 1;
+	});
+	return from;
+}
+
+/** Why the flag's value is refused (not true / false / none / frames), else undefined. */
 export function replayThinkingError(pi: ExtensionAPI): string | undefined {
 	const v = String(pi.getFlag(FLAG) ?? "false");
-	return v === "true" || v === "false" ? undefined : `--${FLAG} must be true or false, got ${JSON.stringify(v)}`;
+	return ["true", "false", "none", "frames"].includes(v)
+		? undefined
+		: `--${FLAG} must be true, false, none or frames, got ${JSON.stringify(v)}`;
 }

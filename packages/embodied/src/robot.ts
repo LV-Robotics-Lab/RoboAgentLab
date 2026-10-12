@@ -43,6 +43,7 @@ import { human } from "./planner/human.ts";
 import { plannerOf } from "./planner/kind.ts";
 import {
 	dropReplayedThinking,
+	keepThinkingFrom,
 	FLAG as REPLAY_THINKING,
 	replayThinking,
 	replayThinkingError,
@@ -362,6 +363,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		default: String(spec.keepImages),
 		description: "Camera frames kept in context",
 	});
+	pi.registerFlag("image-trim-every", {
+		type: "string",
+		default: "0",
+		description:
+			"Stub older camera frames N at a time (0 = every turn): between cuts each request starts with the previous one's prompt, which an endpoint's prefix cache reuses; --keep-images to --keep-images+N-1 frames stay",
+	});
 	// One auxiliary VLM for VDM, the units verifier and check_attached (PARAMS.md 2.4); a role that needs
 	// another model names it in the deployment's aux.<role> (./infra/config.ts).
 	pi.registerFlag("aux-model", {
@@ -387,7 +394,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		type: "string",
 		default: "false",
 		description:
-			"Send earlier turns' thinking back with every request (true / false; false keeps only the latest turn's; pi's own behaviour is true)",
+			"Send earlier turns' thinking back with every request (true / false / none / frames; false keeps only the latest turn's, none not even that, frames until the camera frames before it are stubbed; pi's own behaviour is true)",
 	});
 	pi.registerFlag("max-turns", {
 		type: "string",
@@ -990,12 +997,24 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	 * Older camera frames are replaced by a stub, keeping the latest --keep-images. With --anchor-image
 	 * the episode's first frame stays too (OpenETA's bounded visual history): the first image of the
 	 * earliest tool result that carries one, which is the robot's first observation, main view first.
+	 * With --image-trim-every N the number of stubbed frames is a multiple of N, so the cut moves once
+	 * every N new frames instead of every turn (a moving cut rewrites the history at the oldest kept frame,
+	 * and a prefix cache cannot reuse anything past a rewrite).
 	 */
+	const stubText = spec.imageStub ?? "[older camera frame omitted]";
 	pi.on("context", (event) => {
 		let keep = Number(pi.getFlag("keep-images"));
 		const anchor = anchored()
 			? event.messages.find((m) => m.role === "toolResult" && m.content.some((p) => p.type === "image"))
 			: undefined;
+		const every = Number(pi.getFlag("image-trim-every"));
+		if (every > 0) {
+			let frames = 0;
+			for (const m of event.messages)
+				if (m.role === "toolResult") frames += m.content.filter((p) => p.type === "image").length;
+			if (anchor) frames--;
+			keep = frames - every * Math.floor(Math.max(0, frames - keep) / every);
+		}
 		let pruned = false;
 		const messages = [...event.messages].reverse().map((m) => {
 			if (m.role !== "toolResult") return m;
@@ -1008,14 +1027,18 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				}
 				if (keep-- > 0) return part;
 				pruned = true;
-				return { type: "text" as const, text: spec.imageStub ?? "[older camera frame omitted]" };
+				return { type: "text" as const, text: stubText };
 			});
 			return { ...m, content };
 		});
 		return pruned ? { messages: messages.reverse() } : undefined;
 	});
-	// Earlier turns' thinking leaves the request unless --replay-thinking=true (./planner/replay-thinking.ts).
-	pi.on("context", (event) => (replayThinking(pi) ? undefined : dropReplayedThinking(event.messages)));
+	// Earlier turns' thinking leaves the request unless --replay-thinking=true; none and frames: ./planner/replay-thinking.ts.
+	pi.on("context", (event) =>
+		replayThinking(pi)
+			? undefined
+			: dropReplayedThinking(event.messages, keepThinkingFrom(pi, event.messages, stubText)),
+	);
 	pi.on("input", (_event, ctx) => {
 		if (ready) return undefined;
 		if (ctx.hasUI) ctx.ui.notify(`${name} is not available; nothing was sent to the model.`, "error");

@@ -208,14 +208,49 @@ test("the robot's context handler: --replay-thinking false (default) drops, true
 	}
 });
 
-test("another value than true / false fails closed before the robot starts", async () => {
+test("--replay-thinking=none drops every turn's thinking: each request starts with the previous one (append-only)", async () => {
+	const out = dropReplayedThinking(episode as any, episode.length);
+	assert.ok(out);
+	assert.deepEqual(thinkingOf(out.messages), [null, [], null, [], null, [], null]);
+	// Turn by turn, as the robot's handler sees a growing context: none keeps every earlier request as
+	// the next one's prefix; false does not (the previous answer loses its thinking a turn later).
+	const none = stubPi({ "replay-thinking": "none" });
+	const off = stubPi();
+	try {
+		const requests = async (f: ReturnType<typeof stubPi>) => {
+			const out: any[][] = [];
+			for (const n of [3, 5, 7]) {
+				const ctx = episode.slice(0, n);
+				out.push(
+					((await f.emit("context", { messages: ctx })) as { messages: any[] } | undefined)?.messages ?? ctx,
+				);
+			}
+			return out;
+		};
+		const prefix = (a: any[], b: any[]) => assert.deepEqual(b.slice(0, a.length), a);
+		const n = await requests(none);
+		prefix(n[0], n[1]);
+		prefix(n[1], n[2]);
+		const f = await requests(off);
+		assert.notDeepEqual(f[2].slice(0, f[1].length), f[1], "false rewrites the previous answer");
+		await none.emit("session_start");
+		await none.emit("agent_start");
+		await none.emit("session_shutdown");
+		assert.equal(none.entries.find((e) => e.type === RESULT_ENTRY)?.data.params["replay-thinking"], "none");
+	} finally {
+		none.restore();
+		off.restore();
+	}
+});
+
+test("another value than true / false / none / frames fails closed before the robot starts", async () => {
 	const f = stubPi({ "replay-thinking": "maybe" });
 	try {
 		await f.emit("session_start");
 		await f.emit("session_shutdown");
 		const r = f.entries.find((e) => e.type === RESULT_ENTRY)?.data;
 		assert.equal(r.env_error, true);
-		assert.match(r.error, /--replay-thinking must be true or false, got "maybe"/);
+		assert.match(r.error, /--replay-thinking must be true, false, none or frames, got "maybe"/);
 	} finally {
 		f.restore();
 	}

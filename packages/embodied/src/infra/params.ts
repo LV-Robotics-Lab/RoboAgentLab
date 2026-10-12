@@ -75,6 +75,7 @@ export const NUMERIC: Record<string, { min?: number; max?: number; integer?: boo
 	"max-tool-calls": { min: 0, integer: true },
 	"max-tokens": { min: 0, integer: true },
 	"keep-images": { min: 0, integer: true },
+	"image-trim-every": { min: 0, integer: true },
 	"max-move": { min: 0 },
 	"max-rotate": { min: 0 },
 	"max-yaw": { min: 0 },
