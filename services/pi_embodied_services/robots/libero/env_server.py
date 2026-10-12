@@ -126,6 +126,9 @@ TOOL_MOTIONS = (
     "env.open_gripper",
     "env.close_gripper",
 )
+#: Zero-action steps RLinf's LiberoEnv.reset takes inside (gripper open): robosuite counts them
+#: toward its horizon, RLinf's truncation does not.
+RLINF_RESET_STEPS = 15
 
 
 class Refused(ValueError):
@@ -206,7 +209,10 @@ def build_env_cfg(
                 # Render depth too, so we can back-project pixels to world
                 # from depth + camera calibration
                 "camera_depths": True,
-                "horizon": max_episode_steps,
+                # robosuite raises on a step past its horizon (ignore_done is False) and counts
+                # RLinf's reset steps toward it; RLinf truncates max_episode_steps steps after the
+                # reset, so the horizon leaves room for those steps and truncation ends the episode.
+                "horizon": max_episode_steps + RLINF_RESET_STEPS,
                 **(
                     {"robots": [os.environ["LIBERO_ROBOT_BASE"]]}
                     if os.environ.get("LIBERO_ROBOT_BASE")
