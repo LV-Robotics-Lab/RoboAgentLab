@@ -11,7 +11,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -24,6 +24,8 @@ import { MOLMO, pi05, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { decodePng, decodePngChannel, encodePng } from "../../infra/png.ts";
 import { NdArray, RpcClient } from "../../infra/rpc.ts";
+import { norm as flagValue } from "../../infra/tiers.ts";
+import { imageOf, type Segment } from "../../modes/motormind/index.ts";
 import { finishMove, type Move, type UnitsSpec } from "../../modes/units/index.ts";
 import { flipRows, type ObservationDecl } from "../../observation/path.ts";
 import { template } from "../../planner/context-version.ts";
@@ -449,6 +451,24 @@ export default function libero(pi: ExtensionAPI) {
 		default: "rpent",
 		description: "System prompt: rpent (RPent's full evaluate/explore prompts and guides, default) | compact",
 	});
+	// MotorMind's scene (pi-embodied-work/docs/motormind/DESIGN.md §3.2-3.3, --preset motormind): its side
+	// camera, the settle ticks after every reset, and its horizon. The env server applies them.
+	pi.registerFlag("libero-side-camera", {
+		type: "string",
+		default: "false",
+		description:
+			"Mount MotorMind's side camera (true / false): on the base's +Y side at 35 deg elevation, remounted after every reset",
+	});
+	pi.registerFlag("libero-settle-ticks", {
+		type: "string",
+		default: "0",
+		description: "Zero-action env ticks after every reset, before the episode's first action (recorded as env steps)",
+	});
+	pi.registerFlag("libero-max-steps", {
+		type: "string",
+		default: "10000",
+		description: "The env's episode horizon in env steps: past it the episode is truncated",
+	});
 	// Each state record is about 2.7 MB (two 1024 images, depth, calibration).
 	pi.registerFlag("step-history", {
 		type: "string",
@@ -502,6 +522,10 @@ export default function libero(pi: ExtensionAPI) {
 	let successStep: number | undefined;
 	let truncated = false;
 	let envStep = 0;
+	/** The env ticks the latest reset settled for (--libero-settle-ticks), part of `envStep`. */
+	let settled = 0;
+	/** MotorMind mode: the env server's privileged truth log for this session (--mm-truth). */
+	let truthLog: string | undefined;
 	let language = "";
 	/** The gripper command units mode holds between units: -1 open, +1 closed. */
 	let grip = -1;
@@ -649,6 +673,7 @@ export default function libero(pi: ExtensionAPI) {
 			env_steps: envStep,
 			vla: vlaUsed,
 			libero_prompt: variant(),
+			...(settleTicks() > 0 ? { settle_ticks: settled } : {}),
 		}),
 		status: () => ({ language, step: envStep, solved: terminated }),
 		// Code mode (../code): the env server runs the program against its manifest's primitives
@@ -701,6 +726,40 @@ export default function libero(pi: ExtensionAPI) {
 			// Measured: fingers closed on nothing read <= 0.003 (sum of both finger joints); a held can reads ~0.06.
 			emptyWidthM: 0.004,
 			point: { cameras: ["agentview", "wrist"], locate: (camera, points) => locate(camera as Camera, points) },
+		},
+		// MotorMind mode (../../modes/motormind): the env server's mm RPCs; `home` (--mm-home reset) is the
+		// episode reset, after which the server has remounted the side camera and settled.
+		motormind: {
+			observe: async () => {
+				const o = await call<Json>(env, "env.mm_observe", {}, 120_000);
+				saveViews(o);
+				return o;
+			},
+			runStep: async (seg: Segment, { timeoutMs, observe }) => {
+				if (seg.kind !== "home") {
+					const r = await serverMotion("env.mm_run_step", { seg, observe }, timeoutMs);
+					if (r.observation) saveViews(r.observation as Json);
+					return r;
+				}
+				// --mm-home reset: the server resets the scene (MotorMind's gripper timing); pi's episode
+				// starts over with it (the success latch, steps, state history and recorder).
+				op.check();
+				const {
+					transitions,
+					obs: first,
+					...r
+				} = await call<Json>(env, "env.mm_run_step", { seg, observe, tool_call: true }, timeoutMs);
+				if (r.episode_reset === true && first) {
+					newEpisode(first as Obs, { transitions, settle_ticks: r.settle_ticks });
+					fly.reset(flyObs(obs), flyMeta());
+					tableZ = await surfaceZ().catch(() => undefined);
+				}
+				if (r.observation) saveViews(r.observation as Json);
+				return r;
+			},
+			endpoint: () =>
+				env ? `${env.url.replace(/\/call$/, "")}${env.token ? `#token=${env.token}` : ""}` : undefined,
+			truth: () => truthLog,
 		},
 		finish: {
 			description:
@@ -762,13 +821,13 @@ export default function libero(pi: ExtensionAPI) {
 	 * goes to the episode video and the Flywheel recorder as pi's own steps did, and a refusal
 	 * (unmoved) as `refused`.
 	 */
-	async function serverMotion(method: string, params: Record<string, unknown>) {
+	async function serverMotion(method: string, params: Record<string, unknown>, timeoutMs = 600_000) {
 		op.check();
 		const { transitions, ...out } = await call<Json & { transitions?: Transition[] }>(
 			env,
 			method,
 			{ ...params, tool_call: true },
-			600_000,
+			timeoutMs,
 		);
 		for (const t of transitions ?? []) {
 			const action = t.action.toArray();
@@ -835,6 +894,22 @@ export default function libero(pi: ExtensionAPI) {
 
 	/** Restore the episode's initial scene (session start, exploration `reset`); `signal` aborts the env reset. */
 	async function resetEpisode(signal = robot.signal) {
+		// With settle ticks the server steps the env after its reset and returns those ticks (`tool_call`):
+		// they go to the video and the recorder, and count as env steps.
+		const ret = await env.call<[Obs, Json] | Json>(
+			"env.reset",
+			settleTicks() > 0 ? { tool_call: true } : {},
+			300_000,
+			[],
+			signal,
+		);
+		const [first, info] = Array.isArray(ret) ? ret : [(ret as Json).obs as Obs, ret as Json];
+		newEpisode(first, info);
+		tableZ = await surfaceZ().catch(() => undefined);
+	}
+
+	/** pi's side of a scene reset: a fresh state history and success latch, from `first` and the settle ticks after it. */
+	function newEpisode(first: Obs, info: Json | undefined) {
 		worldMaps.clear();
 		startHistory();
 		terminated = truncated = false;
@@ -843,8 +918,29 @@ export default function libero(pi: ExtensionAPI) {
 		grip = -1;
 		envStep = 0;
 		seeds.reset();
-		[obs] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000, [], signal);
-		tableZ = await surfaceZ().catch(() => undefined);
+		obs = first;
+		const ticks = (info?.transitions as Transition[] | undefined) ?? [];
+		for (const t of ticks) {
+			record(t.action.toArray(), t.obs, scalar(t.reward), Boolean(t.terminated), Boolean(t.truncated));
+			absorb([t.obs, t.reward, Boolean(t.terminated), Boolean(t.truncated), {}], 1);
+		}
+		settled = typeof info?.settle_ticks === "number" ? info.settle_ticks : ticks.length;
+		envStep += settled - ticks.length;
+	}
+
+	const settleTicks = () => Number(flag("libero-settle-ticks", "0")) || 0;
+	/** MotorMind's marked 512 views of an observation, next to the state records (`<steps>/mm/`). */
+	function saveViews(o: Json) {
+		if (history() === "off" || !historyDir || typeof o.obs_id !== "number") return;
+		const cams = (o.cameras ?? {}) as Record<string, Json>;
+		const dir = join(historyDir, "mm");
+		for (const [name, cam] of Object.entries(cams)) {
+			const image = imageOf(cam?.marked512);
+			if (!image) continue;
+			mkdirSync(dir, { recursive: true });
+			const ext = image.mime === "image/jpeg" ? "jpg" : "png";
+			writeFileSync(join(dir, `obs_${String(o.obs_id).padStart(5, "0")}_${name}.${ext}`), image.data);
+		}
 	}
 
 	/**
@@ -1806,6 +1902,17 @@ export default function libero(pi: ExtensionAPI) {
 			throw new Error(`--step-history must be clean, keep or off, not ${history()}`);
 		if (!(LIBERO_PROMPTS as readonly string[]).includes(variant()))
 			throw new Error(`--libero-prompt must be one of ${LIBERO_PROMPTS.join(", ")}, not ${variant()}`);
+		const side = flagValue(pi.getFlag("libero-side-camera"));
+		if (side !== "true" && side !== "false")
+			throw new Error(`--libero-side-camera must be true or false, not ${pi.getFlag("libero-side-camera")}`);
+		const maxSteps = Number(flag("libero-max-steps", "10000"));
+		const mm = flagValue(pi.getFlag("mm")) === "true";
+		// One truth log per session, beside the cell's other outputs (a temp dir without an output dir).
+		truthLog = mm ? join(mem.render("{{output_dir}}") || tmpdir(), `${tag()}_mm_truth.jsonl`) : undefined;
+		if (truthLog) {
+			mkdirSync(dirname(truthLog), { recursive: true });
+			rmSync(truthLog, { force: true });
+		}
 		vla = new RpcClient(service(pi, "vla"));
 		// Pi0.5 is optional: without it the pi0 tools stay inactive and the result notes it.
 		skills.pi0 = await probeSkill(pi, "pi0", service(pi, "vla"), () => vla.ready(3_000));
@@ -1839,6 +1946,14 @@ export default function libero(pi: ExtensionAPI) {
 					// --sam3 goes to the server already (above).
 					...detectionArgs(pi, { sam3: false }),
 					...geometryArgs(pi),
+					// MotorMind's scene; in MotorMind mode its home, its truth log, and its debug RPCs only for a
+					// privileged run (the interface checks).
+					...(side === "true" ? ["--side-camera"] : []),
+					...(settleTicks() > 0 ? ["--settle-ticks", String(settleTicks())] : []),
+					...(maxSteps !== 10000 ? ["--max-episode-steps", String(maxSteps)] : []),
+					...(mm ? ["--mm-home", String(pi.getFlag("mm-home") ?? "refuse")] : []),
+					...(truthLog ? ["--mm-truth", truthLog] : []),
+					...(mm && pi.getFlag("privileged") === true ? ["--privileged"] : []),
 				],
 				cwd: services,
 				env: {

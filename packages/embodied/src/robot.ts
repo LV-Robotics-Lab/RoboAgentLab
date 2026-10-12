@@ -6,6 +6,7 @@
  * tool results.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -28,6 +29,7 @@ import { forgetUnresponsive, NdArray, type RpcClient, RpcUnavailable } from "./i
 import { type ServiceOptions, shutdown, startService } from "./infra/service-process.ts";
 import { tiers } from "./infra/tiers.ts";
 import { type CodeSpec, code } from "./modes/code/index.ts";
+import { type MotorMindSpec, motormind } from "./modes/motormind/index.ts";
 import { type UnitsSpec, units } from "./modes/units/index.ts";
 import { VLM_COST_EVENT } from "./modes/units/vlm.ts";
 import { type VdmSpec, vdm } from "./observation/vdm.ts";
@@ -215,6 +217,11 @@ export type RobotSpec = {
 	flywheel?: { spec: FlywheelSpec; select: () => string };
 	/** Mount Show-Harness action units (../units): --units=true leaves only `act`, `finish` and its plugins' tools; --units=both adds them. */
 	units?: UnitsSpec;
+	/**
+	 * Mount MotorMind mode (./modes/motormind, `--mm=true`): the env server's `mm_observe` and
+	 * `mm_run_step`. Both run only while a robot tool holds the robot lock; outside it they throw.
+	 */
+	motormind?: MotorMindSpec;
 	/** Mount Flash (../flash, `--model flash/replay`): the robot's plans and how it re-localizes them. */
 	flash?: FlashHook;
 	/**
@@ -304,6 +311,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		robot: name,
 		code: spec.code !== undefined,
 		units: spec.units !== undefined,
+		motormind: spec.motormind !== undefined,
 		vdm: spec.vdm !== undefined,
 		groundTruth: spec.groundTruth !== undefined,
 		memory: spec.memory !== undefined,
@@ -474,6 +482,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		async (...args: A) => {
 			const r = await reset(...args);
 			un?.reset();
+			mm?.reset();
 			return r;
 		};
 	const operatorReset = spec.operator?.reset;
@@ -511,6 +520,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	let robotQueue: Promise<void> = Promise.resolve();
 	/** Robot calls running or waiting their turn. */
 	let robotCalls = 0;
+	/** Set while a call runs inside `exclusive`: what `spec.motormind`'s callbacks assert. */
+	const holding = new AsyncLocalStorage<boolean>();
 	async function exclusive<T>(sig: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
 		const before = robotQueue;
 		const waits = robotCalls > 0;
@@ -532,7 +543,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						resolve();
 					});
 				});
-			return await run();
+			return await holding.run(true, run);
 		} finally {
 			robotCalls--;
 			release();
@@ -611,8 +622,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		}
 	}
 	/** Whether the run has a capability (`requires` of a manifest entry). */
-	const has = (capability: string) =>
-		capability === "privileged" ? privileged() : (spec.capabilities?.(capability) ?? false);
+	const has = (capability: string): boolean =>
+		capability === "privileged"
+			? privileged()
+			: capability === "motormind"
+				? mm?.on() === true
+				: (spec.capabilities?.(capability) ?? false);
 	/** Drop the tools whose manifest entry this run cannot serve (unmet `requires`). */
 	const servable = (names: string[]) =>
 		manifest
@@ -647,6 +662,32 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				has,
 				vars: () => spec.vars?.() ?? {},
 			})
+		: undefined;
+	/** `spec.motormind`'s callbacks as the mode gets them: they refuse to run outside the robot lock. */
+	const underLock =
+		<A extends unknown[], R>(what: string, fn: (...args: A) => Promise<R>) =>
+		async (...args: A): Promise<R> => {
+			if (holding.getStore() !== true)
+				throw new Error(
+					`${name}: spec.motormind.${what} runs only under the robot lock (inside a robot tool call)`,
+				);
+			return fn(...args);
+		};
+	const mm = spec.motormind
+		? motormind(
+				pi,
+				{
+					observe: underLock("observe", spec.motormind.observe),
+					runStep: underLock("runStep", spec.motormind.runStep),
+					endpoint: spec.motormind.endpoint,
+					truth: spec.motormind.truth,
+				},
+				tool,
+				{
+					robot: name,
+					otherMode: (): string | undefined => (un?.mode() ? "--units" : co?.mode() ? "--code" : undefined),
+				},
+			)
 		: undefined;
 	const vd = spec.vdm
 		? vdm(
@@ -703,6 +744,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				tr.configError() ??
 				un?.configError() ??
 				co?.configError() ??
+				mm?.configError(ctx) ??
 				ap.configError(ctx.hasUI) ??
 				extrasInPureMode(pi);
 			if (misconfigured) throw new Error(misconfigured);
@@ -727,20 +769,27 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			// --xpolicy connects the policy server for this episode (fails closed) and adds xpolicy_act,
 			// as far as the manifest's `requires` for it are met.
 			const xpTools = servable((await xp?.start()) ?? []);
-			// Pure units or code mode hides the robot's own tools and memory's (Show-Harness's pure mode).
-			const mode = un?.mode() ?? co?.mode();
+			// MotorMind mode: one observation under the robot lock proves the env server's mm RPCs and base frame.
+			const mmOn = mm?.on() === true;
+			if (mm && mmOn) await exclusive(undefined, () => mm.started());
+			// Pure units, code or MotorMind mode hides the robot's own tools and memory's (Show-Harness's pure mode).
+			const mode = mmOn ? "pure" : (un?.mode() ?? co?.mode());
 			// The units' tools only when units mode is on (a robot mounts units and code mode both).
 			const unitTools = un?.mode() ? un.tools() : [];
 			// A mode with its own prompt keeps memory: its section is appended (before_agent_start) and the
-			// file tools stay, so --units=true / --code=true still read the corpus.
-			const memTools = mode === "pure" && mem?.section() !== undefined ? mem.tools : [];
-			const own =
-				mode === "pure"
+			// file tools stay, so --units=true / --code=true still read the corpus. MotorMind's does not.
+			const memTools = mode === "pure" && !mmOn && mem?.section() !== undefined ? mem.tools : [];
+			const own = mmOn
+				? [...servable(mm?.tools() ?? []), "finish"]
+				: mode === "pure"
 					? [...unitTools, ...coded, ...memTools, "finish"]
 					: [...tools, ...(mem?.tools ?? []), ...(mode === "both" ? [...unitTools, ...coded] : [])];
-			pi.setActiveTools([
-				...new Set([...own, ...xpTools, ...op.tools(), ...groundTruth(), ...web.tools(), ...objs.tools()]),
-			]);
+			// MotorMind mode activates its two tools and finish, nothing else.
+			pi.setActiveTools(
+				mmOn
+					? own
+					: [...new Set([...own, ...xpTools, ...op.tools(), ...groundTruth(), ...web.tools(), ...objs.tools()])],
+			);
 			ready = true;
 		} catch (err) {
 			// Without a robot there is nothing to act on: no tools, and a non-interactive run exits.
@@ -823,8 +872,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				deadline.unref();
 			}
 		}
-		// Units and code mode are mutually exclusive (configError): at most one of them shapes the prompt.
-		const mod = un?.mode() ? un : co?.mode() ? co : undefined;
+		// Units, code and MotorMind mode are mutually exclusive (configError): at most one of them shapes the prompt.
+		const mod = mm?.on() ? mm : un?.mode() ? un : co?.mode() ? co : undefined;
 		const mode = mod?.mode();
 		// The prompt (the robot's and the mode's) describes only the tools left active by --tools/--exclude-tools and --units/--code.
 		// Every evaluation prompt reads memory once, in memory's section (./capabilities/memory): at the robot
@@ -1011,6 +1060,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						...tr.result(),
 						// The units verifier: whether the success finish was checked, and the call's error.
 						...un?.result(),
+						// MotorMind mode: the `motormind` block, computed now from the mode's state.
+						...mm?.result({
+							budget: outOfBudget,
+							finished: claimed !== undefined,
+							solved: spec.status?.().solved,
+						}),
 						// Code mode (../code): `code` and `code_api`, so evaluations never mix it with tool runs.
 						...co?.result(),
 						...vd?.result(),

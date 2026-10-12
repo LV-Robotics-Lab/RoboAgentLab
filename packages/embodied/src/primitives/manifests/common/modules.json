@@ -101,6 +101,30 @@
 			}
 		},
 		{
+			"name": "mm_observe",
+			"side": "ts",
+			"tier": "raw",
+			"module": "motormind",
+			"requires": [
+				"motormind"
+			],
+			"doc": {
+				"tool": "MotorMind mode's observation in the robot's base frame (modes/motormind, --mm=true)."
+			}
+		},
+		{
+			"name": "mm_act",
+			"side": "ts",
+			"tier": "raw",
+			"module": "motormind",
+			"requires": [
+				"motormind"
+			],
+			"doc": {
+				"tool": "One MotorMind action, run segment by segment with its measured feedback (modes/motormind, --mm=true)."
+			}
+		},
+		{
 			"name": "remember_object",
 			"side": "ts",
 			"tier": "low",

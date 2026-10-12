@@ -1160,6 +1160,12 @@
 			"use": "modules/run_code"
 		},
 		{
+			"use": "modules/mm_observe"
+		},
+		{
+			"use": "modules/mm_act"
+		},
+		{
 			"use": "modules/request_operator_verdict"
 		},
 		{
