@@ -16,8 +16,34 @@ export const PUSHED_ALONG_MM = 5;
 export const TURNED_DEG = 1;
 
 const STOP = new Set([
-	"the", "a", "an", "and", "or", "of", "to", "in", "on", "into", "onto", "at", "it", "its", "is", "be", "with",
-	"from", "by", "for", "then", "that", "this", "up", "down", "put", "place", "pick",
+	"the",
+	"a",
+	"an",
+	"and",
+	"or",
+	"of",
+	"to",
+	"in",
+	"on",
+	"into",
+	"onto",
+	"at",
+	"it",
+	"its",
+	"is",
+	"be",
+	"with",
+	"from",
+	"by",
+	"for",
+	"then",
+	"that",
+	"this",
+	"up",
+	"down",
+	"put",
+	"place",
+	"pick",
 ]);
 /** The content words of a clause or a verdict line (lower case, no stop words, 3+ letters). */
 export function contentWords(s: string): Set<string> {
@@ -89,9 +115,9 @@ export function fold(state: ClauseState, answers: readonly ClauseAnswer[], allow
 			state.met.add(i);
 			state.withdrawn.delete(i);
 		} else if (allowWithdraw && state.met.has(i)) {
+			// A code event behind the clause survives the withdrawal: a later answer may mark it again.
 			state.met.delete(i);
 			state.withdrawn.add(i);
-			state.events.delete(i);
 			state.withdrawals.push({ clause: i, because: a.evidence || a.what });
 		}
 	});

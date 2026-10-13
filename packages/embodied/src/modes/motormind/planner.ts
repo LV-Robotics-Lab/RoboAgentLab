@@ -62,7 +62,8 @@ export type PlanOutcome = {
 const HOLD_WORDS = /\b(hold|holding|held|grasp|grasped|grasping|grip|gripping|carry|carrying|lift|lifted|lifting)\b/i;
 const RELEASE_WORDS =
 	/\b(release|released|let go|open the (jaws|gripper)|jaws open|gripper open|resting (on|in)|sitting (on|in)|placed (on|in)|put down|rests? (on|in)|lies (on|in))\b/i;
-const MOVE_WORDS = /\b(move|moving|lift|lower|descend|rise|raise|carry|slide|push|pull|turn|rotate|approach|retreat|go|travel)\w*\b/i;
+const MOVE_WORDS =
+	/\b(move|moving|lift|lower|descend|rise|raise|carry|slide|push|pull|turn|rotate|approach|retreat|go|travel)\w*\b/i;
 const GRIPPER_NOUNS = /\b(gripper|jaws?|fingers?|grip)\b/i;
 const GRIPPER_VERBS = /\b(open|close|release|let go|squeeze|clamp)\w*\b/i;
 const ACT_WORDS =
@@ -71,7 +72,8 @@ const SIDE_WORDS = /\bfrom the side\b/i;
 const TILT_WORDS = /\b(tilt|tilted|sideways grasp|horizontal(ly)? grasp|pitch|roll)\w*\b/i;
 const HANDLE_WORDS = /\b(handle|knob|lever|pull|drawer|door)\b/i;
 /** Part words stripped from a target so it names the whole object (spec-planner §4.4 step 2). */
-const PART_WORDS = /^(?:the\s+)?(?:top|lid|rim|edge|handle|side|front|back|corner|body|base|cap|spout|wall|face|middle|center|centre)\s+of\s+/i;
+const PART_WORDS =
+	/^(?:the\s+)?(?:top|lid|rim|edge|handle|side|front|back|corner|body|base|cap|spout|wall|face|middle|center|centre)\s+of\s+/i;
 const IRRECOVERABLE =
 	/\b(out of reach|unreachable|cannot reach|can't reach|dropped|on the floor|fell|fallen|outside the workspace|out of the workspace|broken|shattered|spilled|spilt|cannot be grasped|can't be grasped|ungraspable|permanent|irreversibl)\w*\b/i;
 
@@ -87,7 +89,23 @@ export const gripperOnly = (s: Pick<Subgoal, "subgoal" | "criterion">) =>
 	!MOVE_WORDS.test(s.subgoal) &&
 	!wantsHolding(s.criterion);
 
-const STOP = new Set(["the", "a", "an", "of", "on", "in", "to", "and", "with", "from", "at", "it", "its", "into", "onto"]);
+const STOP = new Set([
+	"the",
+	"a",
+	"an",
+	"of",
+	"on",
+	"in",
+	"to",
+	"and",
+	"with",
+	"from",
+	"at",
+	"it",
+	"its",
+	"into",
+	"onto",
+]);
 export const nouns = (s: string) =>
 	new Set(
 		s
@@ -263,7 +281,9 @@ export function envelope(json: unknown): { raw?: Raw; shape?: string; error?: st
 	if (Array.isArray(json)) return { raw: { subgoals: json.filter(isObj), rationale: "", recoverable: true } };
 	if (!isObj(json)) return { error: "the reply is not a JSON object" };
 	if (Array.isArray(json.subgoals)) {
-		const clauses = Array.isArray(json.clauses) ? json.clauses.map((c) => String(c ?? "").trim()).filter(Boolean) : undefined;
+		const clauses = Array.isArray(json.clauses)
+			? json.clauses.map((c) => String(c ?? "").trim()).filter(Boolean)
+			: undefined;
 		return {
 			raw: {
 				subgoals: json.subgoals.filter(isObj),
@@ -282,7 +302,13 @@ export function envelope(json: unknown): { raw?: Raw; shape?: string; error?: st
 }
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-function subgoalOf(r: RawSubgoal, fixed: readonly CameraName[], budget: number, clauseCount: number, task: string): Subgoal {
+function subgoalOf(
+	r: RawSubgoal,
+	fixed: readonly CameraName[],
+	budget: number,
+	clauseCount: number,
+	task: string,
+): Subgoal {
 	const boxes: Partial<Record<CameraName, Box>> = {};
 	if (isObj(r.target_boxes))
 		for (const [cam, box] of Object.entries(r.target_boxes))
@@ -312,9 +338,12 @@ export function complaints(
 	const out: { key: string; text: string }[] = [];
 	const steps = raw.subgoals;
 	if (o.first && !steps.length) out.push({ key: "empty", text: "the plan is empty" });
-	const missing = steps.filter((s) => !String(s.name ?? "").trim() || !String(s.subgoal ?? "").trim() || !String(s.criterion ?? "").trim());
+	const missing = steps.filter(
+		(s) => !String(s.name ?? "").trim() || !String(s.subgoal ?? "").trim() || !String(s.criterion ?? "").trim(),
+	);
 	if (missing.length) out.push({ key: "empty", text: `${missing.length} step(s) lack name, subgoal or criterion` });
-	if (steps.length > MAX_SUBGOALS) out.push({ key: "size", text: `${steps.length} steps exceed the ${MAX_SUBGOALS} allowed` });
+	if (steps.length > MAX_SUBGOALS)
+		out.push({ key: "size", text: `${steps.length} steps exceed the ${MAX_SUBGOALS} allowed` });
 	const unboxed = steps.filter((s) => {
 		const target = cleanTarget(String(s.target ?? ""), o.task);
 		if (!target) return false;
@@ -328,26 +357,44 @@ export function complaints(
 		});
 	const side = steps.filter(
 		(s) =>
-			(TILT_WORDS.test(String(s.subgoal ?? "")) || (HANDLE_WORDS.test(String(s.subgoal ?? "")) && HOLD_WORDS.test(String(s.criterion ?? "")))) &&
+			(TILT_WORDS.test(String(s.subgoal ?? "")) ||
+				(HANDLE_WORDS.test(String(s.subgoal ?? "")) && HOLD_WORDS.test(String(s.criterion ?? "")))) &&
 			!SIDE_WORDS.test(String(s.subgoal ?? "")),
 	);
 	if (side.length)
-		out.push({ key: "side", text: `${side.map((s) => String(s.name)).join(", ")} tilt the gripper or grasp a sliding handle but do not say "from the side"` });
-	if (o.first && !raw.clauses?.length) out.push({ key: "clauses", text: "the first plan must list the task's clauses" });
+		out.push({
+			key: "side",
+			text: `${side.map((s) => String(s.name)).join(", ")} tilt the gripper or grasp a sliding handle but do not say "from the side"`,
+		});
+	if (o.first && !raw.clauses?.length)
+		out.push({ key: "clauses", text: "the first plan must list the task's clauses" });
 	if (raw.clauses?.length) {
 		const served = new Set(steps.map((s) => Number(s.clause)));
 		const orphan = raw.clauses.map((_, i) => i).filter((i) => !served.has(i));
-		if (orphan.length && o.first) out.push({ key: "clause", text: `clause(s) ${orphan.join(", ")} have no step serving them` });
+		if (orphan.length && o.first)
+			out.push({ key: "clause", text: `clause(s) ${orphan.join(", ")} have no step serving them` });
 		if (o.first) {
 			const lookOnly = raw.clauses
 				.map((_, i) => i)
-				.filter((i) => served.has(i) && !steps.some((s) => Number(s.clause) === i && acts({ subgoal: String(s.subgoal ?? ""), criterion: String(s.criterion ?? "") })));
-			if (lookOnly.length) out.push({ key: "act", text: `clause(s) ${lookOnly.join(", ")} are only looked at, never acted on` });
+				.filter(
+					(i) =>
+						served.has(i) &&
+						!steps.some(
+							(s) =>
+								Number(s.clause) === i &&
+								acts({ subgoal: String(s.subgoal ?? ""), criterion: String(s.criterion ?? "") }),
+						),
+				);
+			if (lookOnly.length)
+				out.push({ key: "act", text: `clause(s) ${lookOnly.join(", ")} are only looked at, never acted on` });
 		}
 	}
 	const repeated = steps.filter((s) => o.cannot.some((c) => c.trim() && c.trim() === String(s.subgoal ?? "").trim()));
 	if (repeated.length)
-		out.push({ key: "cannot", text: `${repeated.map((s) => String(s.name)).join(", ")} repeat a step the robot measured as impossible` });
+		out.push({
+			key: "cannot",
+			text: `${repeated.map((s) => String(s.name)).join(", ")} repeat a step the robot measured as impossible`,
+		});
 	return out;
 }
 const ONCE = new Set(["boxes", "clauses", "cannot"]);
@@ -360,7 +407,14 @@ async function askPlan(
 	role: "planner",
 	prompt: Prompt,
 	imgs: ImageContent[],
-	o: { first: boolean; fixed: readonly CameraName[]; cannot: readonly string[]; budget: number; task: string; signal?: AbortSignal },
+	o: {
+		first: boolean;
+		fixed: readonly CameraName[];
+		cannot: readonly string[];
+		budget: number;
+		task: string;
+		signal?: AbortSignal;
+	},
 ): Promise<{ raw?: Raw; error?: string; attempts: number; reasks: Record<string, number>; calls: RoleCallRecord[] }> {
 	const calls: RoleCallRecord[] = [];
 	const reasks: Record<string, number> = {};
@@ -395,7 +449,9 @@ async function askPlan(
 		if (!open.length) return { raw: env.raw, attempts, reasks, calls };
 		text = `${prompt.user}\n\nYour last answer was rejected: ${[...open.map((c) => c.text), ...(env.shape ? [env.shape] : [])].join("; ")}. Fix these and answer again with the whole plan.`;
 	}
-	return last ? { raw: last, attempts, reasks, calls } : { error: "the planner gave no usable plan in 3 attempts", attempts, reasks, calls };
+	return last
+		? { raw: last, attempts, reasks, calls }
+		: { error: "the planner gave no usable plan in 3 attempts", attempts, reasks, calls };
 }
 
 /** Unique names, avoiding the done steps' (spec-planner §2.2: `_2`, `_3` suffixes). */
@@ -415,7 +471,14 @@ export async function plan(ask: Ask, p: PlanInput, signal?: AbortSignal): Promis
 	const fixed = fixedCameras(p.frame.camera_names);
 	const prompt = planPrompt(p, fixed);
 	const imgs = images(p.frame, "marked768");
-	const r = await askPlan(ask, "planner", prompt, imgs, { first: true, fixed, cannot: [], budget: p.budget, task: p.task, signal });
+	const r = await askPlan(ask, "planner", prompt, imgs, {
+		first: true,
+		fixed,
+		cannot: [],
+		budget: p.budget,
+		task: p.task,
+		signal,
+	});
 	if (!r.raw) return { error: r.error, attempts: r.attempts, reasks: r.reasks, clamped: [], calls: r.calls };
 	const clamped: string[] = [];
 	let clauses = r.raw.clauses ?? [];
@@ -426,11 +489,18 @@ export async function plan(ask: Ask, p: PlanInput, signal?: AbortSignal): Promis
 	const steps = r.raw.subgoals.map((s) => subgoalOf(s, fixed, p.budget, clauses.length, p.task));
 	if (!r.raw.clauses?.length) for (const s of steps) s.clause = 0;
 	r.raw.subgoals.forEach((s, i) => {
-		if (steps[i].max_cycles !== Number(s.max_cycles)) clamped.push(`${steps[i].name}: max_cycles clamped to ${steps[i].max_cycles}`);
+		if (steps[i].max_cycles !== Number(s.max_cycles))
+			clamped.push(`${steps[i].name}: max_cycles clamped to ${steps[i].max_cycles}`);
 	});
 	dedupe(steps, []);
 	if (!steps.length)
-		return { error: "the first plan is empty after mending", attempts: r.attempts, reasks: r.reasks, clamped, calls: r.calls };
+		return {
+			error: "the first plan is empty after mending",
+			attempts: r.attempts,
+			reasks: r.reasks,
+			clamped,
+			calls: r.calls,
+		};
 	const boxed = steps.some((s) => Object.keys(s.target_boxes).length);
 	return {
 		plan: {
@@ -457,7 +527,14 @@ export async function replan(ask: Ask, p: ReplanInput, signal?: AbortSignal): Pr
 	const fixed = fixedCameras(p.frame.camera_names);
 	const prompt = replanPrompt(p, fixed);
 	const imgs = images(p.frame, "marked768");
-	const r = await askPlan(ask, "planner", prompt, imgs, { first: false, fixed, cannot: p.cannot, budget: p.budget, task: p.task, signal });
+	const r = await askPlan(ask, "planner", prompt, imgs, {
+		first: false,
+		fixed,
+		cannot: p.cannot,
+		budget: p.budget,
+		task: p.task,
+		signal,
+	});
 	if (!r.raw) return { error: r.error, attempts: r.attempts, reasks: r.reasks, clamped: [], calls: r.calls };
 	const clamped: string[] = [];
 	const clauses = p.plan.clauses;
@@ -481,8 +558,17 @@ export async function replan(ask: Ask, p: ReplanInput, signal?: AbortSignal): Pr
 	}
 	if (p.holding) {
 		const before = steps.length;
-		steps = steps.filter((s) => !(GRIPPER_VERBS.test(s.subgoal) && /\bopen|release|let go\b/i.test(s.subgoal) && !/\b(on|in|into|onto|over|at)\b/i.test(s.subgoal) && !s.target));
-		if (steps.length !== before) clamped.push(`${before - steps.length} step(s) that open the gripper with no place to put down removed`);
+		steps = steps.filter(
+			(s) =>
+				!(
+					GRIPPER_VERBS.test(s.subgoal) &&
+					/\bopen|release|let go\b/i.test(s.subgoal) &&
+					!/\b(on|in|into|onto|over|at)\b/i.test(s.subgoal) &&
+					!s.target
+				),
+		);
+		if (steps.length !== before)
+			clamped.push(`${before - steps.length} step(s) that open the gripper with no place to put down removed`);
 	}
 	if (!steps.length && old.length) {
 		clamped.push("nothing left after mending: the old remaining steps put back");
@@ -517,10 +603,29 @@ export async function replan(ask: Ask, p: ReplanInput, signal?: AbortSignal): Pr
 		rationale: r.raw.rationale,
 		clauses,
 		boxed_on: boxedNow ? fixed : p.plan.boxed_on,
-		...(boxedNow ? { boxed_at: p.frame.frame_clock_s } : p.plan.boxed_at !== undefined ? { boxed_at: p.plan.boxed_at } : {}),
-		boxes_kept_from: { ...Object.fromEntries(kept.filter((s) => s.name in p.plan.boxes_kept_from).map((s) => [s.name, p.plan.boxes_kept_from[s.name]])), ...boxes_kept_from },
+		...(boxedNow
+			? { boxed_at: p.frame.frame_clock_s }
+			: p.plan.boxed_at !== undefined
+				? { boxed_at: p.plan.boxed_at }
+				: {}),
+		boxes_kept_from: {
+			...Object.fromEntries(
+				kept.filter((s) => s.name in p.plan.boxes_kept_from).map((s) => [s.name, p.plan.boxes_kept_from[s.name]]),
+			),
+			...boxes_kept_from,
+		},
 		recoverable: r.raw.recoverable,
 	};
-	const gave_up = !r.raw.recoverable && gaveUp(r.raw.rationale, p.replans) ? r.raw.rationale || "the planner declared the task unrecoverable" : undefined;
-	return { plan: out, ...(gave_up ? { gave_up } : {}), attempts: r.attempts, reasks: r.reasks, clamped, calls: r.calls };
+	const gave_up =
+		!r.raw.recoverable && gaveUp(r.raw.rationale, p.replans)
+			? r.raw.rationale || "the planner declared the task unrecoverable"
+			: undefined;
+	return {
+		plan: out,
+		...(gave_up ? { gave_up } : {}),
+		attempts: r.attempts,
+		reasks: r.reasks,
+		clamped,
+		calls: r.calls,
+	};
 }

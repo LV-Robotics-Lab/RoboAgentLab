@@ -12,6 +12,20 @@
  */
 
 import {
+	allMet,
+	type ClauseState,
+	clausesResult,
+	codeEvent,
+	emptyClauses,
+	fold,
+	isTurnClause,
+	measuredHit,
+	measuredMiss,
+	PUSHED_ALONG_MM,
+	TURNED_DEG,
+	unmet,
+} from "./clauses.ts";
+import {
 	type Ask,
 	type Carry,
 	type Cycle,
@@ -37,28 +51,14 @@ import {
 	type SubgoalInput,
 	type SubgoalRun,
 } from "./contract.ts";
-import {
-	allMet,
-	type ClauseState,
-	clausesResult,
-	codeEvent,
-	emptyClauses,
-	fold,
-	isTurnClause,
-	measuredHit,
-	measuredMiss,
-	PUSHED_ALONG_MM,
-	TURNED_DEG,
-	unmet,
-} from "./clauses.ts";
 import { EvidenceLog } from "./evidence.ts";
 import { labelDirection } from "./frames.ts";
 import {
 	acts,
 	describePlan,
+	plan as firstPlan,
 	type Plan,
 	type PlanOutcome,
-	plan as firstPlan,
 	replan,
 	sameObject,
 	type Verdicted,
@@ -208,8 +208,9 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 		const robotText = (f: Frame) => describeRobot(f);
 
 		// 2. the opening picture and the first plan
-		const picture = yield* look(m.cache, "opening", state.observes);
-		if (!picture) return end("error", "no_opening_observation", "the robot gave no opening observation");
+		const opened = yield* look(m.cache, "opening", state.observes);
+		if (!opened) return end("error", "no_opening_observation", "the robot gave no opening observation");
+		const picture: Frame = opened;
 		startedAt = Date.now();
 		m.clock.deadline_at = startedAt + m.budgetS * 1000;
 		let plan: Plan;
@@ -254,13 +255,19 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 		for (;;) {
 			const cancel = m.clock.cancelled();
 			if (cancel?.by === "mission") return end("cancelled", "cancelled", cancel.reason);
-			if (cancel?.by === "deadline" || m.clock.left_s() <= 0) return end("timeout", "clock_ran_out", "the mission clock ran out");
+			if (cancel?.by === "deadline" || m.clock.left_s() <= 0)
+				return end("timeout", "clock_ran_out", "the mission clock ran out");
 			// the plan ran out: the whole-task check
 			if (index >= plan.subgoals.length) {
 				const check = yield* wholeTask(plan, picture, "every step of the plan was judged done", false);
 				if (check.outcome) return check.outcome;
 				if (check.replan) {
-					const r = yield* doReplan(plan, plan.subgoals.length, "every step of the plan was judged done, but the task is not complete", false);
+					const r = yield* doReplan(
+						plan,
+						plan.subgoals.length,
+						"every step of the plan was judged done, but the task is not complete",
+						false,
+					);
 					if (r.outcome) return r.outcome;
 					plan = r.plan;
 					index = r.index;
@@ -269,18 +276,28 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 				continue;
 			}
 			if (state.actions >= state.actions_cap)
-				return end("exhausted", "actions_exhausted", `${state.actions} actions used; the cap was ${state.actions_cap}`);
+				return end(
+					"exhausted",
+					"actions_exhausted",
+					`${state.actions} actions used; the cap was ${state.actions_cap}`,
+				);
 			const subgoal = plan.subgoals[index];
 			if (!clauseStarted.has(subgoal.clause) && subgoal.clause >= 0) clauseStarted.set(subgoal.clause, Date.now());
 			// 3. one attempt
 			const a = yield* attemptOnce(subgoal, attempt);
 			state.actions += a.run.cycles.filter((c) => c.steps.length).length;
 			if (a.run.ending === "EPISODE_OVER" || a.run.episode_over) {
-				const check = yield* wholeTask(plan, picture, "the robot cannot move any more; judge the scene as it is", true);
+				const check = yield* wholeTask(
+					plan,
+					picture,
+					"the robot cannot move any more; judge the scene as it is",
+					true,
+				);
 				if (check.outcome) return check.outcome;
 				return end("exhausted", "episode_over", "the episode ended before the task was complete");
 			}
-			if (a.run.ending === "ERROR" && !a.verdict) return end("error", "executor_error", a.run.error ?? a.run.ending_text);
+			if (a.run.ending === "ERROR" && !a.verdict)
+				return end("error", "executor_error", a.run.error ?? a.run.ending_text);
 			if (!a.verdict) {
 				const c = m.clock.cancelled();
 				if (c?.by === "mission") return end("cancelled", "cancelled", c.reason);
@@ -345,7 +362,11 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 		async function* attemptOnce(
 			subgoal: Subgoal,
 			attemptNo: number,
-		): AsyncGenerator<MmCall, { run: SubgoalRun; verdict?: Verdict; claim: Claim; never_moved: boolean; elapsed_s: number }, MmReply> {
+		): AsyncGenerator<
+			MmCall,
+			{ run: SubgoalRun; verdict?: Verdict; claim: Claim; never_moved: boolean; elapsed_s: number },
+			MmReply
+		> {
 			const t0 = Date.now();
 			const holdStep = wantsHolding(subgoal.criterion);
 			const releaseStep = wantsRelease(subgoal.criterion);
@@ -353,7 +374,6 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			let holdingAtStart: boolean | undefined;
 			let lostGrasp = false;
 			let released: { opening_mm: number } | undefined;
-			let openedTo: number | undefined;
 			let payloadWidth: number | undefined;
 			let heldThisStep = false;
 			const localNet = zeroNet();
@@ -368,7 +388,6 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 					accumulate(e.step, netStructured, true);
 					accumulate(e.step, localNet, false);
 					accumulate(e.step, localStructured, true);
-					if (e.step.kind === "gripper" && /open/i.test(e.step.label) && e.step.detail?.opening_mm !== undefined) openedTo = e.step.detail.opening_mm;
 				}
 				if (e.type === "held") {
 					heldThisStep = true;
@@ -376,7 +395,12 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 					netStructured = zeroNet();
 					holdAt = m.cache.latest?.frame_clock_s;
 				}
-				if (e.type === "reached" && e.reach.from_plan_boxes && e.reach.located?.point_mm && !marks.has(subgoal.target))
+				if (
+					e.type === "reached" &&
+					e.reach.from_plan_boxes &&
+					e.reach.located?.point_mm &&
+					!marks.has(subgoal.target)
+				)
 					marks.set(subgoal.target, e.reach.located.point_mm);
 			};
 			// the watchdogs read every frame the executor sees (the original's tee on observe)
@@ -385,18 +409,39 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 				before ??= f;
 				if (!(holdStep || releaseStep)) return;
 				if (f.grasp.holding !== null && holdingAtStart === undefined) holdingAtStart = f.grasp.holding;
-				if (holdingAtStart === true && f.grasp.holding === false && !lostGrasp && !released && !(releaseStep && f.gripper.commanded !== "close")) {
+				if (
+					holdingAtStart === true &&
+					f.grasp.holding === false &&
+					!lostGrasp &&
+					!released &&
+					!(releaseStep && f.gripper.commanded !== "close")
+				) {
 					lostGrasp = true;
-					evidence.add("alert", subgoal.name, "stop/dropped: the gripper reading went from holding to not holding", { level: "stop", finding: "dropped" });
+					evidence.add(
+						"alert",
+						subgoal.name,
+						"stop/dropped: the gripper reading went from holding to not holding",
+						{ level: "stop", finding: "dropped" },
+					);
 					m.clock.cancel({ by: "grasp_watchdog", reason: "the grasp was lost" });
 				}
-				if (releaseStep && holdingAtStart === true && f.gripper.commanded !== "close" && !released && f.grasp.holding !== true) {
+				if (
+					releaseStep &&
+					holdingAtStart === true &&
+					f.gripper.commanded !== "close" &&
+					!released &&
+					f.grasp.holding !== true
+				) {
 					released = { opening_mm: f.gripper.opening_mm };
-					evidence.add("verdict", subgoal.name, "released: the jaws opened while holding on a release step", { gate: "released" });
+					evidence.add("verdict", subgoal.name, "released: the jaws opened while holding on a release step", {
+						gate: "released",
+					});
 					m.clock.cancel({ by: "release_watchdog", reason: "the payload was released" });
 				}
 			};
 			m.clock.clear();
+			// The watchdogs see the frame the executor starts from (the original's tee sees its first observe).
+			watch(before);
 			const ex = m.runSubgoal({
 				task: m.task,
 				subgoal,
@@ -423,7 +468,8 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			state.observes.push(...run.observes);
 			cycles.push(...run.cycles);
 			carry = run.carry;
-			for (const c of run.cycles) if (c.release?.payload_width_mm !== undefined) payloadWidth = c.release.payload_width_mm;
+			for (const c of run.cycles)
+				if (c.release?.payload_width_mm !== undefined) payloadWidth = c.release.payload_width_mm;
 			if (lostGrasp || released) holdAt = m.cache.latest?.frame_clock_s ?? holdAt;
 			if (lostGrasp) {
 				net = zeroNet();
@@ -445,7 +491,10 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 					structured: { move_mm: r1(norm(localStructured.move)), turn_deg: r1(localStructured.turn) },
 				},
 			};
-			if (Math.abs(norm(localNet.move) - norm(localStructured.move)) > 5 || Math.abs(localNet.turn - localStructured.turn) > 5)
+			if (
+				Math.abs(norm(localNet.move) - norm(localStructured.move)) > 5 ||
+				Math.abs(localNet.turn - localStructured.turn) > 5
+			)
 				state.net_motion_disagreements++;
 			state.subgoals.push(record);
 			m.log("motormind_cycle", {
@@ -453,8 +502,22 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 				attempt: attemptNo,
 				cycles: run.cycles.map((c) => ({
 					index: c.index,
-					proposal: c.proposal ? { assessment: c.proposal.assessment, done: c.proposal.done, expect: c.proposal.expect, deltas: c.proposal.deltas } : null,
-					steps: c.steps.map((s) => ({ label: s.label, outcome: s.outcome, abort_reason: s.abort_reason ?? "", along_axis_mm: s.along_axis_mm, lateral_mm: s.lateral_mm, turned_deg: s.turned_deg })),
+					proposal: c.proposal
+						? {
+								assessment: c.proposal.assessment,
+								done: c.proposal.done,
+								expect: c.proposal.expect,
+								deltas: c.proposal.deltas,
+							}
+						: null,
+					steps: c.steps.map((s) => ({
+						label: s.label,
+						outcome: s.outcome,
+						abort_reason: s.abort_reason ?? "",
+						along_axis_mm: s.along_axis_mm,
+						lateral_mm: s.lateral_mm,
+						turned_deg: s.turned_deg,
+					})),
 					located: c.reach?.located ?? null,
 					batch: c.batch ?? null,
 					release: c.release ?? null,
@@ -470,8 +533,10 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			});
 			// 8. no verdict on error, cancel or clock
 			const cancel = m.clock.cancelled();
-			if (run.ending === "ERROR" || run.ending === "EPISODE_OVER" || run.episode_over) return { run, claim, never_moved: neverMoved, elapsed_s };
-			if (cancel && (cancel.by === "mission" || cancel.by === "deadline")) return { run, claim, never_moved: neverMoved, elapsed_s };
+			if (run.ending === "ERROR" || run.ending === "EPISODE_OVER" || run.episode_over)
+				return { run, claim, never_moved: neverMoved, elapsed_s };
+			if (cancel && (cancel.by === "mission" || cancel.by === "deadline"))
+				return { run, claim, never_moved: neverMoved, elapsed_s };
 			if (run.ending === "CANCELLED" && !cancel) return { run, claim, never_moved: neverMoved, elapsed_s };
 			// 9. a fresh picture
 			const now = yield* look(m.cache, "before_verdict", state.observes);
@@ -496,7 +561,12 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			// 10. the verdict, code gates first
 			let verdict: Verdict;
 			if (lostGrasp) {
-				verdict = coded("not_done", "the grasp was lost: the gripper reading went from holding to not holding", "lost_grasp", true);
+				verdict = coded(
+					"not_done",
+					"the grasp was lost: the gripper reading went from holding to not holding",
+					"lost_grasp",
+					true,
+				);
 				verdict = await withTask(verdict, input);
 			} else if (run.ending === "CANNOT_FROM_THE_SIDE") {
 				verdict = coded("not_done", run.ending_text || "the side approach cannot be made here", "cannot", true);
@@ -505,17 +575,36 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 				const miss = releaseMiss(run);
 				verdict =
 					miss === undefined || !miss.missed
-						? coded("done", `released ${miss ? `${r1(miss.offset_mm)} mm from the mark (allowed ${r1(miss.allowed_mm)})` : "over the place"}`, "released", false)
-						: coded("not_done", `released ${r1(miss.offset_mm)} mm from the mark; ${r1(miss.allowed_mm)} mm were allowed`, "release_missed", true);
+						? coded(
+								"done",
+								`released ${miss ? `${r1(miss.offset_mm)} mm from the mark (allowed ${r1(miss.allowed_mm)})` : "over the place"}`,
+								"released",
+								false,
+							)
+						: coded(
+								"not_done",
+								`released ${r1(miss.offset_mm)} mm from the mark; ${r1(miss.allowed_mm)} mm were allowed`,
+								"release_missed",
+								true,
+							);
 				if (subgoal.clause >= 0) (miss?.missed ? measuredMiss : measuredHit)(ledger, subgoal.clause);
 				verdict = await withTask(verdict, input);
 			} else {
 				verdict = await verify(m.ask, input);
 				// 11. a placing step judged by the model: ask the whole task once more
-				if (releaseStep && !verdict.gate && !verdict.asked && (released || verdict.status === "done")) verdict = await withTask(verdict, input);
+				if (releaseStep && !verdict.gate && !verdict.asked && (released || verdict.status === "done"))
+					verdict = await withTask(verdict, input);
 			}
-			record.verdict = { status: verdict.status, because: verdict.because, gate: verdict.gate, replan: verdict.replan };
-			evidence.add("verdict", subgoal.name, `${verdict.status}: ${verdict.because}`, { gate: verdict.gate, cycle: run.cycles.length });
+			record.verdict = {
+				status: verdict.status,
+				because: verdict.because,
+				gate: verdict.gate,
+				replan: verdict.replan,
+			};
+			evidence.add("verdict", subgoal.name, `${verdict.status}: ${verdict.because}`, {
+				gate: verdict.gate,
+				cycle: run.cycles.length,
+			});
 			m.log("motormind_verdict", {
 				subgoal: subgoal.name,
 				attempt: attemptNo,
@@ -526,7 +615,9 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 				replan: verdict.replan,
 				clauses: verdict.clauses,
 				gate: verdict.gate,
-				asked: verdict.asked ? { status: verdict.asked.status, because: verdict.asked.because, clauses: verdict.asked.clauses } : null,
+				asked: verdict.asked
+					? { status: verdict.asked.status, because: verdict.asked.because, clauses: verdict.asked.clauses }
+					: null,
 				overrode: verdict.overrode ?? null,
 				obs_id: now.obs_id ?? null,
 				note_version: 0,
@@ -538,7 +629,16 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			return { run, verdict, claim, never_moved: neverMoved, elapsed_s };
 
 			function coded(status: Verdict["status"], because: string, gate: string, replanIt: boolean): Verdict {
-				return { status, because, evidence: "code measurement", identity: "", replan: replanIt, clauses: [], gate, calls: [] };
+				return {
+					status,
+					because,
+					evidence: "code measurement",
+					identity: "",
+					replan: replanIt,
+					clauses: [],
+					gate,
+					calls: [],
+				};
 			}
 			async function withTask(v: Verdict, input: Parameters<typeof askTask>[1]): Promise<Verdict> {
 				const asked = await askTask(m.ask, input);
@@ -559,7 +659,8 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			cannotMove: boolean,
 		): AsyncGenerator<MmCall, { outcome?: MissionEnd; replan?: boolean }, MmReply> {
 			const now = yield* look(m.cache, "task_check", state.observes);
-			if (!now) return { outcome: end("error", "no_observation", "the robot gave no observation for the task check") };
+			if (!now)
+				return { outcome: end("error", "no_observation", "the robot gave no observation for the task check") };
 			lastNow = now;
 			const planText = describePlan(p.subgoals.map((s) => ({ subgoal: s, verdict: verdicts.get(s.name) })));
 			const task: Subgoal = {
@@ -577,7 +678,17 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 				subgoal: task,
 				before: opening,
 				now,
-				claim: { done: true, assessment: claimText, cycles: 0, stopped_by: "", ending: claimText, turn_net_deg: 0, turn_total_deg: 0, move_net_mm: 0, move_total_mm: 0 },
+				claim: {
+					done: true,
+					assessment: claimText,
+					cycles: 0,
+					stopped_by: "",
+					ending: claimText,
+					turn_net_deg: 0,
+					turn_total_deg: 0,
+					move_net_mm: 0,
+					move_total_mm: 0,
+				},
 				note: note(),
 				planText,
 				robotText: robotText(now),
@@ -588,7 +699,12 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			let v = await verify(m.ask, input);
 			fold(ledger, v.clauses, true);
 			// one more ask on a new picture when every clause has a code event behind it
-			if (!askedWholeOnce && v.status !== "task_done" && ledger.clauses.every((_, i) => ledger.events.has(i)) && ledger.clauses.length) {
+			if (
+				!askedWholeOnce &&
+				v.status !== "task_done" &&
+				ledger.clauses.every((_, i) => ledger.events.has(i)) &&
+				ledger.clauses.length
+			) {
 				askedWholeOnce = true;
 				const again = yield* look(m.cache, "task_check", state.observes);
 				if (again) {
@@ -618,7 +734,14 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			});
 			if (v.status === "task_done" && allMet(ledger)) return { outcome: end("task_done", "task_done", v.because) };
 			if (v.status === "abort") return { outcome: end("aborted", "verdict_abort", v.because) };
-			if (allMet(ledger)) return { outcome: end("exhausted", "clauses_met_but_not_done", `every clause was seen met, yet the check says: ${v.because}`) };
+			if (allMet(ledger))
+				return {
+					outcome: end(
+						"exhausted",
+						"clauses_met_but_not_done",
+						`every clause was seen met, yet the check says: ${v.because}`,
+					),
+				};
 			if (cannotMove) return { outcome: end("exhausted", "episode_over", v.because) };
 			return { replan: true };
 		}
@@ -636,29 +759,56 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			const object = failed?.target ?? "";
 			const key = [...replansOf.keys()].find((k) => sameObject(k, object)) ?? object;
 			const strict = (replansOf.get(key) ?? 0) >= 1;
-			const unmetNow = keep >= p.subgoals.length ? unmet(ledger) : unmet(ledger).filter((u) => p.subgoals.slice(keep).some((s) => s.clause === u.i));
+			const unmetNow =
+				keep >= p.subgoals.length
+					? unmet(ledger)
+					: unmet(ledger).filter((u) => p.subgoals.slice(keep).some((s) => s.clause === u.i));
 			// the price gate
 			const estimate = unmetNow.reduce((sum, u) => {
 				const started = clauseStarted.get(u.i);
 				const remaining = p.subgoals.slice(keep).filter((s) => s.clause === u.i);
 				if (started === undefined) return sum + SUBGOAL_MEDIAN_S + SUBGOAL_TAX_S;
 				if (remaining.length)
-					return sum + remaining.reduce((a, s) => a + Math.min(firstDuration.get(s.name) ?? SUBGOAL_MEDIAN_S, SUBGOAL_MEDIAN_S), 0);
+					return (
+						sum +
+						remaining.reduce(
+							(a, s) => a + Math.min(firstDuration.get(s.name) ?? SUBGOAL_MEDIAN_S, SUBGOAL_MEDIAN_S),
+							0,
+						)
+					);
 				return sum + (Date.now() - started) / 1000;
 			}, 0);
 			const wouldNeed = (state.plan_calls_s.at(-1) ?? 0) + estimate;
 			const left = m.clock.left_s();
 			if (left < Math.max(REPLAN_NEEDS_S, wouldNeed)) {
-				state.replan_refused_for_price = { left_s: r1(left), would_need_s: r1(wouldNeed), estimate_s: r1(estimate), unmet: unmetNow };
-				return { outcome: end("timeout", "replan_refused_for_price", `${r1(left)} s left, a replan would need ${r1(wouldNeed)} s`), plan: p, index: keep };
+				state.replan_refused_for_price = {
+					left_s: r1(left),
+					would_need_s: r1(wouldNeed),
+					estimate_s: r1(estimate),
+					unmet: unmetNow,
+				};
+				return {
+					outcome: end(
+						"timeout",
+						"replan_refused_for_price",
+						`${r1(left)} s left, a replan would need ${r1(wouldNeed)} s`,
+					),
+					plan: p,
+					index: keep,
+				};
 			}
-			if (state.replans >= m.maxReplans) return { outcome: end("exhausted", "max_replans", `${state.replans} replans used`), plan: p, index: keep };
+			if (state.replans >= m.maxReplans)
+				return { outcome: end("exhausted", "max_replans", `${state.replans} replans used`), plan: p, index: keep };
 			state.replans++;
 			if (object) replansOf.set(key, (replansOf.get(key) ?? 0) + 1);
 			const frame = lastNow ?? picture;
 			const last = state.subgoals.at(-1);
 			const rebox: string[] = [];
-			if (failed && (fromCannot || /could not find|no coordinates|another product|printed/i.test(last?.verdict?.because ?? ""))) rebox.push(failed.target);
+			if (
+				failed &&
+				(fromCannot || /could not find|no coordinates|another product|printed/i.test(last?.verdict?.because ?? ""))
+			)
+				rebox.push(failed.target);
 			const t0 = Date.now();
 			const r = await replan(m.ask, {
 				task: m.task,
@@ -675,7 +825,10 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 				unmet: unmetNow,
 				note: note(),
 				strict,
-				triedWays: strict || fromCannot ? triedWays.get(key) ?? failures.get(key)?.map((f) => f.split(": ").slice(1).join(": ")) : undefined,
+				triedWays:
+					strict || fromCannot
+						? (triedWays.get(key) ?? failures.get(key)?.map((f) => f.split(": ").slice(1).join(": ")))
+						: undefined,
 				holding: frame.grasp.holding === true,
 				rebox,
 				since: holdAt,
@@ -686,11 +839,17 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			state.plan_calls_s.push((Date.now() - t0) / 1000);
 			state.plans++;
 			logPlan("replan", r, trigger);
-			if (!r.plan) return { outcome: end("error", "replan_failed", r.error ?? "the replan failed"), plan: p, index: keep };
+			if (!r.plan)
+				return { outcome: end("error", "replan_failed", r.error ?? "the replan failed"), plan: p, index: keep };
 			const fresh = r.plan.subgoals.slice(keep).filter((s) => !(s.clause >= 0 && ledger.met.has(s.clause)));
 			if (!fresh.some((s) => acts(s))) {
 				state.no_new_steps++;
-				if (state.no_new_steps >= 2) return { outcome: end("exhausted", "nothing_to_do", "the planner twice found nothing left to do"), plan: p, index: keep };
+				if (state.no_new_steps >= 2)
+					return {
+						outcome: end("exhausted", "nothing_to_do", "the planner twice found nothing left to do"),
+						plan: p,
+						index: keep,
+					};
 				const truncated: Plan = { ...p, subgoals: p.subgoals.slice(0, keep) };
 				return { plan: truncated, index: truncated.subgoals.length };
 			}
@@ -727,14 +886,19 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 				calls: p.calls,
 				elapsed_s: r1(state.plan_calls_s.at(-1) ?? 0),
 			});
-			evidence.add("plan", "mission", `${kind}: ${p.plan ? `${p.plan.subgoals.length} steps` : p.error}`, { trigger });
+			evidence.add("plan", "mission", `${kind}: ${p.plan ? `${p.plan.subgoals.length} steps` : p.error}`, {
+				trigger,
+			});
 		}
 
 		function boxHint(s: Subgoal): string | undefined {
 			const entries = Object.entries(s.target_boxes);
 			if (!entries.length) return undefined;
 			return entries
-				.map(([cam, b]) => `${cam}: around (${Math.round(((b![0] + b![2]) / 2 / 1000) * 100)}%, ${Math.round(((b![1] + b![3]) / 2 / 1000) * 100)}%) of the view`)
+				.map(
+					([cam, b]) =>
+						`${cam}: around (${Math.round(((b![0] + b![2]) / 2 / 1000) * 100)}%, ${Math.round(((b![1] + b![3]) / 2 / 1000) * 100)}%) of the view`,
+				)
 				.join("; ");
 		}
 
@@ -745,15 +909,28 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			const reach = [...cycles].reverse().find((c) => c.reach?.located?.point_mm)?.reach;
 			const mark = marks.get(s.target);
 			const located = reach?.located;
-			const fromMark = located?.point_mm && mark ? Math.hypot(located.point_mm[0] - mark[0], located.point_mm[1] - mark[1]) : undefined;
+			const fromMark =
+				located?.point_mm && mark
+					? Math.hypot(located.point_mm[0] - mark[0], located.point_mm[1] - mark[1])
+					: undefined;
 			return {
-				done: cycles.some((c) => c.proposal?.done) || ["HELD", "ARRIVED", "RELEASED_IN_CODE", "MODEL_DONE", "DONE_AFTER_LAST"].includes(run.ending),
+				done:
+					cycles.some((c) => c.proposal?.done) ||
+					["HELD", "ARRIVED", "RELEASED_IN_CODE", "MODEL_DONE", "DONE_AFTER_LAST"].includes(run.ending),
 				assessment: lastProposal?.assessment ?? "",
 				cycles: cycles.length,
-				stopped_by: run.ending === "FROZEN" || run.ending === "WALL" ? run.ending : (cycles.at(-1)?.stopped_by ?? ""),
+				stopped_by:
+					run.ending === "FROZEN" || run.ending === "WALL" ? run.ending : (cycles.at(-1)?.stopped_by ?? ""),
 				ending: howItEnded(run, neverMoved),
 				...(reach && located && !located.doubtful && reach.residual_mm !== undefined
-					? { reached: { label: located.label ?? "", residual_mm: reach.residual_mm, target: reach.target, ...(fromMark !== undefined ? { from_mark_mm: fromMark } : {}) } }
+					? {
+							reached: {
+								label: located.label ?? "",
+								residual_mm: reach.residual_mm,
+								target: reach.target,
+								...(fromMark !== undefined ? { from_mark_mm: fromMark } : {}),
+							},
+						}
 					: {}),
 				turn_net_deg: net.turn,
 				turn_total_deg: net.turnTotal,
@@ -771,7 +948,11 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 		function accumulate(step: SegmentReport, into: NetMotion, structured: boolean) {
 			if (step.kind === "translate") {
 				into.moveTotal += Math.abs(step.along_axis_mm);
-				const axis = structured ? step.axis : labelDirection(step.label)?.kind === "translate" ? labelDirection(step.label)?.axis : undefined;
+				const axis = structured
+					? step.axis
+					: labelDirection(step.label)?.kind === "translate"
+						? labelDirection(step.label)?.axis
+						: undefined;
 				if (!axis) return;
 				const mm = Math.abs(step.along_axis_mm);
 				into.move = [into.move[0] + axis[0] * mm, into.move[1] + axis[1] * mm, into.move[2] + axis[2] * mm];
@@ -787,18 +968,47 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 		/** Code events after an attempt (spec-planner §3.7 `what_the_code_settled`): a push ≥ 5 mm, a turn ≥ 1° on a turn clause. */
 		function noteSettled(s: Subgoal, run: SubgoalRun) {
 			if (s.clause < 0) return;
-			const pushed = run.cycles.some((c) => c.steps.some((st) => st.kind === "translate" && /\bpush|contact\b/i.test(st.label) && Math.abs(st.along_axis_mm) >= PUSHED_ALONG_MM && st.axis && Math.abs(st.axis[2]) < 0.5)) ||
-				run.cycles.some((c) => c.proposal?.deltas.some((d) => d.push) && c.steps.some((st) => st.outcome === "contact" && Math.abs(st.along_axis_mm) >= PUSHED_ALONG_MM));
+			const pushed =
+				run.cycles.some((c) =>
+					c.steps.some(
+						(st) =>
+							st.kind === "translate" &&
+							/\bpush|contact\b/i.test(st.label) &&
+							Math.abs(st.along_axis_mm) >= PUSHED_ALONG_MM &&
+							st.axis &&
+							Math.abs(st.axis[2]) < 0.5,
+					),
+				) ||
+				run.cycles.some(
+					(c) =>
+						c.proposal?.deltas.some((d) => d.push) &&
+						c.steps.some((st) => st.outcome === "contact" && Math.abs(st.along_axis_mm) >= PUSHED_ALONG_MM),
+				);
 			const turned =
 				isTurnClause(plan.clauses[s.clause] ?? "") &&
-				run.cycles.some((c) => c.steps.some((st) => st.kind === "rotate" && Math.abs(st.turned_deg) >= TURNED_DEG && st.outcome !== "failed" && !st.abort_reason));
+				run.cycles.some((c) =>
+					c.steps.some(
+						(st) =>
+							st.kind === "rotate" &&
+							Math.abs(st.turned_deg) >= TURNED_DEG &&
+							st.outcome !== "failed" &&
+							!st.abort_reason,
+					),
+				);
 			if (pushed || turned) codeEvent(ledger, s.clause);
 		}
 
-		function triggerText(s: Subgoal, attemptNo: number, v: Verdict, a: { never_moved: boolean; run: SubgoalRun }, fails: string[]): string {
+		function triggerText(
+			s: Subgoal,
+			attemptNo: number,
+			v: Verdict,
+			a: { never_moved: boolean; run: SubgoalRun },
+			fails: string[],
+		): string {
 			const parts = [`${s.name} (attempt ${attemptNo}) was judged ${v.status}: ${v.because}`];
 			if (a.never_moved) parts.push("The robot never moved during the attempt.".slice(0, 200));
-			else if (a.run.ending === "FROZEN" || a.run.ending === "WALL") parts.push(`The executor froze: ${a.run.ending_text}`.slice(0, 200));
+			else if (a.run.ending === "FROZEN" || a.run.ending === "WALL")
+				parts.push(`The executor froze: ${a.run.ending_text}`.slice(0, 200));
 			const recent = fails.slice(-4, -1);
 			if (recent.length) parts.push(`Earlier failures on the same object: ${recent.join(" | ")}`);
 			return parts.join(" ");
@@ -808,7 +1018,8 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 		function graspStepFor(p: Plan, failedIndex: number): number | undefined {
 			const object = p.subgoals[failedIndex].target;
 			let i = failedIndex;
-			while (i - 1 >= 0 && wantsHolding(p.subgoals[i - 1].criterion) && sameObject(p.subgoals[i - 1].target, object)) i--;
+			while (i - 1 >= 0 && wantsHolding(p.subgoals[i - 1].criterion) && sameObject(p.subgoals[i - 1].target, object))
+				i--;
 			return wantsHolding(p.subgoals[i].criterion) ? i : undefined;
 		}
 
@@ -817,11 +1028,18 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			if (now.grasp.holding === true) return false;
 			const span = now.caps.gripper_open_span_m * 1000;
 			const resolution = Math.min(EMPTY_BAND_MM, EMPTY_BAND_SHARE * span);
-			const width = payload ?? run.cycles.map((c) => c.release?.payload_width_mm).filter((w): w is number => w !== undefined).at(-1);
+			const width =
+				payload ??
+				run.cycles
+					.map((c) => c.release?.payload_width_mm)
+					.filter((w): w is number => w !== undefined)
+					.at(-1);
 			return width === undefined ? true : opening > width + resolution;
 		}
 		function releaseMiss(run: SubgoalRun): { missed: boolean; offset_mm: number; allowed_mm: number } | undefined {
-			const rel = [...run.cycles].reverse().find((c) => c.release?.offset_mm !== undefined && c.release.allowed_mm !== undefined)?.release;
+			const rel = [...run.cycles]
+				.reverse()
+				.find((c) => c.release?.offset_mm !== undefined && c.release.allowed_mm !== undefined)?.release;
 			if (!rel || rel.offset_mm === undefined || rel.allowed_mm === undefined) return undefined;
 			const allowed = rel.allowed_mm * (rel.placing_in ? SETTLES_WITHIN : 1);
 			return { missed: rel.offset_mm > allowed, offset_mm: rel.offset_mm, allowed_mm: allowed };
@@ -835,21 +1053,45 @@ export const framesJawsDown = (f: Frame) => jawsDown(f.pose);
 export const subgoalSummary = (s: AttemptRecord[]) =>
 	s.map((a) => ({ ...a, verdict: a.verdict ?? null, obs_id: a.obs_id ?? null }));
 export const roleTotals = (calls: RoleCallRecord[]) => {
-	const by: Record<string, { calls: number; failures_by_kind: Record<string, number>; cost_usd: number; tokens_in: number; tokens_out: number; latencies: number[] }> = {};
+	const by: Record<
+		string,
+		{
+			calls: number;
+			failures_by_kind: Record<string, number>;
+			cost_usd: number;
+			tokens_in: number;
+			tokens_out: number;
+			latencies: number[];
+		}
+	> = {};
 	for (const c of calls) {
-		const r = (by[c.role] ??= { calls: 0, failures_by_kind: {}, cost_usd: 0, tokens_in: 0, tokens_out: 0, latencies: [] });
+		let r = by[c.role];
+		if (!r) {
+			r = { calls: 0, failures_by_kind: {}, cost_usd: 0, tokens_in: 0, tokens_out: 0, latencies: [] };
+			by[c.role] = r;
+		}
 		r.calls++;
-		if (!c.ok) r.failures_by_kind[c.error_kind ?? "unknown"] = (r.failures_by_kind[c.error_kind ?? "unknown"] ?? 0) + 1;
+		if (!c.ok)
+			r.failures_by_kind[c.error_kind ?? "unknown"] = (r.failures_by_kind[c.error_kind ?? "unknown"] ?? 0) + 1;
 		r.cost_usd += c.cost_usd;
 		r.tokens_in += c.tokens_in;
 		r.tokens_out += c.tokens_out;
 		r.latencies.push(c.latency_s);
 	}
-	const pct = (xs: number[], p: number) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(p * xs.length))] : 0);
+	const pct = (xs: number[], p: number) =>
+		xs.length ? [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(p * xs.length))] : 0;
 	return Object.fromEntries(
 		Object.entries(by).map(([role, r]) => [
 			role,
-			{ calls: r.calls, failures_by_kind: r.failures_by_kind, cost_usd: r3(r.cost_usd), tokens_in: r.tokens_in, tokens_out: r.tokens_out, latency_s_p50: r1(pct(r.latencies, 0.5)), latency_s_p90: r1(pct(r.latencies, 0.9)) },
+			{
+				calls: r.calls,
+				failures_by_kind: r.failures_by_kind,
+				cost_usd: r3(r.cost_usd),
+				tokens_in: r.tokens_in,
+				tokens_out: r.tokens_out,
+				latency_s_p50: r1(pct(r.latencies, 0.5)),
+				latency_s_p90: r1(pct(r.latencies, 0.9)),
+			},
 		]),
 	);
 };

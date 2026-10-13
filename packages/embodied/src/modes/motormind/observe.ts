@@ -29,7 +29,9 @@ export function legend(f: Frame): string {
 	const lines = f.camera_names.flatMap((n) => {
 		const c = f.cameras[n];
 		if (!c?.aim_px) return [];
-		return [`- ${n}: the magenta marker (the point under the tool) is at ${r0((c.aim_px[0] / c.width) * 100)}% from the left, ${r0((c.aim_px[1] / c.height) * 100)}% from the top`];
+		return [
+			`- ${n}: the magenta marker (the point under the tool) is at ${r0((c.aim_px[0] / c.width) * 100)}% from the left, ${r0((c.aim_px[1] / c.height) * 100)}% from the top`,
+		];
 	});
 	return lines.join("\n");
 }

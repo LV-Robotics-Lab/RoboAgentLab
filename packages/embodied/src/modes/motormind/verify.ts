@@ -10,14 +10,7 @@
  * `gate` says which rule decided; "" means the model did.
  */
 
-import {
-	type Ask,
-	type Frame,
-	images,
-	type RoleCallRecord,
-	recordOf,
-	type Subgoal,
-} from "./contract.ts";
+import { type Ask, type Frame, images, type RoleCallRecord, recordOf, type Subgoal } from "./contract.ts";
 import { fill, promptFile } from "./models.ts";
 import { type ClauseAnswer, nouns, sameObject, wantsHolding, wantsRelease } from "./planner.ts";
 
@@ -88,8 +81,9 @@ export type VerifyInput = {
 
 const PRINT = /\b(printed|printing|reads|label (says|reads)|text (says|reads)|lettering|written|logo)\b/i;
 const EMPTY_OR_PLACE =
-	/\b(nothing (in|between) the (jaws|gripper|fingers)|not holding|holds? nothing|empty (jaws|gripper)|not (grasped|held|gripped)|(wrong|not the right|incorrect) (position|place|spot|location)|not (over|above|at|on|in) the|missed)\b/i;
-const OTHER_OBJECT = /\b(different|another|other|wrong) (object|item|thing)|\bnot the (right|correct)\b|\binstead of\b/i;
+	/\b(nothing (in|between) the (jaws|gripper|fingers)|(jaws|gripper|fingers) (are|is) empty|not holding|holds? nothing|empty (jaws|gripper)|not (grasped|held|gripped)|(wrong|not the right|incorrect) (position|place|spot|location)|not (over|above|at|on|in) the|missed)\b/i;
+const OTHER_OBJECT =
+	/\b(different|another|other|wrong) (object|item|thing)|\bnot the (right|correct)\b|\binstead of\b/i;
 const LIFT = /\b(lift|lifted|raise|raised|rise|risen|up by|higher)\b/i;
 const TURN_STEP = /\b(turn|twist|rotate|knob|dial|screw)\w*\b/i;
 
@@ -105,7 +99,9 @@ export function askedDegrees(s: Pick<Subgoal, "subgoal" | "criterion">): number 
 /** A reply parsed as a verdict, or undefined when it is not one. */
 export function parseVerdict(json: unknown): Omit<Verdict, "gate" | "calls"> | undefined {
 	if (!isObj(json)) return undefined;
-	const status = String(json.status ?? "").trim().toLowerCase();
+	const status = String(json.status ?? "")
+		.trim()
+		.toLowerCase();
 	if (!["done", "not_done", "task_done", "abort"].includes(status)) return undefined;
 	const clauses = Array.isArray(json.clauses)
 		? json.clauses.filter(isObj).map((c) => ({
@@ -142,7 +138,10 @@ function claimText(c: Claim): string {
 	lines.push(
 		`Net turn since the last grasp or drop: ${r0(c.turn_net_deg)} deg of ${r0(c.turn_total_deg)} deg total; net move: ${r0(c.move_net_mm)} mm of ${r0(c.move_total_mm)} mm total (a net far below the total means it went and came back)${c.turn_stop ? `; the turn met a stop turning ${c.turn_stop}` : ""}.`,
 	);
-	if (c.held) lines.push(`The jaws closed to ${r0(c.held.gap_mm)} mm${c.held.target_mm !== undefined ? ` on an object expected about ${r0(c.held.target_mm)} mm across` : ""} and report holding.`);
+	if (c.held)
+		lines.push(
+			`The jaws closed to ${r0(c.held.gap_mm)} mm${c.held.target_mm !== undefined ? ` on an object expected about ${r0(c.held.target_mm)} mm across` : ""} and report holding.`,
+		);
 	if (c.error) lines.push(`Executor error: ${c.error}`);
 	return lines.join("\n");
 }
@@ -166,7 +165,9 @@ function userPrompt(p: VerifyInput, t: Prompt, extra: string[]): string {
 		now_views: views(p.now, "now"),
 		before_views: views(p.before, "before"),
 		claim: claimText(p.claim),
-		alert: p.alert ? `${p.alert.level}/${p.alert.finding}: ${p.alert.because}${p.alert.identity ? ` (identity: ${p.alert.identity})` : ""}` : "(none)",
+		alert: p.alert
+			? `${p.alert.level}/${p.alert.finding}: ${p.alert.because}${p.alert.identity ? ` (identity: ${p.alert.identity})` : ""}`
+			: "(none)",
 		note: p.note || "No summary yet.",
 		robot: p.robotText,
 		hint: p.boxHint ?? "(no planner box hint)",
@@ -174,7 +175,13 @@ function userPrompt(p: VerifyInput, t: Prompt, extra: string[]): string {
 	});
 }
 
-const gated = (status: VerdictStatus, because: string, gate: string, replan: boolean, calls: RoleCallRecord[]): Verdict => ({
+const gated = (
+	status: VerdictStatus,
+	because: string,
+	gate: string,
+	replan: boolean,
+	calls: RoleCallRecord[],
+): Verdict => ({
 	status,
 	because,
 	evidence: "code measurement",
@@ -218,9 +225,13 @@ export async function verify(ask: Ask, p: VerifyInput, signal?: AbortSignal): Pr
 	// 1. the gripper gate
 	if (!p.wholeTask && p.holding !== null) {
 		if (releaseStep && p.holding === true)
-			return withTask(gated("not_done", "the gripper still reports holding after a release step", "still holding", false, calls));
+			return withTask(
+				gated("not_done", "the gripper still reports holding after a release step", "still holding", false, calls),
+			);
 		if (holdStep && p.holding === false)
-			return withTask(gated("not_done", "the gripper reports nothing held after a holding step", "nothing held", false, calls));
+			return withTask(
+				gated("not_done", "the gripper reports nothing held after a holding step", "nothing held", false, calls),
+			);
 	}
 	const t = promptOf();
 	const imgs = [...images(p.now, "marked768"), ...(p.before ? images(p.before, "marked768") : [])];
@@ -238,7 +249,11 @@ export async function verify(ask: Ask, p: VerifyInput, signal?: AbortSignal): Pr
 			],
 			"held_width",
 		);
-		if (!v) return { ...gated("done", "held with a width; no valid identity answer", "held_width", false, calls), evidence: "gripper reading" };
+		if (!v)
+			return {
+				...gated("done", "held with a width; no valid identity answer", "held_width", false, calls),
+				evidence: "gripper reading",
+			};
 		let out: Verdict = { ...v, gate: "held_width", calls };
 		if (
 			v.status === "not_done" &&
@@ -259,7 +274,9 @@ export async function verify(ask: Ask, p: VerifyInput, signal?: AbortSignal): Pr
 	// 3.–4. the normal question
 	const extra: string[] = [];
 	if (!p.wholeTask && p.holding === true && holdStep)
-		extra.push("HOLDING IS SETTLED BY THE GRIPPER READING: treat the holding part of the criterion as met; not_done only for printed text naming another product, or another part of the criterion (height, place, state).");
+		extra.push(
+			"HOLDING IS SETTLED BY THE GRIPPER READING: treat the holding part of the criterion as met; not_done only for printed text naming another product, or another part of the criterion (height, place, state).",
+		);
 	let v: ReturnType<typeof parseVerdict>;
 	for (let attempt = 0; attempt < VERIFY_ATTEMPTS && !v; attempt++) v = await say(extra);
 	if (!v) return gated("not_done", "the verifier gave no valid answer", "no_answer", false, calls);
@@ -272,8 +289,15 @@ export async function verify(ask: Ask, p: VerifyInput, signal?: AbortSignal): Pr
 		EMPTY_OR_PLACE.test(out.because) &&
 		!(out.identity && out.replan)
 	) {
-		const again = await say([...extra, "THE READING SETTLES HOLDING: the gripper reports holding something. Judge the rest of the criterion; do not say the jaws are empty or the object was missed."], "holding_true");
-		if (again && !(again.status === "not_done" && EMPTY_OR_PLACE.test(again.because))) out = { ...again, gate: "", calls };
+		const again = await say(
+			[
+				...extra,
+				"THE READING SETTLES HOLDING: the gripper reports holding something. Judge the rest of the criterion; do not say the jaws are empty or the object was missed.",
+			],
+			"holding_true",
+		);
+		if (again && !(again.status === "not_done" && EMPTY_OR_PLACE.test(again.because)))
+			out = { ...again, gate: "", calls };
 		else
 			out = {
 				...out,
@@ -294,7 +318,10 @@ export async function verify(ask: Ask, p: VerifyInput, signal?: AbortSignal): Pr
 		sameObject(p.claim.located_label, s.target)
 	) {
 		const again = await say(
-			[...extra, `MEASURED: the camera located "${p.claim.located_label}" (matching the target) ${r0(p.claim.reached.residual_mm)} mm from the tool. Reconsider with this measurement; this answer is final.`],
+			[
+				...extra,
+				`MEASURED: the camera located "${p.claim.located_label}" (matching the target) ${r0(p.claim.reached.residual_mm)} mm from the tool. Reconsider with this measurement; this answer is final.`,
+			],
 			"regrounded",
 		);
 		if (again) out = { ...again, gate: "regrounded", calls };
@@ -304,7 +331,12 @@ export async function verify(ask: Ask, p: VerifyInput, signal?: AbortSignal): Pr
 	if (!p.wholeTask && TURN_STEP.test(`${s.subgoal} ${s.criterion}`) && out.status !== "abort") {
 		const { turn_net_deg: net, turn_total_deg: total, turn_stop } = p.claim;
 		const asked = askedDegrees(s);
-		if (asked !== undefined && total - Math.abs(net) < 1 && Math.abs(net) < asked * HALF_WAY && out.status !== "not_done")
+		if (
+			asked !== undefined &&
+			total - Math.abs(net) < 1 &&
+			Math.abs(net) < asked * HALF_WAY &&
+			out.status !== "not_done"
+		)
 			out = {
 				...out,
 				status: "not_done",
