@@ -10,8 +10,9 @@
  * usage carries the sum of their costs and the last call's tokens (ensemble's convention), and a
  * `motormind_turn` entry lists every call.
  *
- * Reentrancy (DESIGN §1.4 step 1): the pending tool call's id keys the turn. The same result seen
- * twice (pi retrying) gets the cached message, the mission does not advance; a context that is
+ * Reentrancy (DESIGN §1.4 step 1): the pending tool call's id keys the turn. A result already
+ * answered (pi retrying that turn) gets the message it was answered with, the mission does not
+ * advance; a context that is
  * neither the opening user message nor the pending result (compaction, an interactive message) gets
  * a static text with zero usage. Reconciliation (step 2): a closed-loop refusal of the pending call
  * (the previous motion's outcome is unknown) is answered with `mm_observe`, after which the same
@@ -54,8 +55,8 @@ import {
 	missionClock,
 	type Role,
 	type RoleCallRecord,
-	recordOf,
 	type RoleReply,
+	recordOf,
 	type SegmentReport,
 	type SubgoalInput,
 } from "./contract.ts";
@@ -96,16 +97,23 @@ export function motormindArgs(argv: readonly string[]): { base?: string } {
 	return { base: model?.startsWith(`${MM_PROVIDER}/`) ? model.slice(MM_PROVIDER.length + 1) : undefined };
 }
 
-/** The last message of the context and what it is to the mission. */
+/**
+ * The last message of the context and what it is to the mission: the opening user message (the first
+ * turn, or pi retrying it), the pending call's result (the next turn), a result already answered (pi
+ * retrying that turn), or anything else.
+ */
 export function classify(
 	messages: readonly Message[],
 	pending: { id: string } | undefined,
+	answered: { has: (id: string) => boolean },
 	started: boolean,
-): "opening" | "pending_result" | "other" {
+): "opening" | "pending_result" | "answered" | "other" {
 	const last = messages.at(-1);
 	if (!last) return "other";
-	if (last.role === "user" && !started) return "opening";
+	if (last.role === "user")
+		return started ? (messages.filter((m) => m.role === "user").length === 1 ? "answered" : "other") : "opening";
 	if (last.role === "toolResult" && pending && last.toolCallId === pending.id) return "pending_result";
+	if (last.role === "toolResult" && answered.has(last.toolCallId)) return "answered";
 	return "other";
 }
 
@@ -113,7 +121,10 @@ export function classify(
 export const isClosedLoopRefusal = (text: string) => /refused: the last motion .* has an unknown outcome/i.test(text);
 
 /** A tool result as the mission's reply; `frame` is the robot's latest observation. */
-export function replyOf(result: Extract<Message, { role: "toolResult" }>, handle: MotorMindHandle | undefined): MmReply {
+export function replyOf(
+	result: Extract<Message, { role: "toolResult" }>,
+	handle: MotorMindHandle | undefined,
+): MmReply {
 	const text = result.content
 		.filter((c): c is TextContent => c.type === "text")
 		.map((c) => c.text)
@@ -139,9 +150,14 @@ export function replyOf(result: Extract<Message, { role: "toolResult" }>, handle
 }
 
 /** Register `motormind/<base>` when `argv` asks for it; returns the result block for the robot's row, or undefined. */
-export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = process.argv, deps: ProviderDeps = BUILT) {
-	const { base } = motormindArgs(argv);
-	if (!base) return undefined;
+export function motormindProvider(
+	pi: ExtensionAPI,
+	argv: readonly string[] = process.argv,
+	deps: ProviderDeps = BUILT,
+) {
+	const { base: found } = motormindArgs(argv);
+	if (!found) return undefined;
+	const base: string = found;
 	pi.registerFlag("mm-budget", {
 		type: "string",
 		default: String(DEFAULT_BUDGET),
@@ -179,6 +195,8 @@ export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = pr
 		models: Record<Role, string>;
 		answered: Set<string>;
 		pending?: Pending;
+		/** The message each consumed result (by its tool call id; "" = the opening message) was answered with. */
+		answers: Map<string, AssistantMessage>;
 		/** The call to reissue after a reconciliation observe. */
 		reissue?: MmCall;
 		end?: MissionEnd;
@@ -221,7 +239,10 @@ export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = pr
 		if (c.model?.provider !== MM_PROVIDER) return;
 		const mm = pi.getFlag("mm");
 		if (!(mm === true || String(mm ?? "").trim() === "true"))
-			return failClosed(`--model ${MM_PROVIDER}/${base} plays the MotorMind mission, which needs --mm=true (or --preset motormind)`, c);
+			return failClosed(
+				`--model ${MM_PROVIDER}/${base} plays the MotorMind mission, which needs --mm=true (or --preset motormind)`,
+				c,
+			);
 		let models: Record<Role, string>;
 		try {
 			models = roleModels(base, String(pi.getFlag("mm-role-models") ?? ""));
@@ -229,10 +250,12 @@ export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = pr
 			return failClosed(err instanceof Error ? err.message : String(err), c);
 		}
 		const missing = [...new Set(Object.values(models))].filter((ref) => !findModel(registry!, ref));
-		if (missing.length) return failClosed(`unknown model ${missing.join(", ")} (the registry has no such provider/id)`, c);
+		if (missing.length)
+			return failClosed(`unknown model ${missing.join(", ")} (the registry has no such provider/id)`, c);
 		for (const name of ["mm-budget", "mm-budget-s", "mm-max-replans"]) {
 			const v = Number(pi.getFlag(name));
-			if (!(Number.isFinite(v) && v > 0)) return failClosed(`--${name} must be a positive number, got ${String(pi.getFlag(name))}`, c);
+			if (!(Number.isFinite(v) && v > 0))
+				return failClosed(`--${name} must be a positive number, got ${String(pi.getFlag(name))}`, c);
 		}
 		const found = findModel(registry!, base);
 		if (found && c.model) {
@@ -261,7 +284,16 @@ export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = pr
 		const models = roleModels(base, String(pi.getFlag("mm-role-models") ?? ""));
 		const episode = new AbortController();
 		const cache: FrameCache = { stale: true };
-		const r: Run = { turns: 0, calls: [], models, answered: new Set(), finished: false, episode, cache } as Run;
+		const r = {
+			turns: 0,
+			calls: [],
+			models,
+			answered: new Set(),
+			answers: new Map(),
+			finished: false,
+			episode,
+			cache,
+		} as unknown as Run;
 		let turnSignal: AbortSignal | undefined;
 		const baseAsk = makeAsk(registry!, models, (role, reply: RoleReply) => {
 			r.answered.add(reply.model);
@@ -284,7 +316,10 @@ export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = pr
 			runSubgoal: deps.runSubgoal,
 			log: (entry, data) => pi.appendEntry(entry, data),
 		});
-		Object.assign(r, { setSignal: (s: AbortSignal | undefined) => (turnSignal = s), clock });
+		const setSignal = (s: AbortSignal | undefined) => {
+			turnSignal = s;
+		};
+		Object.assign(r, { setSignal, clock });
 		return r;
 	}
 	type RunX = Run & { setSignal: (s: AbortSignal | undefined) => void; clock: ReturnType<typeof missionClock> };
@@ -295,7 +330,7 @@ export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = pr
 			type: "toolCall",
 			id: `motormind-${n}`,
 			name: call.tool,
-			arguments: (call.tool === "mm_observe" || call.tool === "mm_act" ? call.args : call.args) as Json,
+			arguments: call.args as unknown as ToolCall["arguments"],
 		};
 	}
 
@@ -309,7 +344,11 @@ export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = pr
 		return `[motormind] ${roles || "no role call"}${act ? ` → ${act}` : ""}${end ? ` → ${end.status}: ${end.summary}` : ""}`.trim();
 	}
 
-	async function turn(context: TranscriptContext, options: SimpleStreamOptions | undefined, out: AssistantMessageEventStream) {
+	async function turn(
+		context: TranscriptContext,
+		options: SimpleStreamOptions | undefined,
+		out: AssistantMessageEventStream,
+	) {
 		const message: AssistantMessage = {
 			role: "assistant",
 			content: [],
@@ -332,7 +371,7 @@ export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = pr
 					out.push({ type: "toolcall_end", contentIndex: i, toolCall: c, partial: m });
 				}
 			});
-			out.push({ type: "done", reason: m.stopReason, message: m });
+			out.push({ type: "done", reason: m.stopReason as "stop" | "toolUse", message: m });
 			out.end();
 		};
 		const fail = (why: string, aborted = false) => {
@@ -344,20 +383,29 @@ export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = pr
 		if (configError) return fail(configError);
 		if (!registry || !ctx) return fail("motormind: no session");
 		const messages = context.messages as Message[];
-		const kind = classify(messages, run?.pending, run !== undefined);
-		if (kind === "other" || (run?.finished && kind !== "pending_result")) {
+		const kind = classify(messages, run?.pending, run?.answers ?? new Set<string>(), run !== undefined);
+		if (kind === "other" || (run?.finished && kind !== "pending_result" && kind !== "answered")) {
 			message.content.push({ type: "text", text: STATIC_TEXT });
 			return say(message);
 		}
-		if (kind === "pending_result" && run?.pending?.consumed) return say(run.pending.message);
+		// pi retrying a turn (its own retry, or after an aborted stream): the message that turn produced, the mission does not advance
+		if (kind === "answered" && run) {
+			const last = messages.at(-1)!;
+			const was = run.answers.get(last.role === "toolResult" ? last.toolCallId : "");
+			return was ? say(was) : fail("motormind: no answer recorded for this context");
+		}
 		run ??= startRun();
 		const r = run as RunX;
+		if (!handle) return fail("motormind: the robot published no MotorMind handle (is --mm on and the robot up?)");
 		if (r.finished) {
 			message.content.push({ type: "text", text: STATIC_TEXT });
 			return say(message);
 		}
 		const before = r.calls.length;
 		let reply: MmReply | undefined;
+		// what this turn answers: the pending result's id, or "" for the opening message
+		const answering =
+			kind === "pending_result" ? (messages.at(-1) as Extract<Message, { role: "toolResult" }>).toolCallId : "";
 		if (kind === "pending_result") {
 			const result = messages.at(-1) as Extract<Message, { role: "toolResult" }>;
 			r.pending!.consumed = true;
@@ -396,11 +444,25 @@ export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = pr
 		if (next.done) {
 			r.end = next.value;
 			r.finished = true;
-			return emit({ tool: "finish", args: { status: next.value.status === "task_done" ? "success" : "failure", summary: `${next.value.status} (${next.value.ended_on}): ${next.value.summary}` } }, calls, next.value);
+			return emit(
+				{
+					tool: "finish",
+					args: {
+						status: next.value.status === "task_done" ? "success" : "failure",
+						summary: `${next.value.status} (${next.value.ended_on}): ${next.value.summary}`,
+					},
+				},
+				calls,
+				next.value,
+			);
 		}
 		return emit(next.value, calls, undefined);
 
-		function emit(call: MmCall | { tool: "finish"; args: Json }, calls: RoleCallRecord[], end: MissionEnd | undefined) {
+		function emit(
+			call: MmCall | { tool: "finish"; args: Json },
+			calls: RoleCallRecord[],
+			end: MissionEnd | undefined,
+		) {
 			r.turns++;
 			const tc = toolCallOf(call, r.turns);
 			const text = textOf(calls, tc, end);
@@ -414,6 +476,7 @@ export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = pr
 			usage.totalTokens = usage.input + usage.output;
 			usage.cost.total = r3(calls.reduce((a, c) => a + c.cost_usd, 0));
 			message.usage = usage;
+			r.answers.set(answering, message);
 			if (call.tool !== "finish") r.pending = { id: tc.id, call, message, consumed: false };
 			else r.pending = undefined;
 			pi.appendEntry(TURN_ENTRY, {
@@ -449,7 +512,10 @@ export function motormindProvider(pi: ExtensionAPI, argv: readonly string[] = pr
 			const s: MissionState | undefined = run?.mission.state();
 			return {
 				...(s?.status ? { status: s.status, ended_on: s.ended_on } : {}),
-				models: { configured: run?.models ?? roleModels(base, String(pi.getFlag("mm-role-models") ?? "")), answered: [...(run?.answered ?? [])] },
+				models: {
+					configured: run?.models ?? roleModels(base, String(pi.getFlag("mm-role-models") ?? "")),
+					answered: [...(run?.answered ?? [])],
+				},
 				prompts: promptHashes(),
 				turns: run?.turns ?? 0,
 				plans: s?.plans ?? 0,

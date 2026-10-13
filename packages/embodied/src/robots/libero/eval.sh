@@ -87,7 +87,7 @@ const result = { ...(last ?? {}), status, exit_code: Number(code), model: model 
 	code: codeMode, code_api: codeMode === "false" ? null : codeApi || last?.code_api || null, code_api_auto: codeMode === "false" ? null : !codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null,
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
 	libero_prompt: liberoPrompt, ft_flags: process.env.FT_FLAGS || null,
-	// MotorMind mode (--preset motormind / --mm): its variant list and its prompts' hashes key the configuration too.
+	// MotorMind mode (--preset motormind / --mm): its variant list and the hashes of its prompts key the configuration too.
 	mm: last?.params?.mm === "true", mm_variant: last?.motormind?.variant ? sha(last.motormind.variant) : null, mm_prompts: last?.motormind?.prompts ? sha(last.motormind.prompts) : null };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, terminated: result.terminated, claimed: result.claimed, env_steps: result.env_steps }));
@@ -125,7 +125,7 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null)
 	// Results written before --libero-prompt existed ran the compact prompt.
 	&& (r.libero_prompt ?? "compact") === liberoPrompt;
-// MotorMind mode: a result's variant list and prompt hashes must match the other results of this out dir (the
+// MotorMind mode: the variant list and prompt hashes of a result must match the other results of this out dir (the
 // flags themselves are compared by params-match.mjs below).
 const dir = path.replace(/\/[^/]+\/result\.json$/, "");
 const others = require("fs").readdirSync(dir).map((c) => { try { return JSON.parse(require("fs").readFileSync(`${dir}/${c}/result.json`, "utf8")); } catch { return undefined; } })

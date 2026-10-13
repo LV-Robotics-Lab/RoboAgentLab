@@ -6,7 +6,16 @@
  * or replayed solve is never counted or trained on as a model's.
  */
 
-export const PLANNERS = ["model", "human", "ensemble", "fallback", "finetuned", "flash", "motormind", "replay"] as const;
+export const PLANNERS = [
+	"model",
+	"human",
+	"ensemble",
+	"fallback",
+	"finetuned",
+	"flash",
+	"motormind",
+	"replay",
+] as const;
 export type Planner = (typeof PLANNERS)[number];
 
 export function plannerOf(providers: Iterable<string | undefined>): Planner {

@@ -651,3 +651,46 @@ for (const [robot, positional, , env] of CELLS)
 		);
 		assert.equal(same.status, 0, same.stderr);
 	});
+
+test("libero/eval.sh keys MotorMind runs by their variant and prompt hashes and refuses to mix them in one out dir", () => {
+	// Two cells of one out dir whose results ran the mission with other prompts: another configuration.
+	const dir = mkdtempSync(join(tmpdir(), "eval-"));
+	const base = {
+		status: "success",
+		model: null,
+		thinking: null,
+		max_turns: 0,
+		time_limit: 0,
+		units: "false",
+		stateless: false,
+		libero_prompt: "rpent",
+		mm: true,
+		mm_variant: "v",
+	};
+	for (const [cell, prompts] of [
+		["libero_10_t0_s0", "p1"],
+		["libero_10_t1_s0", "p2"],
+	]) {
+		mkdirSync(join(dir, "out", cell), { recursive: true });
+		writeFileSync(join(dir, "out", cell, "result.json"), JSON.stringify({ ...base, mm_prompts: prompts }));
+	}
+	const script = new URL("../src/robots/libero/eval.sh", import.meta.url).pathname;
+	const r = spawnSync("bash", [script, join(dir, "out"), "libero_10", "0-1", "0"], {
+		env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
+		encoding: "utf8",
+	});
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /MotorMind variant or prompts/);
+	// The same hashes are one configuration: both cells are kept and summarized.
+	writeFileSync(join(dir, "out", "libero_10_t1_s0", "result.json"), JSON.stringify({ ...base, mm_prompts: "p1" }));
+	const ok = spawnSync("bash", [script, join(dir, "out"), "libero_10", "0-1", "0"], {
+		env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
+		encoding: "utf8",
+	});
+	assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+	assert.match(ok.stdout, /\/mm=v:p1: success 2\/2/);
+	// A run without the mode records mm: false and no hashes.
+	const plain = run("libero", ["libero_10_task", "0", "0"], "libero_10_task_t0_s0", []);
+	assert.equal(plain.result?.mm, false);
+	assert.equal(plain.result?.mm_prompts, null);
+});
