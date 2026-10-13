@@ -269,7 +269,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		prevRead = read;
 
 		// 5. The residual, then the target.
-		s.residualMm = residualOf(s, frame.pose);
+		s.residualMm = residualOf(s, frame.pose, caps);
 		const fine = finePhase(read, s.residualMm);
 		const reach = await lookForTheTarget(frame, fine);
 		if (reach) {
@@ -414,7 +414,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 					break;
 				}
 				({ frame, read } = l);
-				s.residualMm = residualOf(s, frame.pose);
+				s.residualMm = residualOf(s, frame.pose, caps);
 				if (frame.episode_over) {
 					episodeOver = true;
 					ended = { ending: "EPISODE_OVER" };
@@ -592,7 +592,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			batch.stopped_at = stopped.at;
 			batch.reason = stopped.reason;
 		}
-		if (s.located) batch.residual_mm = residualOf(s, frame.pose);
+		if (s.located) batch.residual_mm = residualOf(s, frame.pose, caps);
 
 		// After a stopped batch: look once more and ask the watcher.
 		if (stopped && !ended && !cancelledMid && batch.ran > 0) {
@@ -605,7 +605,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			);
 			if (l) {
 				({ frame, read } = l);
-				const residualNow = residualOf(s, frame.pose);
+				const residualNow = residualOf(s, frame.pose, caps);
 				if (residualNow !== undefined && batch.residual_mm !== undefined && residualNow > batch.residual_mm + 1)
 					batch.reason += " (the residual grew)";
 				const sv = await supervise({
@@ -792,7 +792,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			"after_look",
 		);
 		if (!looked) return { ended: { ending: "ERROR", error: "the robot answered the look with an error" }, motion };
-		s.residualMm = residualOf(s, looked.frame.pose);
+		s.residualMm = residualOf(s, looked.frame.pose, caps);
 		return { looked, motion };
 	}
 	function cycleCalls_push(cycle: Cycle, records: RoleCallRecord[]) {
@@ -923,6 +923,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		) {
 			s.footprint = located.footprint;
 			s.footprintMethod = located.footprint_method;
+			s.footprintIsPart = located.part_outline !== undefined && located.footprint === located.part_outline;
 			s.footprintError = located.error_mm;
 			s.lastWidthMm = longestAcross(located.footprint) * 1000 || s.lastWidthMm;
 		}
@@ -934,7 +935,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			s.receiver = { center: point, radius_mm: radius, error_mm: located.error_mm ?? 20, words };
 		}
 		if (located.top_point) faces.offerTopPoint(located.top_point, frame.table_z_m);
-		s.residualMm = residualOf(s, frame.pose);
+		s.residualMm = residualOf(s, frame.pose, caps);
 		s.lastLookPose = frame.pose;
 		s.unshoved = true;
 		if (fine && !o.wristOnly) s.lookedClose = true;

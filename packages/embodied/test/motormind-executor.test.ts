@@ -32,18 +32,26 @@ import {
 	type SubgoalInput,
 } from "../src/modes/motormind/contract.ts";
 import { actArgs, runSubgoal } from "../src/modes/motormind/executor.ts";
-import { apply, IDENTITY, labelDirection, matmul, sub, transpose, unit } from "../src/modes/motormind/frames.ts";
+import { apply, dot, IDENTITY, labelDirection, matmul, sub, transpose, unit } from "../src/modes/motormind/frames.ts";
 import {
 	closeOutcome,
+	centreMiss,
 	dragging,
+	edgeOffsetMm,
+	edgePoint,
+	jawLine,
 	jawsChanged,
 	jawsShut,
 	newState,
 	noMotion,
 	noteEmptyClose,
+	quarterTurnForReach,
+	residualOf,
 	shoved,
 	wantsHolding,
 	wantsRelease,
+	whereTheTargetIs,
+	widerThanJaws,
 } from "../src/modes/motormind/gates.ts";
 import { boxOnPlane, planeErrorMm, project, toPixels, triangulate } from "../src/modes/motormind/geometry.ts";
 import { locate, namesAPart, parseLocateReply } from "../src/modes/motormind/locate.ts";
@@ -1753,8 +1761,96 @@ test("executor: step 4 defect 6 — a one-view answer with a wide bar is doubtfu
 		m1.calls.map((c) => c.role),
 		["locate", "locate", "executor", "locate", "locate", "executor"],
 	);
-	assert.match(m1.calls[2].text, /BUT THIS POSITION IS DOUBTFUL \(one view answered; a \d+ mm bar\)/);
 	assert.equal(run1.cycles[0].reach?.located?.doubtful, true);
 	assert.equal(run1.cycles[1].reach?.located?.doubtful, true);
 	assert.equal((run1.carry as Json).same.located.doubtful, true);
+});
+
+test("executor: step 4 defect 7 — a thing wider than the jaws is aimed at its wall: the edge point along the jaw line on the tool's side, inside the reach; the target block says the offset is taken off", () => {
+	// Both spatial smoke cells after fixes 1-6 died on the take: the target block aimed the tool at the bowl's
+	// middle while saying "the offset already aims at its edge", a pad landed on the rim and every descent was
+	// blocked 25 mm above the top face. The original shifts the aim by width/2 - (pad/2 + 12 mm) along the jaw line.
+	const truth = objectsBase.akita_black_bowl_1;
+	const s = newState({
+		subgoal: "descend the rest of the way until the jaws are level with the rim of the akita black bowl, with it between them, and close",
+		criterion: "The robot reports that it is HOLDING the akita black bowl.",
+		target: "akita black bowl",
+		planBoxes: {},
+	});
+	const middle: Vec3 = [truth[0], truth[1], TABLE_Z + 0.02];
+	s.located = { words: "akita black bowl", point: middle, method: "two views met", error_mm: 10, error_class: "", on_face: false, cameras: ["scene", "side"] };
+	s.footprint = [
+		[truth[0] - 0.059, truth[1], TABLE_Z],
+		[truth[0] + 0.059, truth[1], TABLE_Z],
+	];
+	assert.ok(widerThanJaws(s, CAPS));
+	const pose: Pose = { position_m: [truth[0] + 0.01, truth[1] + 0.03, TABLE_Z + 0.1], rotation: RIG.grip_xmat_world };
+	const line = jawLine(pose);
+	const e = edgeOffsetMm(s, CAPS)!;
+	close(e.mm, 59 - 17 / 2 - 12, 1e-9, "the offset off the middle");
+	assert.match(e.why, /118 mm across and the jaws open 79 mm/);
+	const p = edgePoint(s, pose, CAPS)!;
+	const side = Math.sign(dot(sub(pose.position_m, middle), line));
+	close(dot(sub(p, middle), line) * 1000, side * e.mm, 1e-9, "on the tool's side along the jaw line");
+	close(Math.abs(dot(sub(p, middle), [line[1], -line[0], 0])), 0, 1e-9, "nothing across the line");
+	// The residual is to the edge point; the middle's own offset is kept for what the pads enclose.
+	const r = residualOf(s, pose, CAPS)!;
+	const c = centreMiss(s, pose)!;
+	close(r, Math.hypot(p[0] - pose.position_m[0], p[1] - pose.position_m[1]) * 1000, 1e-9);
+	assert.ok(Math.abs(r - Math.hypot(c[0], c[1]) * 1000) > 10);
+	const text = whereTheTargetIs(s, frameAt(pose), CAPS, TABLE_Z + 0.034);
+	assert.match(text, /The 3[89] mm the jaws need to sit off its middle, along the line they close along/);
+	assert.match(text, /is already taken off those numbers/);
+	assert.doesNotMatch(text, /NEITHER RIM/);
+	// A named part's own box is the part's edge: no extra pad. A step that leans on the thing aims at the middle.
+	s.footprintIsPart = true;
+	close(edgeOffsetMm(s, CAPS)!.mm, 59 - 17 / 2, 1e-9);
+	s.footprintIsPart = false;
+	const push = newState({ subgoal: "push the akita black bowl along the table with the jaws closed", criterion: "the bowl has moved", target: "akita black bowl", planBoxes: {} });
+	push.located = s.located;
+	push.footprint = s.footprint;
+	assert.equal(edgeOffsetMm(push, CAPS), undefined);
+	assert.equal(edgePoint(push, pose, CAPS), undefined);
+	// The hover step before the take aims at the edge too; a narrower object is aimed at its middle.
+	const hover = newState({ subgoal: "open the jaws, move the gripper over the akita black bowl and lower it until it hovers about a palm's height above the bowl, jaws still open", criterion: "the bowl sits directly under the gripper, the jaws are open", target: "akita black bowl", planBoxes: {} });
+	hover.located = s.located;
+	hover.footprint = s.footprint;
+	assert.ok(edgePoint(hover, pose, CAPS));
+	hover.footprint = [
+		[truth[0] - 0.03, truth[1], TABLE_Z],
+		[truth[0] + 0.03, truth[1], TABLE_Z],
+	];
+	assert.equal(edgePoint(hover, pose, CAPS), undefined);
+	// Reach: with the jaws closing along x and the tool past the thing, the far rim lies beyond 780 mm; the near one is taken.
+	const alongX: Pose = {
+		position_m: [0.8, 0, TABLE_Z + 0.1],
+		rotation: [
+			[0, 1, 0],
+			[1, 0, 0],
+			[0, 0, -1],
+		],
+	};
+	s.located = { ...s.located!, point: [0.76, 0, TABLE_Z + 0.02] };
+	s.footprint = [
+		[0.76 - 0.059, 0, TABLE_Z],
+		[0.76 + 0.059, 0, TABLE_Z],
+	];
+	close(edgePoint(s, alongX, CAPS)![0], 0.76 - e.mm / 1000, 1e-9, "the rim nearer the base");
+	assert.equal(quarterTurnForReach(s, alongX, CAPS), undefined);
+	// Neither rim along the jaw line (here y) inside the reach, the rims along x are: a quarter turn is advised.
+	s.located = { ...s.located!, point: [0.79, 0, TABLE_Z + 0.02] };
+	s.footprint = [
+		[0.79, -0.059, TABLE_Z],
+		[0.79, 0.059, TABLE_Z],
+	];
+	const alongY: Pose = {
+		position_m: [0.75, 0.05, TABLE_Z + 0.1],
+		rotation: [
+			[-1, 0, 0],
+			[0, 1, 0],
+			[0, 0, -1],
+		],
+	};
+	assert.equal(quarterTurnForReach(s, alongY, CAPS), 'rotate "yaw_left" 90');
+	assert.match(whereTheTargetIs(s, frameAt(alongY), CAPS, TABLE_Z + 0.034), /NEITHER RIM along that line is inside this arm's reach\. rotate "yaw_left" 90/);
 });

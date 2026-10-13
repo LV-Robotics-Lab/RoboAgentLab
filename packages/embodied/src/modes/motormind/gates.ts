@@ -264,6 +264,8 @@ export type SubgoalState = {
 	ambiguous?: string;
 	footprint?: Vec3[];
 	footprintMethod?: string;
+	/** The footprint is a named part's own box (its edge is the part's), not the whole thing's outline. */
+	footprintIsPart: boolean;
 	footprintError?: number;
 	lastWidthMm?: number;
 	residualMm?: number;
@@ -317,6 +319,7 @@ export function newState(o: {
 		spent: 0,
 		unshoved: true,
 		lookedClose: false,
+		footprintIsPart: false,
 		fromPlanBoxes: false,
 		emptyCloses: [],
 		relookedAt: [],
@@ -342,13 +345,85 @@ export const widerThanJaws = (s: SubgoalState, caps: Caps) => {
 	const w = objectWidthMm(s);
 	return w !== undefined && w > 2 * jawHalfGapMm(caps);
 };
-/** The horizontal offset of the located point from the tool (m), or undefined. */
-export const miss = (s: SubgoalState, pose: Pose): Vec3 | undefined =>
+/** The horizontal offset of the located point (the object's middle) from the tool (m), or undefined. */
+export const centreMiss = (s: SubgoalState, pose: Pose): Vec3 | undefined =>
 	s.located ? [s.located.point[0] - pose.position_m[0], s.located.point[1] - pose.position_m[1], 0] : undefined;
-export const residualOf = (s: SubgoalState, pose: Pose) => {
-	const m = miss(s, pose);
+
+/** A pad further in than the outline's edge: an outline is the whole thing's, not a named part's own box. */
+export const OUTLINE_EDGE_PAD_MM = 12;
+/** The step takes hold of the object or approaches it to be taken (not a step that leans on it: a push, a press). */
+export const aimsToTake = (s: SubgoalState) =>
+	s.wantsHolding || namesEdgePart(s.subgoal) || namesEdgePart(s.target) || !leans(s.subgoal);
+/**
+ * How far off the object's middle the jaws must aim along the line they close along (mm), and why
+ * (spec-executor §8.2 block 5 "the offset is already taken off"): a thing wider than the jaws open can
+ * only be held by its wall, half a pad inside its edge (a pad further in when the width is the whole
+ * outline's). Not while placing (the middle is where the payload goes), nor for a step that leans on it.
+ */
+export function edgeOffsetMm(s: SubgoalState, caps: Caps): { mm: number; why: string } | undefined {
+	if (s.payload.tracking && s.receiver) return undefined;
+	if (!aimsToTake(s)) return undefined;
+	const width = objectWidthMm(s);
+	if (width === undefined || !widerThanJaws(s, caps)) return undefined;
+	const inward = padMm(caps) / 2 + (s.footprintIsPart ? 0 : OUTLINE_EDGE_PAD_MM);
+	return {
+		mm: Math.max(0, width / 2 - inward),
+		why: `it is about ${r0(width)} mm across and the jaws open ${r0(2 * jawHalfGapMm(caps))} mm, so no close centred on it can get round it: the jaws have to straddle its wall${s.footprintIsPart ? "" : ", aimed a pad further in because that width is the whole outline, not a named part's own box"}`,
+	};
+}
+/**
+ * The point on the object's edge to put the tool over (m): the located middle shifted along the jaw
+ * line toward the side the tool is already on (nothing crosses the thing), unless that rim is past
+ * the reach and the other is not. Undefined when the middle is the aim.
+ */
+export function edgePoint(s: SubgoalState, pose: Pose, caps: Caps): Vec3 | undefined {
+	if (!s.located) return undefined;
+	const e = edgeOffsetMm(s, caps);
+	if (!e || e.mm <= 0) return undefined;
+	const axis = jawLine(pose);
+	const middle = s.located.point;
+	let side = dot(sub(pose.position_m, middle), axis) >= 0 ? 1 : -1;
+	const radius = (sign: number) => {
+		const p = add(middle, scale(axis, (sign * e.mm) / 1000));
+		return Math.hypot(p[0], p[1]);
+	};
+	if (radius(side) > caps.reach_m && radius(-side) <= caps.reach_m) side = -side;
+	return add(middle, scale(axis, (side * e.mm) / 1000));
+}
+/** Where the tool has to get to: the edge point of a thing wider than the jaws, else the located point (a side take's stand-off is the side block's). */
+export const aimPoint = (s: SubgoalState, pose: Pose, caps: Caps): Vec3 | undefined =>
+	s.located ? (s.sideStep ? s.located.point : (edgePoint(s, pose, caps) ?? s.located.point)) : undefined;
+/** The horizontal offset of the aim point from the tool (m), or undefined. */
+export const miss = (s: SubgoalState, pose: Pose, caps: Caps): Vec3 | undefined => {
+	const aim = aimPoint(s, pose, caps);
+	return aim ? [aim[0] - pose.position_m[0], aim[1] - pose.position_m[1], 0] : undefined;
+};
+export const residualOf = (s: SubgoalState, pose: Pose, caps: Caps) => {
+	const m = miss(s, pose, caps);
 	return m ? Math.hypot(m[0], m[1]) * 1000 : undefined;
 };
+/**
+ * The quarter turn that brings a rim within reach: when neither rim along the line the jaws close
+ * along is inside the arm's reach and, turned a quarter about the vertical, the nearer one is.
+ */
+export function quarterTurnForReach(s: SubgoalState, pose: Pose, caps: Caps): string | undefined {
+	const e = edgeOffsetMm(s, caps);
+	if (!s.located || !e || e.mm <= 0) return undefined;
+	const axis = jawLine(pose);
+	const along: [number, number] = [axis[0], axis[1]];
+	const n = Math.hypot(along[0], along[1]);
+	if (n < 0.5) return undefined;
+	const line: [number, number] = [along[0] / n, along[1] / n];
+	const middle = s.located.point;
+	const nearer = (l: [number, number]) =>
+		Math.min(
+			...[1, -1].map((sign) =>
+				Math.hypot(middle[0] + (sign * e.mm * l[0]) / 1000, middle[1] + (sign * e.mm * l[1]) / 1000),
+			),
+		);
+	if (nearer(line) <= caps.reach_m || nearer([-line[1], line[0]]) > caps.reach_m) return undefined;
+	return 'rotate "yaw_left" 90';
+}
 /** The step is a grasp step: wants holding, names an edge part, or the tool is not far above the object. */
 export function isGraspStep(s: SubgoalState, f: Frame, topZ: number | undefined): boolean {
 	if (s.wantsHolding || namesEdgePart(s.subgoal)) return true;
@@ -513,7 +588,7 @@ export const closeDepthGate: Gate = (deltas, ctx) => {
 	const fits =
 		w !== undefined &&
 		(() => {
-			const m = miss(state, frame.pose);
+			const m = centreMiss(state, frame.pose);
 			const off = m ? Math.abs(dot(m, jawLine(frame.pose))) * 1000 : 0;
 			return w / 2 + off < jawHalfGapMm(caps);
 		})();
@@ -642,7 +717,7 @@ export function noteGrasped(s: SubgoalState, step: SegmentReport, caps: Caps, po
 	const edge = aimedAtEdge || (width !== undefined && width < padMm(caps)) || widerThanJaws(s, caps);
 	let offset: Vec3 | null | undefined;
 	if (edge) {
-		const m = miss(s, pose);
+		const m = centreMiss(s, pose);
 		const line = jawLine(pose);
 		const along = m ? dot(m, line) : 0;
 		if (width !== undefined && Math.abs(along) * 1000 > width / 2 + MIN_CLOSE_TOLERANCE_MM) offset = null;
@@ -767,7 +842,7 @@ export function arrived(
 				const off = payloadOffset(s, pose.position_m);
 				return off ? Math.hypot(off[0], off[1]) * 1000 : undefined;
 			})()
-		: residualOf(s, pose);
+		: residualOf(s, pose, caps);
 	return {
 		arrived: residual !== undefined && residual <= threshold && s.unshoved,
 		threshold_mm: threshold,
@@ -851,7 +926,9 @@ export function whereTheTargetIs(s: SubgoalState, f: Frame, caps: Caps, topZ: nu
 	if (!s.located) return "";
 	const placing = s.payload.tracking && s.receiver;
 	const from = placing && s.payload.offset ? add(f.pose.position_m, s.payload.offset) : f.pose.position_m;
-	const off: Vec3 = [s.located.point[0] - from[0], s.located.point[1] - from[1], 0];
+	// The aim: the edge point of a thing wider than the jaws (the offset "already taken off"), else the middle.
+	const aim = aimPoint(s, f.pose, caps) ?? s.located.point;
+	const off: Vec3 = [aim[0] - from[0], aim[1] - from[1], 0];
 	const lines = [
 		`WHERE THE TARGET IS: "${s.located.words}" is ${sayOffset(off)} of the ${placing ? "centre of what the jaws hold" : "tool point"}.`,
 	];
@@ -867,18 +944,20 @@ export function whereTheTargetIs(s: SubgoalState, f: Frame, caps: Caps, topZ: nu
 	lines.push(
 		`Within ${r0(arrivedMm(caps))} mm the tool is already there: a correction that small cannot be measured, so descend and use the jaws instead.`,
 	);
-	if (s.payload.edge || namesEdgePart(s.subgoal) || widerThanJaws(s, caps)) {
+	const edge = placing ? undefined : edgeOffsetMm(s, caps);
+	if (edge) {
 		lines.push(
-			widerThanJaws(s, caps)
-				? "The object is wider than the jaws: the offset above already aims at its edge; write it as given, do not add to it. If neither edge is reachable, yaw 90 deg first."
-				: "The offset above already includes the edge offset; write it as given.",
+			`The ${r0(edge.mm)} mm the jaws need to sit off its middle, along the line they close along (${edge.why}), is already taken off those numbers: they are what is LEFT to move. Write them as given and add nothing to them.`,
 		);
+		const turn = quarterTurnForReach(s, f.pose, caps);
+		if (turn)
+			lines.push(
+				`NEITHER RIM along that line is inside this arm's reach. ${turn} turns the jaws to close along the other line, whose near rim is: turn first, and these offsets are then measured for it.`,
+			);
+	} else if (s.payload.edge || namesEdgePart(s.subgoal)) {
+		lines.push("The offset above already includes the edge offset; write it as given.");
 	}
 	lines.push(`(from ${s.located.method}, within about ${r0(s.located.error_mm)} mm)`);
-	if (s.located.doubtful)
-		lines.push(
-			`BUT THIS POSITION IS DOUBTFUL (${s.located.cameras.length <= 1 ? "one view answered" : "the views disagreed"}; a ${r0(s.located.error_mm)} mm bar): do not descend on it or close from it; bring the tool over it at this height and let the next look confirm it first.`,
-		);
 	if (s.disagreement) lines.push(`BUT TWO VIEWS DISAGREE: ${s.disagreement}`);
 	if (s.ambiguous) lines.push(`BUT MORE THAN ONE THING FITS THOSE WORDS: ${s.ambiguous}`);
 	return lines.join("\n");

@@ -27,6 +27,7 @@ export type CarryState = {
 		disagreement?: string;
 		footprint?: Vec3[];
 		footprintMethod?: string;
+		footprintIsPart: boolean;
 		faces: ReturnType<TopFace["carry"]>;
 		emptyCloses: Vec3[];
 		frozen: number;
@@ -51,6 +52,7 @@ export function carryOver(s: SubgoalState, faces: TopFace): Carry {
 			disagreement: s.disagreement,
 			footprint: s.footprint ? [...s.footprint] : undefined,
 			footprintMethod: s.footprintMethod,
+			footprintIsPart: s.footprintIsPart,
 			faces: faces.carry(),
 			emptyCloses: [...s.emptyCloses],
 			// Only this subgoal's run of frozen cycles (spec-executor §16): the count does not accumulate across steps.
@@ -86,6 +88,7 @@ export function adopt(s: SubgoalState, carry: Carry | undefined, faces: TopFace)
 	s.disagreement = m.disagreement;
 	s.footprint = m.footprint ? [...m.footprint] : undefined;
 	s.footprintMethod = m.footprintMethod;
+	s.footprintIsPart = m.footprintIsPart === true;
 	s.emptyCloses = [...m.emptyCloses];
 	s.inheritedFrozen = m.frozen;
 	if (m.faces.faces?.length) faces.faces = [...m.faces.faces];
