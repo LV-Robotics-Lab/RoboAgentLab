@@ -37,6 +37,11 @@ export type Tracked = {
 	given: (name: string) => boolean;
 	/** What `getFlag` returns for `name` given its raw value (./tiers.ts sets it). */
 	expand?: (name: string, raw: unknown) => unknown;
+	/**
+	 * The planner's provider (../robot.ts sets it at session start from the session's model): a flag
+	 * `PROVIDER_DEFAULTS` names for it reads as that value unless given (`given`).
+	 */
+	provider?: string;
 };
 
 /**
@@ -133,13 +138,34 @@ export const DEPLOYMENT: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Defaults that depend on the planner's provider: flag values by provider, read in place of the
+ * registered default when the flag is not given (the tracker's `getFlag`, with `Tracked.provider`),
+ * and by ../scripts/params-match.mjs for the provider `--model` / `--provider` names (`providerDefault`).
+ * `selfhost` is NInfer (openai-completions; Qwen3.8 is a hybrid recurrent model whose prefix cache
+ * reuses only exact checkpoints, ../planner/cache-breakpoints.ts): the cache-friendly context is its
+ * default since the A/B of 2026-10-12 (LIBERO libero_spatial, 30 episodes per arm: success 23 vs 22 of 30, Fisher p = 1.0;
+ * cache hits 2.9% to 72.1% of the prompt tokens; request p50 11.2 to 6.6 s; episode wall 0.61x).
+ * Every other provider keeps the registered defaults.
+ */
+export const PROVIDER_DEFAULTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+	selfhost: { "replay-thinking": "none", "image-trim-every": "8", "cache-breakpoints": "true" },
+};
+
+/** `name`'s default under `provider` when PROVIDER_DEFAULTS names one, else undefined (the registered default stands). */
+export const providerDefault = (name: string, provider: string | undefined): string | undefined =>
+	provider === undefined ? undefined : PROVIDER_DEFAULTS[provider]?.[name];
+
+/**
  * Tracked flags added after results existed, with the default each had when it was introduced
  * (`introduced`) and its registered default now (`default`, test/params.test.ts keeps it equal to
- * the registration). A result whose `params` lacks the flag was written before it existed, so it
- * ran with the introduced default: ../scripts/params-match.mjs reads the missing key as that value
- * and compares it with the run asked for, so `--image-trim-every 8` never mixes with such a result,
- * and neither does a run without the flag once its default is flipped. A missing flag not listed
- * here is skipped (its value then is unknown) and named in the script's output.
+ * the registration; a provider's own default is `PROVIDER_DEFAULTS`). ../scripts/params-match.mjs
+ * compares a flag listed here against the default of the run asked for (this table and the run's
+ * provider), not the default the result recorded, so a result at an old default never passes as one
+ * at the flipped default. A result whose `params` lacks the flag was written before it existed, so it
+ * ran with the introduced default: the script reads the missing key as that value, so
+ * `--image-trim-every 8` never mixes with such a result, and neither does a run without the flag
+ * once its default is flipped. A missing flag not listed here is skipped (its value then is unknown)
+ * and named in the script's output.
  */
 export const INTRODUCED: Readonly<Record<string, { introduced: string; default: string }>> = {
 	"image-trim-every": { introduced: "0", default: "0" },
@@ -152,9 +178,10 @@ const tracked = new WeakMap<object, Tracked>();
 /**
  * Track every flag registered on `pi` from now on (call it first in a robot's extension). A second
  * registration of the same name is recorded as a duplicate and ignored, so the first owner's
- * definition stands (pi itself would silently keep the last one). Reads go through `expand` when
- * one is set: a flag a tier expands to reads as the tier's value unless it was given itself
- * (`given`: named on the command line, or not at its default).
+ * definition stands (pi itself would silently keep the last one). Reads go through the provider's
+ * defaults (`PROVIDER_DEFAULTS` for `provider`, once ../robot.ts set it) and then `expand` when one
+ * is set: a flag not given (`given`: named on the command line, or not at its default) reads as the
+ * provider's value, and a flag a tier expands to reads as the tier's value unless it was given itself.
  */
 export function trackFlags(pi: ExtensionAPI): Tracked {
 	const had = tracked.get(pi);
@@ -177,7 +204,9 @@ export function trackFlags(pi: ExtensionAPI): Tracked {
 	};
 	tracked.set(pi, t);
 	(pi as { getFlag: typeof pi.getFlag }).getFlag = ((name: string) => {
-		const value = raw(name);
+		let value = raw(name);
+		const byProvider = providerDefault(name, t.provider);
+		if (byProvider !== undefined && !t.given(name)) value = byProvider;
 		return t.expand ? t.expand(name, value) : value;
 	}) as typeof pi.getFlag;
 	const register = pi.registerFlag.bind(pi);

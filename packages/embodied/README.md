@@ -287,14 +287,21 @@ NInfer / vLLM with Qwen's template counts as prompt tokens, ~36% of the planner'
 regression. `true` is pi's behaviour, `none` drops the latest turn's too, `frames` drops a turn's
 thinking together with the camera frames before it. Only the request changes, never the session; signed thinking,
 Anthropic's and OpenAI Responses' included, is never dropped; `src/planner/replay-thinking.ts`).
-The defaults rewrite earlier turns every request (the previous answer's thinking, the oldest kept
+Those defaults rewrite earlier turns every request (the previous answer's thinking, the oldest kept
 frame), so an endpoint's prefix cache reuses almost nothing (NInfer on LIBERO: 4.5% of the planner's
 prompt tokens). With `--replay-thinking=none --image-trim-every N` each request is a continuation of the
 previous one between cuts every N frames (`frames` instead of `none` also replays each answer as
 generated until its cut: a larger context, more compactions); `--cache-breakpoints=true` also asks
 NInfer to keep the task message and the newest message as cached prefixes
-(`src/planner/cache-breakpoints.ts`). For NInfer: `--replay-thinking=none --image-trim-every 8
---cache-breakpoints=true` (72% on the same LIBERO cells).
+(`src/planner/cache-breakpoints.ts`). On the `selfhost` provider (NInfer) these three are the
+defaults: `--replay-thinking=none --image-trim-every 8 --cache-breakpoints=true`, read at session
+start from the session's model's provider unless the flag is given (`src/infra/params.ts`
+`PROVIDER_DEFAULTS`; A/B 2026-10-12, LIBERO libero_spatial 30 episodes per arm: success 23 vs 22 of 30, Fisher p = 1.0; cache hits 2.9% to
+72.1% of the prompt tokens; request p50 11.2 to 6.6 s; episode wall 0.61x).
+Every other provider keeps `false` / `0` / `false`. The result's `params` records what ran, and
+`params-match.mjs` compares these flags against the default of the provider a run names
+(`--model provider/id`), so a selfhost run without the flags never reuses a cell that ran at the old
+defaults, nor the other way round.
 
 `--tier <S1..M4>` is a CaP-X tier in one flag (`src/infra/tiers.ts`): four orthogonal axes, each an
 existing flag you may also set alone. Turns: single = `--max-turns 1` (one program, then the

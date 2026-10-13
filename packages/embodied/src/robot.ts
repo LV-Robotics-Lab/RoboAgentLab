@@ -310,7 +310,7 @@ export function leakedToolCall(content: readonly { type: string; text?: string }
 export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const { name } = spec;
 	// Flags the base and its modules register from here on are tracked too (a robot starts it earlier).
-	trackFlags(pi);
+	const tracked = trackFlags(pi);
 	registerConfig(pi);
 	const manifest: Manifest | undefined = spec.manifest ? loadManifest(spec.manifest) : undefined;
 	// --tier / --preset (./infra/tiers.ts) read as the flags they expand to from here on.
@@ -373,7 +373,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		type: "string",
 		default: "0",
 		description:
-			"Stub older camera frames N at a time (0 = every turn): between cuts each request starts with the previous one's prompt, which an endpoint's prefix cache reuses; --keep-images to --keep-images+N-1 frames stay",
+			"Stub older camera frames N at a time (0 = every turn; 8 on the selfhost provider): between cuts each request starts with the previous one's prompt, which an endpoint's prefix cache reuses; --keep-images to --keep-images+N-1 frames stay",
 	});
 	// One auxiliary VLM for VDM, the units verifier and check_attached (PARAMS.md 2.4); a role that needs
 	// another model names it in the deployment's aux.<role> (./infra/config.ts).
@@ -400,13 +400,13 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		type: "string",
 		default: "false",
 		description:
-			"Send earlier turns' thinking back with every request (true / false / none / frames; false keeps only the latest turn's, none not even that, frames until the camera frames before it are stubbed; pi's own behaviour is true)",
+			"Send earlier turns' thinking back with every request (true / false / none / frames; false keeps only the latest turn's, none not even that, frames until the camera frames before it are stubbed; pi's own behaviour is true; none on the selfhost provider)",
 	});
 	pi.registerFlag(CACHE_BREAKPOINTS, {
 		type: "string",
 		default: "false",
 		description:
-			"Mark the task message and the newest message as explicit prompt-cache breakpoints for NInfer (true / false; ./planner/cache-breakpoints.ts)",
+			"Mark the task message and the newest message as explicit prompt-cache breakpoints for NInfer (true / false, true on the selfhost provider; ./planner/cache-breakpoints.ts)",
 	});
 	pi.registerFlag("max-turns", {
 		type: "string",
@@ -447,6 +447,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	// --require-skills: the optional skill and perception servers a run insists on (capabilities/skills.ts).
 	registerSkillFlags(pi);
 	pi.on("session_start", (_event, ctx) => {
+		// The session's planner provider: its PROVIDER_DEFAULTS (./infra/params.ts) stand in for the
+		// registered defaults of the flags they name, unless given (a fallback/ or ensemble/ model is its own provider).
+		tracked.provider = ctx.model?.provider;
 		perceptionOff = {};
 		ready = ran = ended = reported = finishing = false;
 		failed = broken = claimed = started = plannerError = outOfBudget = undefined;

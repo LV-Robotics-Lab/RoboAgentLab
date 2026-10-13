@@ -9,7 +9,7 @@ import { deployFlags } from "./helpers/deployment.ts";
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A toy robot on a stub pi, like context-images.test.ts; `emit` passes `ctx` (the model's api) to the handlers. */
-function stubPi(values: Record<string, unknown> = {}) {
+function stubPi(values: Record<string, unknown> = {}, provider?: string) {
 	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
@@ -29,7 +29,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 			hasUI: true,
 			ui: { notify: () => {} },
 			sessionManager: { getBranch: () => [] },
-			model: { api: modelApi },
+			model: { api: modelApi, provider },
 		};
 		let out: unknown;
 		for (const fn of handlers.get(name) ?? []) out = (await fn({ type: name, ...event }, ctx)) ?? out;
@@ -116,4 +116,39 @@ test("the robot marks openai-completions requests only with --cache-breakpoints=
 		bad.entries.find((e) => e.type === RESULT_ENTRY)?.data.error,
 		/--cache-breakpoints must be true or false/,
 	);
+});
+
+test("on the selfhost provider (NInfer) the breakpoints are the default; given, a flag keeps its value; elsewhere the default is off", async () => {
+	// The provider is read at session start from the session's model (robot.ts, params.ts PROVIDER_DEFAULTS).
+	const self = stubPi({}, "selfhost");
+	await self.emit("session_start");
+	const out = (await self.emit("before_provider_request", { payload: payload() })) as any;
+	assert.deepEqual(out.messages[1].content[0].prompt_cache_breakpoint, BP);
+	await self.emit("agent_start");
+	await self.emit("session_shutdown");
+	const r = self.entries.find((e) => e.type === RESULT_ENTRY)?.data;
+	assert.deepEqual(
+		[r.params["cache-breakpoints"], r.params["replay-thinking"], r.params["image-trim-every"]],
+		["true", "none", "8"],
+		"the cache-friendly context is the selfhost default, recorded as what ran",
+	);
+	assert.deepEqual(
+		[r.params_default["cache-breakpoints"], r.params_default["replay-thinking"], r.params_default["image-trim-every"]],
+		["false", "false", "0"],
+		"params_default stays the registered default",
+	);
+	// A flag given at another value than its registered default is not overridden (one given at the
+	// registered default is known from the command line: params.test.ts).
+	const given = stubPi({ "image-trim-every": "4" }, "selfhost");
+	await given.emit("session_start");
+	await given.emit("agent_start");
+	await given.emit("session_shutdown");
+	assert.equal(given.entries.find((e) => e.type === RESULT_ENTRY)?.data.params["image-trim-every"], "4");
+	// Another provider keeps the registered defaults.
+	const other = stubPi({}, "relay");
+	await other.emit("session_start");
+	assert.equal(await other.emit("before_provider_request", { payload: payload() }), undefined);
+	await other.emit("agent_start");
+	await other.emit("session_shutdown");
+	assert.equal(other.entries.find((e) => e.type === RESULT_ENTRY)?.data.params["cache-breakpoints"], "false");
 });

@@ -669,6 +669,45 @@ test("params-match.mjs: a tier run matches --tier, not its flags spelled out, an
 	}
 });
 
+test("params-match.mjs: a flipped default is compared against the run's provider default, not the recorded one", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "provider-defaults-"));
+	try {
+		// A result at the registered defaults (false / 0 / false, recorded with those defaults).
+		const plain = join(dir, "plain.json");
+		writeFileSync(plain, JSON.stringify(await result(await toy({}))));
+		// A result at the selfhost defaults (none / 8 / true), given or defaulted alike.
+		const cached = join(dir, "cached.json");
+		writeFileSync(
+			cached,
+			JSON.stringify(
+				await result(await toy({ "replay-thinking": "none", "image-trim-every": "8", "cache-breakpoints": "true" })),
+			),
+		);
+		const match = (file: string, args: string[]) =>
+			node("params-match.mjs", [file], { PI_ARGS_JSON: JSON.stringify(args) });
+		assert.equal(match(plain, ["--model", "m/x"]).status, 0, "another provider: the registered defaults");
+		const flipped = match(plain, ["--model", "selfhost/qwen"]);
+		assert.equal(flipped.status, 2, "selfhost without the flags runs none / 8 / true now");
+		assert.match(flipped.stderr, /--replay-thinking ran "false", now "none"/);
+		assert.match(flipped.stderr, /--image-trim-every ran "0", now "8"/);
+		assert.match(flipped.stderr, /--cache-breakpoints ran "false", now "true"/);
+		assert.equal(
+			match(plain, ["--model", "selfhost/qwen", "--replay-thinking=false", "--image-trim-every=0", "--cache-breakpoints=false"]).status,
+			0,
+			"the old values given on selfhost",
+		);
+		assert.equal(match(cached, ["--model", "selfhost/qwen"]).status, 0, "selfhost's defaults are what ran");
+		assert.equal(match(cached, ["--provider", "selfhost", "--model", "qwen"]).status, 0, "--provider names it too");
+		assert.equal(match(cached, ["--model", "m/x", "--replay-thinking=none", "--image-trim-every", "8", "--cache-breakpoints=true"]).status, 0);
+		const other = match(cached, ["--model", "m/x"]);
+		assert.equal(other.status, 2, "another provider's defaults are the registered ones");
+		assert.match(other.stderr, /--replay-thinking ran "none", now "false"/);
+		assert.equal(match(cached, []).status, 2, "no model named: the registered defaults");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("params-match.mjs: a flag the result does not record ran with its introduced default; one listed nowhere is skipped and named", async () => {
 	const r = await result(await toy({}));
 	// A result written before the prefix-cache flags (and --keep-images) existed.
@@ -692,6 +731,14 @@ test("params-match.mjs: a flag the result does not record ran with its introduce
 		assert.equal(marks.status, 2);
 		assert.match(marks.stderr, /--replay-thinking ran "false" .*now "none"/);
 		assert.match(marks.stderr, /--cache-breakpoints ran "false" .*now "true"/);
+		// The selfhost provider's defaults are the flipped values (params.ts PROVIDER_DEFAULTS): a run on it
+		// without the flags is another configuration than this old result, and than a recorded run at the old defaults.
+		const self = match(["--model", "selfhost/qwen"]);
+		assert.equal(self.status, 2);
+		assert.match(self.stderr, /--replay-thinking ran "false" \(unrecorded: its default when introduced\), now "none"/);
+		assert.match(self.stderr, /--image-trim-every ran "0" .*now "8"/);
+		assert.match(self.stderr, /--cache-breakpoints ran "false" .*now "true"/);
+		assert.equal(match(["--model", "selfhost/qwen", "--replay-thinking=false", "--image-trim-every", "0", "--cache-breakpoints=false"]).status, 0);
 		// --keep-images is listed nowhere: not compared (the run is accepted), but named.
 		const keep = match(["--keep-images", "6", "--model", "x/y"]);
 		assert.equal(keep.status, 0, keep.stderr);

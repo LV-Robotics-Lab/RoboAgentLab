@@ -45,6 +45,7 @@ results keeps a flag, which now says what to use rather than where it listens.
 | Flag | Was | Now |
 |---|---|---|
 | `--replay-thinking` | (no flag) pi's behaviour: every earlier assistant turn's thinking goes back out with each request | `false`: a request carries only the latest turn's thinking (`src/planner/replay-thinking.ts`); `--replay-thinking=true` is the old behaviour |
+| `--replay-thinking`, `--image-trim-every`, `--cache-breakpoints` on the `selfhost` provider (NInfer) | `false` / `0` / `false` (the registered defaults, every provider) | `none` / `8` / `true` when the session's model's provider is `selfhost` and the flag is not given (`src/infra/params.ts` `PROVIDER_DEFAULTS`, 2026-10-12); other providers unchanged. `params` records what ran; `params-match.mjs` compares these flags against the default of the provider the run names (`--model provider/id`, `--provider`), so results at either default never mix |
 
 `--replay-thinking` is a string flag with the values `true` / `false` (like `--units`): pi keeps a boolean
 flag's given value verbatim, so `=false` on a boolean would read as true. Only the outgoing request
