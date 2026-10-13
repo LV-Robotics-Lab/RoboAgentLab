@@ -45,7 +45,9 @@ import {
 	newState,
 	noMotion,
 	noteEmptyClose,
+	noteGrasped,
 	quarterTurnForReach,
+	receiverWords,
 	residualOf,
 	shoved,
 	wantsHolding,
@@ -1853,4 +1855,37 @@ test("executor: step 4 defect 7 — a thing wider than the jaws is aimed at its 
 	};
 	assert.equal(quarterTurnForReach(s, alongY, CAPS), 'rotate "yaw_left" 90');
 	assert.match(whereTheTargetIs(s, frameAt(alongY), CAPS, TABLE_Z + 0.034), /NEITHER RIM along that line is inside this arm's reach\. rotate "yaw_left" 90/);
+});
+
+test("executor: step 4 defect 8 — a close that holds tracks the payload whatever the gap, so the carry seeks the receiver", () => {
+	// smoke-fix2 spatial t0 s0: the rim closed at 7.6 mm (under MIN_WIDTH_MM) so the payload was not tracked,
+	// the carry step kept aiming at the carried bowl point ("2 mm forward") and never looked for the plate.
+	const s = newState({
+		subgoal: "descend until the jaws are level with the rim of the akita black bowl and close",
+		criterion: "The robot reports that it is HOLDING the akita black bowl.",
+		target: "akita black bowl",
+		planBoxes: {},
+	});
+	s.located = { words: "akita black bowl", point: [0.6, 0.2, 0.0], method: "m", error_mm: 10, error_class: "", on_face: false, cameras: ["scene"] };
+	const rim: SegmentReport = {
+		label: "gripper close",
+		kind: "gripper",
+		outcome: "done",
+		moved_mm: 0,
+		along_axis_mm: 0,
+		lateral_mm: 0,
+		turned_deg: 0,
+		ticks: 32,
+		elapsed_s: 1,
+		detail: { opening_mm: 7.6 },
+		grasp: { holding: true, reason: "", opening_mm: 7.6 },
+	};
+	const pose: Pose = { position_m: [0.6, 0.2, 0.02], rotation: RIG.grip_xmat_world };
+	noteGrasped(s, rim, CAPS, pose, true);
+	assert.equal(s.payload.tracking, true);
+	assert.equal(s.payload.width_mm, 7.6);
+	assert.equal(s.payload.edge, true);
+	assert.equal(s.located, undefined, "the thing left where it was");
+	// The receiver's words come from the criterion of the carry step, now that something is held.
+	assert.equal(receiverWords("The akita black bowl is over the plate and the robot still reports holding it.", "move the gripper sideways until the bowl is over the plate", "akita black bowl"), "plate");
 });

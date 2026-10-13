@@ -172,11 +172,11 @@ export function partOf(subgoal: string, target: string): string | undefined {
 	if (!target || head.includes(target.toLowerCase().split(/\s+/)[0] ?? "")) return m[2].toLowerCase();
 	return undefined;
 }
-/** The receiver's words while placing: what follows on / in / into / onto, else the target. */
+/** The receiver's words while placing: what follows on / in / into / onto / over / above / toward (the vocabulary's carry criterion says "over"), else the target. */
 export function receiverWords(criterion: string, subgoal: string, target: string): string {
 	for (const s of [criterion, subgoal]) {
 		const m =
-			/\b(?:on|onto|in|into|inside|within|atop|upon)\s+(?:the\s+)?([a-z][a-z0-9 _-]*?)(?:\s+(?:with|while|and|so|until|then|,)|[.,;]|$)/i.exec(
+			/\b(?:on|onto|in|into|inside|within|atop|upon|over|above|toward|towards)\s+(?:the\s+)?([a-z][a-z0-9 _-]*?)(?:\s+(?:with|while|and|so|until|then|,)|[.,;]|$)/i.exec(
 				s.replace(/in the (wrist|scene|side) (view|camera|picture)/gi, " "),
 			);
 		if (m?.[1]) return m[1].trim();
@@ -726,18 +726,16 @@ export function noteGrasped(s: SubgoalState, step: SegmentReport, caps: Caps, po
 			offset = scale(line, Math.sign(along || 1) * inset);
 		} else offset = scale(line, along);
 	}
-	const fresh =
-		width !== undefined &&
-		width >= MIN_WIDTH_MM &&
-		(s.payload.voided_mm === undefined ||
-			Math.abs(width - s.payload.voided_mm) > WIDTH_JUMP_SHARE * s.payload.voided_mm);
+	// The payload is tracked from the close that holds, whatever the gap (the original's "placing" is the
+	// holding reading alone): a 7.6 mm rim in the jaws is a payload, and the next step then seeks the
+	// RECEIVER. MIN_WIDTH_MM / WIDTH_JUMP_SHARE judge a measured outline's width, not whether something is held.
 	s.payload = {
 		...(width !== undefined ? { width_mm: width } : {}),
 		...(span !== undefined ? { span_mm: span } : {}),
 		...(offset !== undefined ? { offset } : {}),
 		edge,
 		bumped: false,
-		tracking: fresh,
+		tracking: true,
 	};
 	s.located = undefined;
 	s.residualMm = undefined;
