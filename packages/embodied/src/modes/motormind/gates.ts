@@ -229,6 +229,8 @@ export type LocatedPoint = {
 	/** A new answer waiting for a second look to confirm it (the sticky rule). */
 	waiting?: Vec3;
 	on_face: boolean;
+	/** One view with a wide bar, or two views that disagreed (spec-locate §5 item 8): not a place to drive to blindly. */
+	doubtful?: boolean;
 	body?: Vec3;
 	top?: Vec3;
 	/** The look that gave it, for the record. */
@@ -270,7 +272,6 @@ export type SubgoalState = {
 	unshoved: boolean;
 	lookedClose: boolean;
 	lastLookPose?: Pose;
-	lastLookedWords?: string;
 	fromPlanBoxes: boolean;
 	// grasping
 	emptyCloses: Vec3[];
@@ -874,6 +875,10 @@ export function whereTheTargetIs(s: SubgoalState, f: Frame, caps: Caps, topZ: nu
 		);
 	}
 	lines.push(`(from ${s.located.method}, within about ${r0(s.located.error_mm)} mm)`);
+	if (s.located.doubtful)
+		lines.push(
+			`BUT THIS POSITION IS DOUBTFUL (${s.located.cameras.length <= 1 ? "one view answered" : "the views disagreed"}; a ${r0(s.located.error_mm)} mm bar): do not descend on it or close from it; bring the tool over it at this height and let the next look confirm it first.`,
+		);
 	if (s.disagreement) lines.push(`BUT TWO VIEWS DISAGREE: ${s.disagreement}`);
 	if (s.ambiguous) lines.push(`BUT MORE THAN ONE THING FITS THOSE WORDS: ${s.ambiguous}`);
 	return lines.join("\n");

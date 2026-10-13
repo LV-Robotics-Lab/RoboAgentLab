@@ -1636,3 +1636,125 @@ test("executor: step 4 defect 4 — stopped short is judged over the whole batch
 	const far = S4.spatial_t0_s0.top_a1_c0_moved_190;
 	assert.equal(noMotion(far.segments, s4Deltas(far), false).frozen, false);
 });
+
+test("executor: step 4 defect 6 — a one-view answer with a wide bar is doubtful: the kept point beats it, the proposer is told, the executor looks again after moving", async () => {
+	// spatial t0 s0, pick_akita_bowl_retry attempt 1 cycle 0: the point carried from the attempt before
+	// ([640, 202, 23] ± 40) gave way to a one-view answer on the OTHER black bowl ([472, 306, 6] ± 204,
+	// doubtful=false) and the tool drove 115 mm toward it; grasp_akita_bowl_top attempt 1 did it again.
+	const w = S4.spatial_t0_s0.retry_a1_c0_wrong_bowl;
+	assert.ok(w.located.error_mm > 190 && w.located.doubtful === false);
+	assert.ok(Math.hypot(w.located.point_mm[0] - 472, w.located.point_mm[1] - 306) < 2);
+	// 1. locate: one fixed view alone, the other seeing nothing, gives a bar as wide as the object is deep. On this
+	// rig the 200 mm plate from the scene camera is 55 mm (the bowls 41-49; the recorded case, from B's cameras
+	// and heights, was 204): over MAX_SKEW_MM the answer is doubtful.
+	const otherBowl = {
+		objects: [{ label: "akita black bowl", bbox_2d: perfectBox(scene, "akita_black_bowl_2").map(Math.round) }],
+		target: "akita black bowl",
+	};
+	const plate = { objects: [{ label: "plate", bbox_2d: perfectBox(scene, "plate_1").map(Math.round) }], target: "plate" };
+	const nothing = { objects: [], target: "" };
+	const tag = (c: Camera): Camera => ({ ...c, raw512: c.name, marked512: c.name });
+	const l = await locate({
+		views: { scene: tag(scene), side: tag(side) },
+		words: "plate",
+		table_z_m: TABLE_Z,
+		tool_z_m: TABLE_Z + 0.3,
+		tallest_mm: 160,
+		holding: false,
+		ask: async (_r, _p, images) => ok(images[0].data === "scene" ? plate : nothing),
+	});
+	assert.ok(l.ok, l.error);
+	assert.deepEqual(l.cameras, ["scene"]);
+	assert.ok((l.error_mm as number) > 50, `${l.error_mm}`);
+	assert.equal(l.doubtful, true);
+	assert.match(l.method, /mm bar from one view: doubtful/);
+	// 2. The executor keeps the point it carried for the same words when a wider-barred answer comes (the
+	// sticky rule keyed on the words, as the original); first, with nothing shoved, it does not even look.
+	const truth = objectsBase.akita_black_bowl_1;
+	const kept: Vec3 = [truth[0], truth[1], TABLE_Z + 0.02];
+	const located = (unshoved: boolean) => ({
+		...S4_CARRY(0),
+		same: {
+			...S4_CARRY(0).same,
+			unshoved,
+			located: {
+				words: "akita black bowl",
+				point: kept,
+				method: "scene and side met 12 mm apart at the contact edge",
+				error_mm: 39.6,
+				error_class: "how far apart the two views' rays passed",
+				on_face: false,
+				cameras: ["scene", "side"],
+			},
+		},
+	});
+	const claim = { assessment: "", done: true, command: null, expect: "", confidence: 0.9 };
+	const m0 = scripted({ executor: [claim] });
+	const robot0 = fakeRobot();
+	const cache0: FrameCache = { stale: true };
+	const run0 = await drive(
+		runSubgoal(input({ ask: m0.ask, cache: cache0, subgoal: { target_boxes: {} }, carry: located(true) as never })),
+		robot0,
+		cache0,
+	);
+	assert.equal(run0.ending, "MODEL_DONE");
+	assert.deepEqual(
+		m0.calls.map((c) => c.role),
+		["executor"],
+		"the carried point is still good: no look",
+	);
+	assert.match(m0.calls[0].text, /WHERE THE TARGET IS: "akita black bowl"/);
+	assert.equal(run0.cycles[0].reach, undefined);
+	// Shoved since the last look: the executor looks, gets the other bowl on one view, and keeps its point.
+	const m = scripted({ executor: [claim], locate: [otherBowl, nothing] });
+	const robot = fakeRobot();
+	const cache: FrameCache = { stale: true };
+	const run = await drive(
+		runSubgoal(input({ ask: m.ask, cache, subgoal: { target_boxes: {} }, carry: located(false) as never })),
+		robot,
+		cache,
+	);
+	assert.deepEqual(
+		m.calls.map((c) => c.role),
+		["locate", "locate", "executor"],
+	);
+	const reach = run.cycles[0].reach!;
+	const got = reach.located!.point_mm!;
+	assert.ok(Math.hypot(got[0] / 1000 - kept[0], got[1] / 1000 - kept[1]) * 1000 < 1, JSON.stringify(reach));
+	assert.equal(reach.located!.doubtful, false);
+	assert.match(m.calls[2].text, /with a wider bar \(\d+ vs 40 mm\) was not taken/);
+	const carriedOut = (run.carry as Json).same.located;
+	assert.ok(Math.hypot(carriedOut.point[0] - kept[0], carriedOut.point[1] - kept[1]) * 1000 < 1);
+	// 3. With no kept point the doubtful answer stands, the proposer is told, and after the tool moves further
+	// than a close survives the executor looks again instead of driving on the same answer.
+	const forward = {
+		assessment: "",
+		done: false,
+		command: { actions: [{ type: "move", direction: "forward", distance_mm: 60 }] },
+		expect: "",
+		confidence: 0.8,
+	};
+	const m1 = scripted({ executor: [forward, claim], locate: [plate, nothing, plate, nothing] });
+	const robot1 = fakeRobot();
+	const cache1: FrameCache = { stale: true };
+	const run1 = await drive(
+		runSubgoal(
+			input({
+				ask: m1.ask,
+				cache: cache1,
+				subgoal: { subgoal: "move the jaws over the plate", criterion: "the tool is centred over the plate", target: "plate", target_boxes: {} },
+			}),
+		),
+		robot1,
+		cache1,
+	);
+	assert.equal(run1.ending, "MODEL_DONE");
+	assert.deepEqual(
+		m1.calls.map((c) => c.role),
+		["locate", "locate", "executor", "locate", "locate", "executor"],
+	);
+	assert.match(m1.calls[2].text, /BUT THIS POSITION IS DOUBTFUL \(one view answered; a \d+ mm bar\)/);
+	assert.equal(run1.cycles[0].reach?.located?.doubtful, true);
+	assert.equal(run1.cycles[1].reach?.located?.doubtful, true);
+	assert.equal((run1.carry as Json).same.located.doubtful, true);
+});

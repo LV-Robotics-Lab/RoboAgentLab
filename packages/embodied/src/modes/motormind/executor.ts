@@ -815,8 +815,15 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 				: sg.target || sg.subgoal;
 		let why: string | undefined;
 		if (o.wristOnly) why = "a wrist look";
-		else if (!s.located || s.lastLookedWords !== words || (s.sideStep && !s.located.on_face)) why = "not located yet";
+		else if (!s.located || s.located.words !== words || (s.sideStep && !s.located.on_face)) why = "not located yet";
 		else if (!s.unshoved) why = "something was shoved since the last look";
+		else if (
+			s.located.doubtful &&
+			s.lastLookPose &&
+			apartXy(frame.pose.position_m, s.lastLookPose.position_m) * 1000 >
+				Math.max(MIN_CLOSE_TOLERANCE_MM, closeToleranceMm(caps, undefined))
+		)
+			why = "the last answer was doubtful and the tool has moved since: look again from here";
 		else if (fine && !s.lookedClose && frame.cameras.wrist && jawsDown(frame.pose))
 			why = "the fine phase: one close-in look";
 		else if (
@@ -850,7 +857,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			part: !!acts,
 			...(acts && s.wantsHolding ? { part_word: partOf(sg.subgoal, sg.target) } : {}),
 			...(useBoxes ? { boxes: s.planBoxes } : {}),
-			...(s.located && s.lastLookedWords === words ? { last_seen: s.located.point, hint_boxes: s.planBoxes } : {}),
+			...(s.located && s.located.words === words ? { last_seen: s.located.point, hint_boxes: s.planBoxes } : {}),
 			...(o.wristOnly ? { wrist_only: true } : {}),
 			wrist_within_mm: Math.max(2 * jawHalfGapMm(caps), s.located?.error_mm ?? 0),
 			...(heldPx ? { held_px: heldPx } : {}),
@@ -877,8 +884,10 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 				return { reach, records: located.records };
 			}
 		}
-		// The sticky rule (spec-locate §8.3).
-		const old = s.located && s.lastLookedWords === words ? s.located : undefined;
+	// The sticky rule (spec-locate §8.3): the point kept under these words, a carried one included (the
+		// original keys it on the words, so a retry on the same object cannot be sent to a look-alike by
+		// one wide-barred answer: spatial t0 s0 drove 160 mm to the other bowl twice).
+		const old = s.located && s.located.words === words ? s.located : undefined;
 		const emptyNear = old ? s.emptyCloses.some((p) => apartXy(p, old.point) * 1000 <= old.error_mm) : false;
 		const override = o.wristOnly || (emptyNear && old && apartXy(point, old.point) * 1000 <= old.error_mm);
 		let method = located.method;
@@ -900,6 +909,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 				error_mm: located.error_mm ?? 20,
 				error_class: located.error_class ?? "",
 				on_face: onFace,
+				doubtful: located.doubtful,
 				...(located.part_body ? { body: located.part_body } : {}),
 				...(located.top_point ? { top: located.top_point } : {}),
 				cameras: located.cameras,
@@ -926,7 +936,6 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		if (located.top_point) faces.offerTopPoint(located.top_point, frame.table_z_m);
 		s.residualMm = residualOf(s, frame.pose);
 		s.lastLookPose = frame.pose;
-		s.lastLookedWords = words;
 		s.unshoved = true;
 		if (fine && !o.wristOnly) s.lookedClose = true;
 		reach.residual_mm = s.residualMm;
@@ -934,7 +943,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			label: located.label,
 			point_mm: [point[0] * 1000, point[1] * 1000, point[2] * 1000],
 			error_mm: s.located?.error_mm ?? located.error_mm ?? 20,
-			doubtful: located.doubtful,
+			doubtful: s.located?.doubtful ?? located.doubtful,
 			...(jumped !== undefined ? { error: undefined } : {}),
 		};
 		return { reach, records: located.records };

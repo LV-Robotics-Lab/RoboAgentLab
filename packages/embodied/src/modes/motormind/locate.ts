@@ -581,14 +581,15 @@ export async function locate(o: LocateInput): Promise<Located> {
 			if (wristReading && !o.holding) wristPosition(o, out, wristReading, tableZ);
 			return out;
 		}
+		// Two views that did not meet (or whose rays never crossed) are doubtful: the one view read below
+		// is a fallback, not a place to drive to (spec-locate §5 item 8; step 4 defect 6).
+		out.doubtful = true;
+		const nearest = nearestTo(readings, o.last_seen, tableZ);
 		if (aim) {
-			out.doubtful = true;
 			out.skew_mm = aim.skew_m * 1000;
-			const nearest = nearestTo(readings, o.last_seen, tableZ);
 			out.disagreement = `${crossed ?? `the two views' rays passed ${Math.round(aim.skew_m * 1000)} mm apart`}; ${nearest.view}'s answer is used`;
-			readings.splice(0, readings.length, nearest);
-		}
-		// A triangulation that returned nothing falls through with the first reading and no flag.
+		} else out.disagreement = `the two views' rays did not meet; ${nearest.view}'s answer is used`;
+		readings.splice(0, readings.length, nearest);
 	}
 
 	// Single view.
@@ -639,9 +640,23 @@ export async function locate(o: LocateInput): Promise<Located> {
 	if (chosen.hiding && !lookingDown(chosen.cam)) baseOutOfSight(out, chosen, tableZ);
 	out.ok = true;
 	if (chosen.view !== "wrist" && wristReading) {
-		if (wristPosition(o, out, wristReading, tableZ)) return out;
+		if (wristPosition(o, out, wristReading, tableZ)) return wideBarIsDoubtful(out);
 	}
 	if (out.part) asAPart(o, out, chosen, tableZ);
+	return wideBarIsDoubtful(out);
+}
+
+/**
+ * A single view read with a bar wider than two views of one object stay within (`MAX_SKEW_MM`) is a
+ * doubtful answer (step 4 defect 6: spatial t0 s0 drove 160 mm to the other bowl on a 203 mm bar
+ * twice, flagged nothing). The point stands; the flag reaches the proposer, the claim and the
+ * executor's re-look rule.
+ */
+function wideBarIsDoubtful(out: Located): Located {
+	if ((out.error_mm ?? 0) > MAX_SKEW_MM && !out.doubtful) {
+		out.doubtful = true;
+		out.method += `; a ${Math.round(out.error_mm ?? 0)} mm bar from one view: doubtful`;
+	}
 	return out;
 }
 
