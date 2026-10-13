@@ -1,0 +1,187 @@
+{
+ "source": "bjb2 .local/runs/mm-step1/2026-10-12-fix2/report.json libero_spatial_t0_s0_behaviour (C6, C7, C15, C8)",
+ "blocked": {
+  "label": "move down 200.0 mm (base) [3/4]",
+  "kind": "translate",
+  "outcome": "limited",
+  "abort_reason": "blocked",
+  "moved_mm": 14.96,
+  "along_axis_mm": 14.95,
+  "lateral_mm": 0.41,
+  "turned_deg": 0.1,
+  "axis": [
+   0,
+   0,
+   -1
+  ],
+  "ticks": 34,
+  "servo_ticks": 32,
+  "hold_ticks": 2,
+  "elapsed_s": 1.014,
+  "frame_clock_s": 85.25,
+  "grasp": {
+   "opening_mm": 79.95853271598209,
+   "closed_fraction": 1.014702191827184,
+   "commanded": "open",
+   "holding": null,
+   "reason": "the last gripper command was not close"
+  },
+  "pose_after": {
+   "position_mm": [
+    572.15,
+    0.11,
+    -1.93
+   ],
+   "rotation": [
+    [
+     0.998026,
+     -0.044551,
+     -0.044272
+    ],
+    [
+     -0.04398,
+     -0.998937,
+     0.013785
+    ],
+    [
+     -0.044839,
+     -0.011811,
+     -0.998924
+    ]
+   ]
+  },
+  "message": "blocked after 14.9 mm: something is in the way or the arm is at its limit (descending onto an object, this is the fingers touching it)"
+ },
+ "contact": {
+  "label": "move down 200.0 mm (base) [2/4]",
+  "kind": "translate",
+  "outcome": "contact",
+  "abort_reason": "blocked",
+  "moved_mm": 24.75,
+  "along_axis_mm": 24.74,
+  "lateral_mm": 0.64,
+  "turned_deg": 0.1,
+  "ticks": 49,
+  "servo_ticks": 47,
+  "hold_ticks": 2,
+  "elapsed_s": 1.496,
+  "frame_clock_s": 97.1,
+  "grasp": {
+   "opening_mm": 79.95836193217471,
+   "closed_fraction": 1.0147000245199835,
+   "commanded": "open",
+   "holding": null,
+   "reason": "the last gripper command was not close"
+  },
+  "pose_after": {
+   "position_mm": [
+    572.01,
+    0.58,
+    -1.93
+   ],
+   "rotation": [
+    [
+     0.997972,
+     -0.045932,
+     -0.044073
+    ],
+    [
+     -0.04536,
+     -0.998874,
+     0.013891
+    ],
+    [
+     -0.044661,
+     -0.011864,
+     -0.998932
+    ]
+   ]
+  },
+  "message": "contact: pushed 24.7 mm and met resistance"
+ },
+ "skidded": {
+  "label": "move up 10.0 mm (base) [1/1]",
+  "kind": "translate",
+  "outcome": "limited",
+  "abort_reason": "skidded",
+  "moved_mm": 7.65,
+  "along_axis_mm": 5.53,
+  "lateral_mm": 5.28,
+  "turned_deg": 0.9,
+  "axis": [
+   0,
+   0,
+   1
+  ],
+  "ticks": 5,
+  "servo_ticks": 3,
+  "hold_ticks": 2,
+  "elapsed_s": 0.128,
+  "frame_clock_s": 130.65,
+  "grasp": {
+   "opening_mm": 79.98666308149815,
+   "closed_fraction": 1.0150591761611443,
+   "commanded": "open",
+   "holding": null,
+   "reason": "the last gripper command was not close"
+  },
+  "pose_after": {
+   "position_mm": [
+    507.27,
+    0.02,
+    193.05
+   ],
+   "rotation": [
+    [
+     0.996885,
+     -0.044476,
+     -0.065137
+    ],
+    [
+     -0.043548,
+     -0.99893,
+     0.01559
+    ],
+    [
+     -0.06576,
+     -0.012705,
+     -0.997755
+    ]
+   ]
+  },
+  "message": "skidded 5.3 mm sideways after 5.5 mm: the tool was pushed aside; locate the target again"
+ },
+ "timed_out": {
+  "label": "move down 20.0 mm (base) [1/1]",
+  "kind": "translate",
+  "outcome": "failed",
+  "moved_mm": 0,
+  "along_axis_mm": 0,
+  "lateral_mm": 0,
+  "turned_deg": 0,
+  "ticks": 0,
+  "elapsed_s": 0,
+  "error": "env.mm_run_step: timed out after 10000 ms; the server is still running it",
+  "timed_out": true
+ },
+ "gripper": {
+  "full_open_mm": 79.99,
+  "full_open_vs_78_8_mm": 1.1899999999999977,
+  "empty_close_mm": 1.14,
+  "open_to_mm": 55.26,
+  "open_to_over_mm": 15.259999999999998,
+  "lift_drift_mm": 0.718896963278624,
+  "object": null,
+  "held_mm": null
+ },
+ "object_close": {
+  "full_open_mm": 79.99,
+  "full_open_vs_78_8_mm": 1.1899999999999977,
+  "empty_close_mm": 1.14,
+  "open_to_mm": 55.26,
+  "open_to_over_mm": 15.259999999999998,
+  "lift_drift_mm": 0.7198020852712901,
+  "object": "alphabet_soup_1",
+  "held_mm": 62.94
+ }
+}
