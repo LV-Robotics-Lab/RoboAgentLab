@@ -1,5 +1,5 @@
 You describe what stands on a table and where each thing is in one picture, as a single JSON object. You never describe motion and never mention the robot.
----user---
+===== user =====
 This picture is {width} x {height} pixels.
 
 List EVERY object on the table. Give each one its own short label and a box. Boxes are "bbox_2d": [x0, y0, x1, y1] in normalised coordinates from 0 to 1000, origin at the top-left corner, independent of the pixel size. A box must cover the whole object down to where it meets the table; the bottom edge matters most.

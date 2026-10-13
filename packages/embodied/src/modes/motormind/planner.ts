@@ -23,7 +23,7 @@ import {
 	recordOf,
 	type Subgoal,
 } from "./contract.ts";
-import { fill, promptFile } from "./models.ts";
+import { fill, type PromptName, promptFile } from "./prompts.ts";
 
 export const MAX_SUBGOALS = 24;
 export const PLAN_ATTEMPTS = 3;
@@ -155,12 +155,9 @@ export const fixedCameras = (names: readonly CameraName[]) => names.filter((n) =
 // prompts
 
 type Prompt = { system: string; user: string };
-const SPLIT = /\n=+\s*user\s*=+\n/i;
-function promptOf(name: string): Prompt {
-	const { text } = promptFile(name);
-	const [system, user] = text.split(SPLIT);
-	if (user === undefined) throw new Error(`prompts/${name}.md lacks the "===== user =====" separator`);
-	return { system: system.trim(), user: user.trim() };
+function promptOf(name: PromptName): Prompt {
+	const { system, text } = promptFile(name);
+	return { system, user: text };
 }
 
 export type PlanInput = {

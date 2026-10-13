@@ -40,14 +40,8 @@ import {
 import { EvidenceLog, renderLine } from "../src/modes/motormind/evidence.ts";
 import { type Caps, MOTORMIND_EVENT, type MotorMindHandle, type Observation } from "../src/modes/motormind/index.ts";
 import { runMission } from "../src/modes/motormind/mission.ts";
-import {
-	faithfulPayload,
-	MAX_TOKENS,
-	makeAsk,
-	parseRoleJson,
-	promptFile,
-	roleModels,
-} from "../src/modes/motormind/models.ts";
+import { faithfulPayload, MAX_TOKENS, makeAsk, parseRoleJson, roleModels } from "../src/modes/motormind/models.ts";
+import { PROMPT_NAMES, promptFile, promptHashes } from "../src/modes/motormind/prompts.ts";
 import {
 	boxFault,
 	complaints,
@@ -1750,6 +1744,11 @@ test("provider: replyOf reads the tool result and the robot's latest observation
 	assert.equal(classify([USER, result], { id: "motormind-1" }, none, true), "other");
 	assert.equal(classify([USER, result], { id: "motormind-1" }, new Set(["motormind-2"]), true), "answered");
 	assert.equal(classify([], undefined, none, false), "other");
-	// The prompt files carry the separator the planner and verifier split on.
-	for (const name of ["plan", "replan", "verify"]) assert.match(promptFile(name).text, /\n=+ user =+\n/);
+	// Every role's prompt file splits into a system and a user part, and the hashes cover all of them.
+	for (const name of PROMPT_NAMES) {
+		const p = promptFile(name);
+		assert.ok(p.system.length > 0 && p.text.length > 0, `prompts/${name}.md has both parts`);
+		assert.match(p.sha, /^[0-9a-f]{64}$/);
+	}
+	assert.deepEqual(Object.keys(promptHashes()), [...PROMPT_NAMES]);
 });

@@ -11,8 +11,8 @@
  */
 
 import { type Ask, type Frame, images, type RoleCallRecord, recordOf, type Subgoal } from "./contract.ts";
-import { fill, promptFile } from "./models.ts";
 import { type ClauseAnswer, nouns, sameObject, wantsHolding, wantsRelease } from "./planner.ts";
+import { fill, promptFile } from "./prompts.ts";
 
 export const VERIFY_ATTEMPTS = 3;
 /** A closed point this near the planned mark counts as "reached" (spec-planner §5.4 `_REACHED_MM`). */
@@ -122,8 +122,8 @@ export function parseVerdict(json: unknown): Omit<Verdict, "gate" | "calls"> | u
 
 type Prompt = { system: string; user: string };
 function promptOf(): Prompt {
-	const [system, user] = promptFile("verify").text.split(/\n=+\s*user\s*=+\n/i);
-	return { system: system.trim(), user: (user ?? "").trim() };
+	const { system, text } = promptFile("verify");
+	return { system, user: text };
 }
 
 function claimText(c: Claim): string {

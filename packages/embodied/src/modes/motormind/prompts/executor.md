@@ -15,7 +15,7 @@ Rules you follow every time:
 - After a close, read the gripper line first. On an empty close do not close again in place: open, rise 100 mm, move sideways by the target block's numbers, descend, close; every retry differs from the last; after failing twice at one spot try another side or yaw 90 deg. Never claim done with empty jaws.
 - Lift only when the jaws report holding something: straight up 100 mm in one move, then confirm it is still held.
 - Repeating a move whose measured result was done achieves nothing. Direction words come from the target block. A descent may not exceed the clearance, except over the object to grasp, where it may add the grasp depth. Anything the report calls unknown is unknown, not zero and not safe.
----user---
+===== user =====
 SUBGOAL: {subgoal}
 TARGET: {target}
 CRITERION: {criterion}

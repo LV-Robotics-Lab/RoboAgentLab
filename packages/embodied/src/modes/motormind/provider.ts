@@ -71,8 +71,9 @@ import {
 	runMission,
 	subgoalSummary,
 } from "./mission.ts";
-import { findModel, makeAsk, promptHashes, roleModels } from "./models.ts";
+import { findModel, makeAsk, roleModels } from "./models.ts";
 import { capabilityText, legend } from "./observe.ts";
+import { promptHashes } from "./prompts.ts";
 
 /** The executor half's modules, injectable for tests (the defaults are ./executor.ts and ./observe.ts). */
 export type ProviderDeps = { runSubgoal: (input: SubgoalInput) => Executor; describers: Describers };

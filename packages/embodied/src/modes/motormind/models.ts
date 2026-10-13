@@ -7,13 +7,10 @@
  * JSON is parsed whole, then from a fenced block, then as the first brace-balanced object, then
  * from the thinking text when the body is empty.
  *
- * Prompts live in ./prompts/<name>.md (rewritten from the specs' intent, never the original's text);
- * `promptFile` reads one and records its sha256 for the result's `prompts` (DESIGN §7.3).
+ * Prompts live in ./prompts/<name>.md (rewritten from the specs' intent, never the original's text)
+ * and are read by ./prompts.ts, which also records their sha256 for the result's `prompts` (DESIGN §7.3).
  */
 
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type {
 	Api,
 	ImageContent,
@@ -231,29 +228,4 @@ export function makeAsk(
 			});
 		return done({ ok: true, text, json, ...(thinking ? { thinking } : {}), model: answered, usage, attempts: 1 });
 	};
-}
-
-// ---------------------------------------------------------------------------
-// prompt files
-
-export const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
-const PROMPTS = new Map<string, { text: string; sha: string }>();
-
-/** ./prompts/<name>.md: its text and sha256 (read once). */
-export function promptFile(name: string): { text: string; sha: string } {
-	const had = PROMPTS.get(name);
-	if (had) return had;
-	const text = readFileSync(fileURLToPath(new URL(`./prompts/${name}.md`, import.meta.url)), "utf8");
-	const entry = { text, sha: sha256(text) };
-	PROMPTS.set(name, entry);
-	return entry;
-}
-
-/** The sha256 of every prompt file read so far, by name (the result's `prompts`). */
-export const promptHashes = (): Record<string, string> =>
-	Object.fromEntries([...PROMPTS].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, v.sha]));
-
-/** Fill `{name}` slots of a prompt template; a slot with no value becomes "". */
-export function fill(template: string, slots: Record<string, string | number | undefined>): string {
-	return template.replace(/\{([a-z_]+)\}/g, (m, k: string) => (k in slots ? String(slots[k] ?? "") : m));
 }
