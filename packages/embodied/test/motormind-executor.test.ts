@@ -36,6 +36,8 @@ import { apply, IDENTITY, labelDirection, matmul, sub, transpose, unit } from ".
 import {
 	closeOutcome,
 	dragging,
+	jawsChanged,
+	jawsShut,
 	newState,
 	noMotion,
 	noteEmptyClose,
@@ -57,7 +59,7 @@ import {
 	validateProposal,
 } from "../src/modes/motormind/proposal.ts";
 import { parseSupervision, supervise } from "../src/modes/motormind/supervision.ts";
-import type { Caps, Mat3, Pose, Vec3 } from "../src/modes/motormind/types.ts";
+import type { Caps, Delta, Mat3, Pose, Vec3 } from "../src/modes/motormind/types.ts";
 
 type Json = Record<string, any>;
 const fixtures = join(import.meta.dirname, "fixtures", "motormind");
@@ -1523,4 +1525,77 @@ test("executor: step 4 defect 1 — an inherited frozen count freezes only a bar
 	const run2 = await drive(runSubgoal(input({ ask: m2.ask, cache: cache2, carry: S4_CARRY(1) as never })), robot2, cache2);
 	assert.equal(run2.ending, "FROZEN");
 	assert.match(run2.cycles[0].stopped_by ?? "", /before this claim/);
+});
+
+/** A recorded delta of the fixture as the executor's `Delta` (its magnitude read from the label when recorded). */
+const s4Delta = (d: Json, i: number): Delta => ({
+	index: i,
+	kind: d.kind,
+	...(d.axis ? { axis: d.axis as Vec3 } : {}),
+	magnitude: (d.magnitude_mm ?? 0) / 1000,
+	speed: 0.05,
+	stop_on_contact: false,
+	push: d.push === true,
+	...(d.gripper_state ? { gripper_state: d.gripper_state } : {}),
+	label: d.label,
+	note: "",
+});
+/** The fixture cycle's deltas as the executor held them: the model's and the menders' inserts, not a re-look's follow move. */
+const s4Deltas = (c: Json): Delta[] => (c.deltas as Json[]).filter((d) => !d.follow).map(s4Delta);
+/** The frame the fixture recorded before the batch, on the test rig's pose. */
+const s4Frame = (c: Json): Frame =>
+	frameAt(
+		{ position_m: c.frame_before.pose.position_m, rotation: c.frame_before.pose.rotation },
+		{
+			holding: c.frame_before.grasp.holding,
+			opening: c.frame_before.grasp.opening_mm,
+			commanded: c.frame_before.gripper.commanded,
+		},
+	);
+
+test("executor: step 4 defect 2 — the jaws count as changed by the close this cycle COMMANDED, not by whether the close ran", () => {
+	// spatial t0 s0, pick_akita_bowl attempt 1 cycle 2: left 4, down 41 (blocked 44 mm short), close — the
+	// close-depth gate stopped the batch before the close. B: no gripper segment → unchanged → frozen=2 →
+	// FROZEN. The original: a close was commanded while the jaws stood open → changed → frozen=0. Arm A's
+	// take step on this very cell survived its cycle 1 by that rule.
+	const c = S4.spatial_t0_s0.a1_c2_close_gated;
+	assert.equal(c.ending, "FROZEN");
+	const deltas = s4Deltas(c);
+	assert.deepEqual(
+		deltas.map((d) => d.kind),
+		["translate", "translate", "gripper"],
+	);
+	const steps: SegmentReport[] = c.segments;
+	assert.ok(steps.some((st) => st.kind === "translate" && st.abort_reason === "blocked"));
+	assert.ok(!steps.some((st) => st.kind === "gripper"), "the close never ran");
+	const before = s4Frame(c);
+	assert.equal(before.grasp.holding, null);
+	assert.ok(before.grasp.opening_mm! > 70);
+	assert.equal(jawsShut(before), false);
+	assert.equal(jawsChanged(deltas, before), true);
+	assert.equal(noMotion(steps, true).frozen, false);
+	// The rule B had: by the segments alone the cycle is "a move stopped early".
+	assert.equal(noMotion(steps, false).frozen, true);
+	// A close commanded on jaws already shut (holding) changes nothing; an open does; no gripper action, nothing.
+	const shut = frameAt(before.pose, { holding: true, opening: 42, commanded: "close" });
+	assert.equal(jawsShut(shut), true);
+	assert.equal(jawsChanged(deltas, shut), false);
+	assert.equal(
+		jawsChanged(
+			deltas.map((d) => (d.kind === "gripper" ? { ...d, gripper_state: "open" as const } : d)),
+			shut,
+		),
+		true,
+	);
+	assert.equal(jawsChanged(deltas.slice(0, 2), before), false);
+	// No reading at all: nobody can say the jaws did not change.
+	const unreadable: Frame = {
+		...before,
+		gripper: { ...before.gripper, opening_mm: Number.NaN },
+		grasp: { holding: null, reason: "" },
+	};
+	assert.equal(jawsShut(unreadable), null);
+	assert.equal(jawsChanged(deltas, unreadable), true);
+	// Shut by the closed fraction alone (no holding reading): a quarter open.
+	assert.equal(jawsShut({ ...before, grasp: { holding: null, reason: "", closed_fraction: 0.25 } }), true);
 });

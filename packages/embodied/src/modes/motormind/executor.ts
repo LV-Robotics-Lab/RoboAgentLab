@@ -48,6 +48,7 @@ import {
 	type GateContext,
 	isPositional,
 	jawHalfGapMm,
+	jawsChanged,
 	keepBlockedAxes,
 	MAX_CYCLES,
 	MIN_CLOSE_TOLERANCE_MM,
@@ -390,7 +391,6 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		let ended: { ending: Ending; error?: string } | undefined;
 		let descentBlocked = false;
 		let graspedThisCycle: { gap_mm: number } | undefined;
-		let gripperChanged = false;
 		let cancelledMid = false;
 		for (let i = 0; i < deltas.length; i++) {
 			const d = deltas[i];
@@ -521,7 +521,6 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 					descentBlocked = true;
 				noteBlocked(s, st);
 				if (st.kind === "gripper" && st.outcome === "done") {
-					gripperChanged = true;
 					if (d.gripper_state === "close") {
 						const holding = closeOutcome(st, s);
 						const gap = st.detail?.opening_mm ?? st.grasp?.opening_mm;
@@ -637,7 +636,9 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		if (shoved(cycle.steps, deltas, s.errorMm)) s.unshoved = false;
 		if (holdingNow && cycle.steps.some((st) => st.kind === "translate" && st.abort_reason === "blocked"))
 			s.payload.bumped = true;
-		const motionCheck = noMotion(cycle.steps, gripperChanged);
+		// The jaws "changed" by what this cycle COMMANDED against the batch-start frame (spec-executor
+		// §13.7): a close the depth gate stopped before it ran still counts, as in the original.
+		const motionCheck = noMotion(cycle.steps, jawsChanged(deltas, batchStartFrame));
 		if (motionCheck.frozen) {
 			if (s.atTheWall && holdingNow) s.wall++;
 			else s.frozen++;

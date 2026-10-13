@@ -708,6 +708,31 @@ export const dragging = (step: SegmentReport, frame: Frame, caps: Caps) =>
 	Math.abs(step.axis[2]) < 0.5;
 
 /**
+ * Whether the jaws stand where a close left them (spec-executor §13.7): holding says shut; else the
+ * closed fraction under a half, else an opening under 20 mm; null when the robot cannot say.
+ */
+export function jawsShut(f: Frame): boolean | null {
+	if (f.grasp.holding === true) return true;
+	const fraction = f.grasp.closed_fraction;
+	if (typeof fraction === "number" && Number.isFinite(fraction)) return fraction < 0.5;
+	const opening = f.grasp.opening_mm ?? f.gripper.opening_mm;
+	if (typeof opening === "number" && Number.isFinite(opening)) return opening < 20;
+	return null;
+}
+/**
+ * The cycle's command changes what the jaws are doing (spec-executor §13.7): judged by the gripper
+ * actions it COMMANDED against the jaws at the batch start, whether or not the batch reached them (a
+ * close the depth gate stopped still counts); an unreadable state counts as changed.
+ */
+export function jawsChanged(deltas: Delta[], before: Frame): boolean {
+	const states = deltas.filter((d) => d.kind === "gripper" && d.gripper_state).map((d) => d.gripper_state);
+	if (!states.length) return false;
+	const shut = jawsShut(before);
+	if (shut === null) return true;
+	return !states.every((st) => (st === "close") === shut);
+}
+
+/**
  * The cycle did not move (spec-executor §13.7): under 1 mm in all, or it stopped early (a blocked
  * segment, or a translation over 3 mm that made under 25% of its way), with under 0.5 deg of turn and
  * the gripper state unchanged.
