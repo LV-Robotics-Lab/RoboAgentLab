@@ -733,32 +733,24 @@ export function jawsChanged(deltas: Delta[], before: Frame): boolean {
 }
 
 /**
- * The cycle did not move (spec-executor §13.7): under 1 mm in all, or it stopped early (a blocked
- * segment, or a translation over 3 mm that made under 25% of its way), with under 0.5 deg of turn and
- * the gripper state unchanged.
+ * The cycle did not move (spec-executor §13.7): under 1 mm in all, or it stopped short (a blocked
+ * segment, or the WHOLE batch made under 25% of the translation its deltas asked for, when they asked
+ * for over 3 mm), with under 0.5 deg of turn and the jaws unchanged. Judged over the batch, as the
+ * original does: a 100 mm lift split into a 17 mm test and the rest is one asked distance, not a
+ * segment that "made 14 of 100 mm".
  */
-export function noMotion(steps: SegmentReport[], gripperChanged: boolean): { frozen: boolean; why: string } {
+export function noMotion(steps: SegmentReport[], deltas: Delta[], gripperChanged: boolean): { frozen: boolean; why: string } {
 	if (gripperChanged) return { frozen: false, why: "" };
-	const moved = steps.reduce((s, st) => s + (st.kind === "translate" ? st.moved_mm : 0), 0);
-	const turned = steps.reduce((s, st) => s + st.turned_deg, 0);
-	const early = steps.some(
-		(st) =>
-			st.kind === "translate" &&
-			(st.abort_reason === "blocked" ||
-				((st.axis ? requestedMm(st) : 0) > 3 && Math.abs(st.along_axis_mm) < BLOCKED_SHARE * requestedMm(st))),
-	);
+	const moved = steps.reduce((s, st) => s + (st.kind === "translate" ? Math.abs(st.moved_mm) : 0), 0);
+	const turned = steps.reduce((s, st) => s + Math.abs(st.turned_deg), 0);
 	if (turned >= NO_TURN_DEG) return { frozen: false, why: "" };
 	if (moved < NO_MOTION_MM) return { frozen: true, why: `the tool moved ${r1(moved)} mm in all` };
-	if (early) return { frozen: true, why: "a move stopped early" };
+	if (steps.some((st) => st.abort_reason === "blocked")) return { frozen: true, why: "a move stopped early: a segment was blocked" };
+	const asked = deltas.reduce((s, d) => s + (d.kind === "translate" ? d.magnitude * 1000 : 0), 0);
+	const got = steps.reduce((s, st) => s + Math.abs(st.along_axis_mm), 0);
+	if (asked > MIN_USEFUL_DESCENT_MM && got < BLOCKED_SHARE * asked)
+		return { frozen: true, why: `a move stopped early: the batch made ${r1(got)} of the ${r1(asked)} mm it asked for` };
 	return { frozen: false, why: "" };
-}
-/** The distance a segment asked for (mm), from its label's "... N mm" or its chunking; 0 when unknown. */
-export function requestedMm(st: SegmentReport): number {
-	const m = /(\d+(?:\.\d+)?) mm/.exec(st.label);
-	if (!m) return 0;
-	const total = Number(m[1]);
-	const seg = /\[(\d+)\/(\d+)\]/.exec(st.label);
-	return seg ? total / Number(seg[2]) : total;
 }
 
 /** The positional criterion is met: the residual within the threshold and nothing shoved since the look. */

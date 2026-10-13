@@ -641,7 +641,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			s.payload.bumped = true;
 		// The jaws "changed" by what this cycle COMMANDED against the batch-start frame (spec-executor
 		// §13.7): a close the depth gate stopped before it ran still counts, as in the original.
-		const motionCheck = noMotion(cycle.steps, jawsChanged(deltas, batchStartFrame));
+		const motionCheck = noMotion(cycle.steps, deltas, jawsChanged(deltas, batchStartFrame));
 		if (motionCheck.frozen) {
 			if (s.atTheWall && holdingNow) s.wall++;
 			else s.frozen++;

@@ -41,7 +41,6 @@ import {
 	newState,
 	noMotion,
 	noteEmptyClose,
-	requestedMm,
 	shoved,
 	wantsHolding,
 	wantsRelease,
@@ -660,10 +659,10 @@ test("executor: the recovery rules read M1's recorded segments by their fields, 
 	const timedOut: SegmentReport = SEG.timed_out;
 	assert.equal(blocked.outcome, "limited");
 	assert.equal(blocked.abort_reason, "blocked");
-	// A blocked descent that made 15 of 50 mm: the cycle "did not move" (stopped early), unless the gripper changed.
-	assert.equal(requestedMm(blocked), 50);
-	assert.equal(noMotion([blocked], false).frozen, true);
-	assert.equal(noMotion([blocked], true).frozen, false);
+	// A blocked descent that made 15 of 50 mm: the cycle "did not move" (stopped early), unless the jaws changed.
+	const down50 = toDelta({ index: 0, type: "move", direction: "down", distance_mm: 50, frame: "base", note: "" }, CAPS);
+	assert.equal(noMotion([blocked], [down50], false).frozen, true);
+	assert.equal(noMotion([blocked], [down50], true).frozen, false);
 	// The skid: 5.3 mm sideways on a 10 mm rise; a descent with that drift would count as shoved.
 	assert.equal(skidded.abort_reason, "skidded");
 	assert.equal(shoved([{ ...skidded, axis: [0, 0, -1] }], [], undefined), true);
@@ -1573,9 +1572,9 @@ test("executor: step 4 defect 2 — the jaws count as changed by the close this 
 	assert.ok(before.grasp.opening_mm! > 70);
 	assert.equal(jawsShut(before), false);
 	assert.equal(jawsChanged(deltas, before), true);
-	assert.equal(noMotion(steps, true).frozen, false);
+	assert.equal(noMotion(steps, deltas, true).frozen, false);
 	// The rule B had: by the segments alone the cycle is "a move stopped early".
-	assert.equal(noMotion(steps, false).frozen, true);
+	assert.equal(noMotion(steps, deltas, false).frozen, true);
 	// A close commanded on jaws already shut (holding) changes nothing; an open does; no gripper action, nothing.
 	const shut = frameAt(before.pose, { holding: true, opening: 42, commanded: "close" });
 	assert.equal(jawsShut(shut), true);
@@ -1598,4 +1597,42 @@ test("executor: step 4 defect 2 — the jaws count as changed by the close this 
 	assert.equal(jawsChanged(deltas, unreadable), true);
 	// Shut by the closed fraction alone (no holding reading): a quarter open.
 	assert.equal(jawsShut({ ...before, grasp: { holding: null, reason: "", closed_fraction: 0.25 } }), true);
+});
+
+test("executor: step 4 defect 4 — stopped short is judged over the whole batch (asked vs along), not per segment from the label", () => {
+	// object t1 s0, lift_cream_cheese cycles 1 and 2: `move up 100` split by the wall-grasp mender into "the
+	// first 17 mm" and "the rest" (two legs). B read 100 mm off the first leg's label, saw 14 of 100 and froze
+	// twice although each cycle rose 92 mm; the verifier's done saved the cell. The batch made 92 of 100.
+	for (const key of ["lift_c1", "lift_c2"]) {
+		const c = S4.object_t1_s0[key];
+		const deltas = s4Deltas(c);
+		assert.deepEqual(
+			deltas.map((d) => Math.round(d.magnitude * 1000)),
+			[17, 83],
+		);
+		const steps: SegmentReport[] = c.segments;
+		assert.ok(steps.every((st) => st.outcome === "done" && !st.abort_reason));
+		const got = steps.reduce((s, st) => s + Math.abs(st.along_axis_mm), 0);
+		assert.ok(got > 90 && got < 100, `${got}`);
+		assert.deepEqual(noMotion(steps, deltas, false), { frozen: false, why: "" });
+	}
+	assert.equal(S4.object_t1_s0.lift_c2.stopped_by, "frozen: a move stopped early");
+	// A genuinely blocked batch is still frozen: spatial t0 s0 attempt 1 cycle 1, down 236 blocked on the 5th
+	// segment (arm A froze its matching cycle too); so is one that made under a quarter of what it asked for.
+	const blocked = S4.spatial_t0_s0.a1_c1_down_blocked;
+	const r = noMotion(blocked.segments, s4Deltas(blocked), false);
+	assert.equal(r.frozen, true);
+	assert.match(r.why, /^a move stopped early: a segment was blocked/);
+	const asked200 = [s4Delta({ kind: "translate", label: "move left 200.0 mm (base)", axis: [0, 1, 0], magnitude_mm: 200 }, 0)];
+	const short: SegmentReport[] = [{ ...blocked.segments[0], outcome: "done", abort_reason: undefined, moved_mm: 30, along_axis_mm: 30 }];
+	const r2 = noMotion(short, asked200, false);
+	assert.equal(r2.frozen, true);
+	assert.match(r2.why, /^a move stopped early: the batch made 30\.0 of the 200\.0 mm/);
+	assert.equal(noMotion([{ ...short[0], moved_mm: 60, along_axis_mm: 60 }], asked200, false).frozen, false);
+	// Moved under 1 mm in all: frozen whatever was asked; a turn of half a degree is motion.
+	assert.match(noMotion([{ ...short[0], moved_mm: 0.4, along_axis_mm: 0.4 }], asked200, false).why, /moved 0\.4 mm in all/);
+	assert.equal(noMotion([{ ...short[0], moved_mm: 0.4, along_axis_mm: 0.4, turned_deg: 0.6 }], asked200, false).frozen, false);
+	// The 190 mm cycle of defect 1 asked 72 (inserted lift) + 162 + 105 and made it all: not frozen by any rule.
+	const far = S4.spatial_t0_s0.top_a1_c0_moved_190;
+	assert.equal(noMotion(far.segments, s4Deltas(far), false).frozen, false);
 });
