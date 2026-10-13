@@ -1773,3 +1773,88 @@ test("provider: replyOf reads the tool result and the robot's latest observation
 	}
 	assert.deepEqual(Object.keys(promptHashes()), [...PROMPT_NAMES]);
 });
+
+// ---------------------------------------------------------------------------
+// the step 4 port defects (docs/motormind/step4-diagnosis.md)
+
+test("mission: step 4 defect 3 — a cycle's own error (no acceptable proposal, no actions) is judged and retried; only a robot-layer error ends the mission", async () => {
+	// object t0 s0, grasp_alphabet_soup attempt 1: the third cycle's proposal carried no actions and no claim,
+	// the executor ended ERROR, and B ended the whole mission `error / executor_error` with 105 s left. The
+	// original puts the error in the claim, verifies, and retries or replans.
+	const held = frame(GOAL.C6.blocked, { holding: true, commanded: "close", clock: 1 });
+	const open = frame(GOAL.C6.contact, { holding: false, commanded: "open", clock: 2 });
+	const cycleError = "the proposal has no actions and does not claim the subgoal done";
+	const ex = scriptedExecutor((_input, n) => ({
+		calls: [act(n === 2 ? "move up 50.0 mm (base)" : "move down 50.0 mm (base)")],
+		run:
+			n === 0
+				? { ending: "ERROR", error: cycleError, error_source: "cycle" }
+				: { ending: n === 1 ? "HELD" : "MODEL_DONE", held: n === 1 ? { gap_mm: 63 } : undefined },
+	}));
+	const NOT = { status: "not_done", because: "the jaws hold nothing", evidence: "", identity: "", replan: false, clauses: [] };
+	const { ask, calls: roleCalls } = scriptedAsk({ planner: [PLAN], verify: [NOT, DONE, DONE, TASK_DONE] });
+	const entries: { entry: string; data: Json }[] = [];
+	const cache: FrameCache = { stale: true };
+	const mission = runMission({
+		task: "put the black bowl on the plate",
+		budget: 10,
+		budgetS: 360,
+		maxReplans: 10,
+		ask,
+		clock: missionClock(),
+		cache,
+		describers,
+		runSubgoal: ex.factory,
+		log: (entry, data) => entries.push({ entry, data }),
+	});
+	let n = 0;
+	const { end } = await drive(mission, cache, (call) => {
+		n++;
+		// the opening look and the failed attempt see empty jaws; the retry's action closes on the bowl; the put lets go
+		const f = n === 3 ? held : open;
+		if (call.tool === "mm_observe") return { ok: true, frame: f, episode_over: false, body: {} };
+		return {
+			ok: true,
+			frame: f,
+			segments: [{ ...GOAL.C6.blocked, label: call.label, outcome: "done" as const, abort_reason: undefined }],
+			episode_over: false,
+			body: {},
+		};
+	});
+	assert.equal(end.status, "task_done", JSON.stringify({ end, verdicts: entries.filter((e) => e.entry === "motormind_verdict").map((e) => [e.data.subgoal, e.data.status, e.data.gate, e.data.because]) }));
+	const s = mission.state();
+	assert.deepEqual(
+		s.subgoals.map((a) => [a.name, a.attempt, a.ending, a.verdict?.status]),
+		[
+			["take", 1, "ERROR", "not_done"],
+			["take", 2, "HELD", "done"],
+			["put", 1, "MODEL_DONE", "done"],
+		],
+	);
+	// The verifier saw the error in the claim; the retry's preface carried it.
+	const firstVerify = roleCalls.find((c) => c.role === "verify");
+	assert.match(firstVerify?.prompt.text ?? "", new RegExp(`Executor error: ${cycleError}`));
+	assert.match(ex.inputs[1].preface, /Do it differently/);
+	assert.match(ex.inputs[1].preface, /stopped on an error: the proposal has no actions/);
+	assert.equal(entries.filter((e) => e.entry === "motormind_verdict").length, 4);
+	// A robot-layer error (a look or action answered with an error) still ends the mission.
+	const broken = scriptedExecutor(() => ({
+		calls: [],
+		run: { ending: "ERROR", error: "the robot answered the look with an error", error_source: "robot" },
+	}));
+	const c2: FrameCache = { stale: true };
+	const m2 = runMission({
+		task: "t",
+		budget: 10,
+		budgetS: 360,
+		maxReplans: 10,
+		ask: scriptedAsk({ planner: [PLAN] }).ask,
+		clock: missionClock(),
+		cache: c2,
+		describers,
+		runSubgoal: broken.factory,
+		log: () => {},
+	});
+	const r2 = await drive(m2, c2, () => ({ ok: true, frame: open, episode_over: false }));
+	assert.deepEqual([r2.end.status, r2.end.ended_on], ["error", "executor_error"]);
+});

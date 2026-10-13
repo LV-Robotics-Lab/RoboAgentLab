@@ -470,6 +470,12 @@ export type SubgoalRun = {
 	ending: Ending;
 	ending_text: string;
 	error?: string;
+	/**
+	 * Where an ERROR came from (spec-planner §3.4): the robot layer (a look or action answered with
+	 * an error, an RPC timed out) ends the mission; a cycle's own error (no acceptable proposal in
+	 * three tries, no actions and no claim) goes into the claim and is judged like any ending.
+	 */
+	error_source?: "robot" | "cycle";
 	episode_over: boolean;
 	carry: Carry;
 	held?: { gap_mm: number; target_mm?: number };

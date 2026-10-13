@@ -181,11 +181,14 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 	const carried = adopt(s, input.carry, faces);
 	if (carried) onEvent({ type: "carried", text: carried });
 
-	const finish = (ending: Ending, o: { error?: string; text?: string } = {}): SubgoalRun => ({
+	const finish = (
+		ending: Ending,
+		o: { error?: string; text?: string; source?: "robot" | "cycle" } = {},
+	): SubgoalRun => ({
 		cycles,
 		ending,
 		ending_text: o.text ?? ENDING_TEXT[ending],
-		...(o.error ? { error: o.error } : {}),
+		...(o.error ? { error: o.error, error_source: o.source ?? "robot" } : {}),
 		episode_over: episodeOver,
 		carry: carryOver(s, faces),
 		...(held ? { held } : {}),
@@ -353,7 +356,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			cycle.error = proposed.error ?? "no proposal";
 			onEvent({ type: "step_error", error: cycle.error });
 			closeCycle();
-			return finish("ERROR", { error: cycle.error });
+			return finish("ERROR", { error: cycle.error, source: "cycle" });
 		}
 		const deltas = proposed.deltas;
 		const claim = proposed.proposal.done;
@@ -374,7 +377,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			cycle.error = "the proposal has no actions and does not claim the subgoal done";
 			onEvent({ type: "step_error", error: cycle.error });
 			closeCycle();
-			return finish("ERROR", { error: cycle.error });
+			return finish("ERROR", { error: cycle.error, source: "cycle" });
 		}
 
 		// 13. The batch.

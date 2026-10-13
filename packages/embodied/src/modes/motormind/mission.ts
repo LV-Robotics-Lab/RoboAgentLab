@@ -166,6 +166,8 @@ function howItEnded(run: SubgoalRun, neverMoved: boolean): string {
 			return "the side approach cannot be made here";
 		case "CYCLES_EXHAUSTED":
 			return `the step's ${run.cycles.length} cycles were used up`;
+		case "ERROR":
+			return `the executor stopped on an error: ${run.error ?? run.ending_text}`;
 		default:
 			return run.ending_text || run.ending.toLowerCase();
 	}
@@ -296,6 +298,7 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 				if (check.outcome) return check.outcome;
 				return end("exhausted", "episode_over", "the episode ended before the task was complete");
 			}
+			// only a robot-layer error reaches here without a verdict (attemptOnce step 8)
 			if (a.run.ending === "ERROR" && !a.verdict)
 				return end("error", "executor_error", a.run.error ?? a.run.ending_text);
 			if (!a.verdict) {
@@ -531,9 +534,15 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 				observes_yielded: run.observes.filter((o) => o.yielded).length,
 				timing: run.timing,
 			});
-			// 8. no verdict on error, cancel or clock
+			// 8. no verdict on a robot-layer error, the episode's end, a cancel or the clock. A cycle's own
+			// error (no acceptable proposal in three tries, no actions and no claim) is in the claim and is
+			// judged like any other ending (spec-planner §3.4: only an executor that raised ends the mission).
 			const cancel = m.clock.cancelled();
-			if (run.ending === "ERROR" || run.ending === "EPISODE_OVER" || run.episode_over)
+			if (
+				(run.ending === "ERROR" && run.error_source !== "cycle") ||
+				run.ending === "EPISODE_OVER" ||
+				run.episode_over
+			)
 				return { run, claim, never_moved: neverMoved, elapsed_s };
 			if (cancel && (cancel.by === "mission" || cancel.by === "deadline"))
 				return { run, claim, never_moved: neverMoved, elapsed_s };
