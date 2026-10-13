@@ -141,10 +141,14 @@ export const DEPLOYMENT: ReadonlySet<string> = new Set([
  * Defaults that depend on the planner's provider: flag values by provider, read in place of the
  * registered default when the flag is not given (the tracker's `getFlag`, with `Tracked.provider`),
  * and by ../scripts/params-match.mjs for the provider `--model` / `--provider` names (`providerDefault`).
- * `selfhost` is NInfer (openai-completions; Qwen3.8 is a hybrid recurrent model whose prefix cache
- * reuses only exact checkpoints, ../planner/cache-breakpoints.ts): the cache-friendly context is its
- * default since the A/B of 2026-10-12 (LIBERO libero_spatial, 30 episodes per arm: success 23 vs 22 of 30, Fisher p = 1.0;
- * cache hits 2.9% to 72.1% of the prompt tokens; request p50 11.2 to 6.6 s; episode wall 0.61x).
+ * `selfhost` is the bjb2 GPU 0 planner (openai-completions): NInfer until 2026-10-13 (Qwen3.8-27B, a hybrid
+ * recurrent model whose prefix cache reuses only exact checkpoints, ../planner/cache-breakpoints.ts), Strata
+ * since (Qwen3.8-Flash-Next; checkpoints at the previous turn boundary, every 16K prompt tokens and the end of
+ * the system prompt, no session key, and it ignores the breakpoint marker). The cache-friendly context is its
+ * default since the A/B of 2026-10-12 on NInfer (LIBERO libero_spatial, 30 episodes per arm: success 23 vs 22 of 30,
+ * Fisher p = 1.0; cache hits 2.9% to 72.1% of the prompt tokens; request p50 11.2 to 6.6 s; episode wall 0.61x);
+ * on Strata the same context reuses 88-96% of each prompt after the second request against 40-56% with the
+ * registered defaults (the first five requests of a LIBERO episode replayed, 2026-10-13, with and without the marker alike).
  * Every other provider keeps the registered defaults.
  */
 export const PROVIDER_DEFAULTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {

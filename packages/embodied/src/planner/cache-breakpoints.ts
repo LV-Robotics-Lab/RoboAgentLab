@@ -10,7 +10,9 @@
  * request marks the end of its first user message (the task, which every later request of the episode
  * starts with) and the end of its last message (where the next request continues when the history only
  * grew: --image-trim-every and --replay-thinking none / frames / true, ../robot.ts). The marker does not
- * change the prompt. Another endpoint may reject the field, so it is a flag, off by default.
+ * change the prompt. Another endpoint may reject the field, so it is a flag, off by default. Strata (the selfhost
+ * engine since 2026-10-13) accepts and ignores it: identical reuse with and without the marker on the replayed
+ * requests of a LIBERO episode, so the selfhost default stays true (../infra/params.ts PROVIDER_DEFAULTS).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

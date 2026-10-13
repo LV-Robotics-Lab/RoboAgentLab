@@ -293,7 +293,9 @@ prompt tokens). With `--replay-thinking=none --image-trim-every N` each request 
 previous one between cuts every N frames (`frames` instead of `none` also replays each answer as
 generated until its cut: a larger context, more compactions); `--cache-breakpoints=true` also asks
 NInfer to keep the task message and the newest message as cached prefixes
-(`src/planner/cache-breakpoints.ts`). On the `selfhost` provider (NInfer) these three are the
+(`src/planner/cache-breakpoints.ts`; Strata, the `selfhost` engine since 2026-10-13, ignores the marker and
+reuses the append-only context on its own checkpoints: 88-96% of each prompt after the second request of a
+replayed LIBERO episode against 40-56% with the registered defaults). On the `selfhost` provider these three are the
 defaults: `--replay-thinking=none --image-trim-every 8 --cache-breakpoints=true`, read at session
 start from the session's model's provider unless the flag is given (`src/infra/params.ts`
 `PROVIDER_DEFAULTS`; A/B 2026-10-12, LIBERO libero_spatial 30 episodes per arm: success 23 vs 22 of 30, Fisher p = 1.0; cache hits 2.9% to
