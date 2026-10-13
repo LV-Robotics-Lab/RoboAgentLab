@@ -790,6 +790,7 @@ export default function libero(pi: ExtensionAPI) {
 			endpoint: () =>
 				env ? `${env.url.replace(/\/call$/, "")}${env.token ? `#token=${env.token}` : ""}` : undefined,
 			truth: () => truthLog,
+			task: () => language,
 			// What the server must run with (it is pi's own unless --env-url attached to another).
 			expect: () => ({
 				side_camera: flagValue(pi.getFlag("libero-side-camera")) === "true",

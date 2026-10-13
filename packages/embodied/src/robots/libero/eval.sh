@@ -57,7 +57,9 @@ export PI_ARGS_JSON=$(node -e 'console.log(JSON.stringify(process.argv.slice(1))
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+const sha = (v) => createHash("sha256").update(JSON.stringify(v)).digest("hex").slice(0, 16);
 const [dir, code, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor, unitTol, codeMode, codeApi, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, liberoPrompt, codeOracle, vdmVideo] = process.argv.slice(1);
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
@@ -84,7 +86,9 @@ const result = { ...(last ?? {}), status, exit_code: Number(code), model: model 
 	privileged: privileged === "true", unit_tol: Number(unitTol),
 	code: codeMode, code_api: codeMode === "false" ? null : codeApi || last?.code_api || null, code_api_auto: codeMode === "false" ? null : !codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null,
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
-	libero_prompt: liberoPrompt, ft_flags: process.env.FT_FLAGS || null };
+	libero_prompt: liberoPrompt, ft_flags: process.env.FT_FLAGS || null,
+	// MotorMind mode (--preset motormind / --mm): its variant list and its prompts' hashes key the configuration too.
+	mm: last?.params?.mm === "true", mm_variant: last?.motormind?.variant ? sha(last.motormind.variant) : null, mm_prompts: last?.motormind?.prompts ? sha(last.motormind.prompts) : null };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, terminated: result.terminated, claimed: result.claimed, env_steps: result.env_steps }));
 ' "$1" "$2" "${config[@]}"
@@ -121,7 +125,13 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null)
 	// Results written before --libero-prompt existed ran the compact prompt.
 	&& (r.libero_prompt ?? "compact") === liberoPrompt;
-process.exit(same && [...(r.extras ?? [])].sort().join(",") === (extras ?? "") ? 0 : 2);
+// MotorMind mode: a result's variant list and prompt hashes must match the other results of this out dir (the
+// flags themselves are compared by params-match.mjs below).
+const dir = path.replace(/\/[^/]+\/result\.json$/, "");
+const others = require("fs").readdirSync(dir).map((c) => { try { return JSON.parse(require("fs").readFileSync(`${dir}/${c}/result.json`, "utf8")); } catch { return undefined; } })
+	.filter((o) => o && o !== r && (o.status === "success" || o.status === "failure") && o.mm);
+const mmSame = !r.mm || others.every((o) => o.mm_variant === r.mm_variant && o.mm_prompts === r.mm_prompts);
+process.exit(same && mmSame && [...(r.extras ?? [])].sort().join(",") === (extras ?? "") ? 0 : 2);
 ' "$1/result.json" "${config[@]}" 2>/dev/null || return $?
 	# Every experiment flag the robot recorded (params) against this run's (../../scripts/params-match.mjs).
 	node "$here/../../scripts/params-match.mjs" "$1/result.json"
@@ -135,7 +145,7 @@ for task in $(expand "$tasks"); do
 		valid "$dir"
 		case $? in
 		0) continue ;;
-		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, --unit-tol, code mode, vdm, fallback, --libero-prompt, --ft-* flags, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
+		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, --unit-tol, code mode, vdm, fallback, --libero-prompt, --ft-* flags, MotorMind variant or prompts, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
 		esac
 		rm -rf "$dir" && mkdir -p "$dir"
 		echo "== $suite task $task seed $seed"
@@ -157,7 +167,7 @@ const rows = cells.map((c) => {
 	}
 });
 const configs = new Set(rows.filter((r) => r.status === "success" || r.status === "failure")
-	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "off") !== "off" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}/unit_tol=${r.unit_tol ?? 0.004}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.vdm_video ? `/vdm_video=${r.vdm_video}:${r.vdm_model ?? "default"}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}/prompt=${r.libero_prompt ?? "compact"}${r.ft_flags ? `/ft=${r.ft_flags}` : ""}`));
+	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "off") !== "off" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}/unit_tol=${r.unit_tol ?? 0.004}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.vdm_video ? `/vdm_video=${r.vdm_video}:${r.vdm_model ?? "default"}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}/prompt=${r.libero_prompt ?? "compact"}${r.ft_flags ? `/ft=${r.ft_flags}` : ""}${r.mm ? `/mm=${r.mm_variant}:${r.mm_prompts}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

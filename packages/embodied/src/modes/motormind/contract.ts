@@ -204,8 +204,12 @@ export function frameOf(o: Observation): Frame | undefined {
 						...(r.clearance.surface_z_m !== undefined
 							? { surface_z_m: r.clearance.surface_z_m as number | null }
 							: {}),
-						...(typeof r.clearance.at_range_floor === "boolean" ? { at_range_floor: r.clearance.at_range_floor } : {}),
-						...(typeof r.clearance.near_min_range === "boolean" ? { near_min_range: r.clearance.near_min_range } : {}),
+						...(typeof r.clearance.at_range_floor === "boolean"
+							? { at_range_floor: r.clearance.at_range_floor }
+							: {}),
+						...(typeof r.clearance.near_min_range === "boolean"
+							? { near_min_range: r.clearance.near_min_range }
+							: {}),
 						...(typeof r.clearance.jaws_down === "boolean" ? { jaws_down: r.clearance.jaws_down } : {}),
 						...(typeof r.clearance.reason === "string" ? { reason: r.clearance.reason } : {}),
 					},
@@ -217,7 +221,9 @@ export function frameOf(o: Observation): Frame | undefined {
 		terminated: o.terminated,
 		truncated: o.truncated,
 		degraded: o.degraded,
-		...(o.mosaic ? { mosaic: { type: "image", data: o.mosaic.data.toString("base64"), mimeType: o.mosaic.mime } } : {}),
+		...(o.mosaic
+			? { mosaic: { type: "image", data: o.mosaic.data.toString("base64"), mimeType: o.mosaic.mime } }
+			: {}),
 	};
 }
 
@@ -335,7 +341,8 @@ export function missionClock(onCancel?: (c: Cancel | undefined) => void): Missio
 	const clock: MissionClock = {
 		deadline_at: undefined,
 		left_s: () => (clock.deadline_at === undefined ? Infinity : (clock.deadline_at - Date.now()) / 1000),
-		cancelled: () => cancel ?? (clock.left_s() <= 0 ? { by: "deadline", reason: "the mission clock ran out" } : undefined),
+		cancelled: () =>
+			cancel ?? (clock.left_s() <= 0 ? { by: "deadline", reason: "the mission clock ran out" } : undefined),
 		cancel: (c) => {
 			if (cancel) return;
 			cancel = c;
@@ -509,7 +516,8 @@ function leansToward(axis: Vec3): string {
 		["right", [0, -1, 0]],
 	];
 	let best = words[0];
-	for (const w of words) if (w[1][0] * axis[0] + w[1][1] * axis[1] > best[1][0] * axis[0] + best[1][1] * axis[1]) best = w;
+	for (const w of words)
+		if (w[1][0] * axis[0] + w[1][1] * axis[1] > best[1][0] * axis[0] + best[1][1] * axis[1]) best = w;
 	return best[0];
 }
 
@@ -526,9 +534,7 @@ export function describeRobot(f: Frame, tracked?: TrackedClearance): string {
 	const down = a.off_down_deg <= DOWN_WITHIN_DEG;
 	const lines = [
 		`Tool point at [${p.join(", ")}] mm in the base frame (forward +X, left +Y, up +Z). The jaws point ${
-			down
-				? "straight down"
-				: `${r0(a.off_down_deg)} deg off vertical, leaning ${leansToward(a.axis)}`
+			down ? "straight down" : `${r0(a.off_down_deg)} deg off vertical, leaning ${leansToward(a.axis)}`
 		}.`,
 	];
 	const c = f.clearance;
@@ -542,7 +548,9 @@ export function describeRobot(f: Frame, tracked?: TrackedClearance): string {
 	else if (tracked)
 		lines.push(
 			`Clearance under the tool: about ${r0(tracked.mm)} mm, NOT measured now (last reading minus ${r0(tracked.descended_mm)} mm of descent since${
-				tracked.lateral_mm > 0 ? `; the tool also moved ${r0(tracked.lateral_mm)} mm sideways, so this may be off` : ""
+				tracked.lateral_mm > 0
+					? `; the tool also moved ${r0(tracked.lateral_mm)} mm sideways, so this may be off`
+					: ""
 			}).`,
 		);
 	else
@@ -562,7 +570,8 @@ export function describeRobot(f: Frame, tracked?: TrackedClearance): string {
 			: opening < 5
 				? "CLOSED"
 				: "OPEN";
-	const pct = fraction !== undefined ? ` (${r0(Math.max(0, Math.min(1, fraction)) * 100)}% of the ${r1(span)} mm span)` : "";
+	const pct =
+		fraction !== undefined ? ` (${r0(Math.max(0, Math.min(1, fraction)) * 100)}% of the ${r1(span)} mm span)` : "";
 	const holding =
 		f.grasp.holding === true
 			? "holding something"

@@ -30,6 +30,7 @@ import { type ServiceOptions, shutdown, startService } from "./infra/service-pro
 import { tiers } from "./infra/tiers.ts";
 import { type CodeSpec, code } from "./modes/code/index.ts";
 import { type MotorMindSpec, motormind } from "./modes/motormind/index.ts";
+import { motormindProvider } from "./modes/motormind/provider.ts";
 import { type UnitsSpec, units } from "./modes/units/index.ts";
 import { VLM_COST_EVENT } from "./modes/units/vlm.ts";
 import { type VdmSpec, vdm } from "./observation/vdm.ts";
@@ -171,6 +172,18 @@ export type PrimitivesHandle = {
 };
 /** What the agent claims in `finish`. */
 type Claim = { status: string; summary: string };
+
+/**
+ * The result's `motormind` block: the mode's (./modes/motormind/index.ts) with the mission's state
+ * (./modes/motormind/provider.ts) merged over it; the env's success keeps `status` (DESIGN §7.3).
+ */
+function motormindBlock(mode: Json | undefined, mission: Json | undefined): Json {
+	const block = mode?.motormind as Json | undefined;
+	if (!block) return {};
+	if (!mission) return { motormind: block };
+	const status = block.status === "env_success" ? "env_success" : (mission.status ?? block.status);
+	return { motormind: { ...block, ...mission, status } };
+}
 type Call = (params: unknown, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>;
 type Ended = "agent_end" | "shutdown";
 
@@ -488,6 +501,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const fb = fallback(pi);
 	// The `ensemble/<base>` planner (../ensemble.ts), only with `--model ensemble/...` on the command line.
 	const en = ensemble(pi);
+	// The `motormind/<base>` mission player (./modes/motormind/provider.ts), only with --model motormind/... on the
+	// command line; its agent_end wrap-up is registered here, before the result's (DESIGN §1.2).
+	const mp = motormindProvider(pi);
 	// The `human/operator` model (../human.ts), only when a human/... model is on the command line.
 	human(pi);
 	// --web-tools keeps the pi packages' web_search / web_fetch active (./web.ts); --object-memory (./objects.ts).
@@ -713,6 +729,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 					endpoint: spec.motormind.endpoint,
 					truth: spec.motormind.truth,
 					expect: spec.motormind.expect,
+					task: spec.motormind.task,
 				},
 				tool,
 				{
@@ -1113,13 +1130,17 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						...tr.result(),
 						// The units verifier: whether the success finish was checked, and the call's error.
 						...un?.result(),
-						// MotorMind mode: the `motormind` block, computed now from the mode's state.
-						...mm?.result({
-							budget: outOfBudget,
-							finished: claimed !== undefined,
-							solved: spec.status?.().solved,
-							error: broken ?? plannerError,
-						}),
+						// MotorMind mode: the `motormind` block, computed now from the mode's state and the mission's
+						// (the provider's); the env's success wins over the mission's own status (DESIGN §7.3).
+						...motormindBlock(
+							mm?.result({
+								budget: outOfBudget,
+								finished: claimed !== undefined,
+								solved: spec.status?.().solved,
+								error: broken ?? plannerError,
+							}),
+							mp?.result(),
+						),
 						// Code mode (../code): `code` and `code_api`, so evaluations never mix it with tool runs.
 						...co?.result(),
 						...vd?.result(),

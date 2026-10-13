@@ -222,4 +222,6 @@ export type MotorMindSpec = {
 	endpoint?: () => string | undefined;
 	/** The env server's privileged truth log (`mm_truth.jsonl`, one line per observation), read at the end. */
 	truth?: () => string | undefined;
+	/** The task in words (the mission's planner reads it); "" until the robot knows it. */
+	task?: () => string;
 };

@@ -36,6 +36,7 @@ import { type Static, Type } from "typebox";
 import { trackedFlags } from "../../infra/params.ts";
 import { RpcUnavailable } from "../../infra/rpc.ts";
 import { norm as flagValue, PRESETS } from "../../infra/tiers.ts";
+import { template } from "../../planner/context-version.ts";
 import type { ToolRegistrar } from "../units/types.ts";
 import { CommandError, measured, parseAction, poseOf, posePlain, report, segmentsFor, toDelta } from "./command.ts";
 import {
@@ -96,7 +97,12 @@ export type MotorMindHandle = {
 	setDeadline: (at: number | undefined) => void;
 	/** The latest observation the tools saw (mm_observe, or after an action). */
 	latest: () => Observation | undefined;
+	/** The task in words, for the mission's planner ("" when the robot has none). */
+	task: () => string;
 };
+
+/** `--mm-*` flags that are the protocol's parameters, not a variant (DESIGN §1.6): the provider's budgets. */
+export const MM_PROTOCOL_FLAGS: readonly string[] = ["mm-budget", "mm-budget-s", "mm-max-replans"];
 
 /** The robot base's side of the mount (../../robot.ts). */
 export type MotorMindBase = {
@@ -464,7 +470,8 @@ export function motormind(pi: ExtensionAPI, spec: MotorMindSpec, tool: ToolRegis
 		const faithful = new Map<string, string>();
 		for (const [flag, want] of Object.entries(PRESETS.motormind?.flags ?? {}))
 			faithful.set(flag, flagValue(want === null ? t?.names.get(flag)?.default : want));
-		for (const [flag, s] of t?.names ?? []) if (flag.startsWith("mm-")) faithful.set(flag, flagValue(s.default));
+		for (const [flag, s] of t?.names ?? [])
+			if (flag.startsWith("mm-") && !MM_PROTOCOL_FLAGS.includes(flag)) faithful.set(flag, flagValue(s.default));
 		return [...faithful]
 			.filter(([flag]) => t?.names.has(flag) ?? true)
 			.map(([flag, want]) => ({ flag, faithful: want, actual: flagValue(pi.getFlag(flag)) }))
@@ -504,6 +511,7 @@ export function motormind(pi: ExtensionAPI, spec: MotorMindSpec, tool: ToolRegis
 			deadline = at;
 		},
 		latest: () => last,
+		task: () => spec.task?.() ?? "",
 	};
 
 	/** Fail closed before the agent starts: the mm tools are active but no motormind/<base> model plays the mission. */
@@ -585,9 +593,8 @@ export function motormind(pi: ExtensionAPI, spec: MotorMindSpec, tool: ToolRegis
 			last = pose = undefined;
 			episodeOver = false;
 		},
-		/** The system prompt in this mode: a description only (the provider does not read it). */
-		prompt: () =>
-			"MotorMind mode. The motormind provider plays the MotorMind mission (planner, executor, verifier) and acts only through mm_observe and mm_act, one action per turn, in the robot's base frame (robot0_base: mm, deg; forward +X, left +Y, up +Z). It calls finish when the mission ends.",
+		/** The system prompt in this mode (./SYSTEM.md): a description only, the provider does not read it. */
+		prompt: () => template(new URL("./SYSTEM.md", import.meta.url)).trim(),
 		handle,
 		/**
 		 * The result's `motormind` block (computed now; M2 adds the mission's own state). `status` here

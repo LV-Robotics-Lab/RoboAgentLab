@@ -15,7 +15,14 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { ImageContent, TextContent, ThinkingLevel } from "@earendil-works/pi-ai";
+import type {
+	ImageContent,
+	SimpleStreamOptions,
+	TextContent,
+	ThinkingContent,
+	ThinkingLevel,
+	Usage,
+} from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const run = promisify(execFile);
@@ -28,10 +35,19 @@ const oneLine = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v)).
 export const VLM_COST_EVENT = "pi-embodied:vlm-cost";
 /** A prompt with its own system prompt and interleaved text and images (the `images` argument follows them). */
 export type VlmPrompt = { system: string; content: (TextContent | ImageContent)[] };
+/**
+ * pi-ai request options a caller may pass through (MotorMind's roles: temperature, the output cap,
+ * the client's retries and timeout, and `onPayload` to write the request body); the default call sends none.
+ */
+export type VlmOptions = Pick<
+	SimpleStreamOptions,
+	"temperature" | "maxTokens" | "maxRetries" | "timeoutMs" | "onPayload"
+>;
 
 /**
  * One user message (the prompt, then the images in order) to the model named `modelRef` ("provider/id",
- * "" = the session's). `cost` is the reply's USD as pi prices it from models.json.
+ * "" = the session's). `cost` is the reply's USD as pi prices it from models.json; `usage` is the reply's
+ * own, `thinking` its reasoning text when the model returned any.
  */
 export async function askVlm(
 	ctx: ExtensionContext,
@@ -40,7 +56,8 @@ export async function askVlm(
 	prompt: string | VlmPrompt,
 	images: ImageContent[],
 	signal?: AbortSignal,
-): Promise<{ text: string; model: string; cost: number }> {
+	options: VlmOptions = {},
+): Promise<{ text: string; model: string; cost: number; usage: Usage | undefined; thinking: string }> {
 	const slash = modelRef.indexOf("/");
 	const model = modelRef ? ctx.modelRegistry.find(modelRef.slice(0, slash), modelRef.slice(slash + 1)) : ctx.model;
 	if (!model) throw new Error(modelRef ? `unknown model ${modelRef}` : "no model selected");
@@ -55,12 +72,14 @@ export async function askVlm(
 			},
 			{
 				signal,
-				// A reasoning model that cannot turn reasoning off gets the lowest level (e.g. under replay/session).
+				// A reasoning model that cannot turn reasoning off gets the lowest level (e.g. under replay/session);
+				// a caller's `onPayload` (MotorMind's faithful sampling) rewrites the request body after that.
 				...(reasoning && reasoning !== "off"
 					? { reasoning: reasoning as ThinkingLevel }
 					: model.reasoning
 						? { reasoning: "low" as ThinkingLevel }
 						: {}),
+				...options,
 			},
 		)
 		.result();
@@ -70,7 +89,17 @@ export async function askVlm(
 		.filter((c): c is TextContent => c.type === "text")
 		.map((c) => c.text)
 		.join("\n");
-	return { text, model: `${model.provider}/${model.id}`, cost: reply.usage?.cost?.total ?? 0 };
+	const thinking = reply.content
+		.filter((c): c is ThinkingContent => c.type === "thinking")
+		.map((c) => c.thinking)
+		.join("\n");
+	return {
+		text,
+		model: `${model.provider}/${model.id}`,
+		cost: reply.usage?.cost?.total ?? 0,
+		usage: reply.usage,
+		thinking,
+	};
 }
 
 /** The outermost JSON object in a reply (models wrap it in prose or code fences), or undefined. */
