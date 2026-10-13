@@ -1,0 +1,2441 @@
+{
+ "_source": "bjb2 .local/runs/mm-step4/base-B (M2 @92ce66a58, 2026-10-13); extracted by fixture.py from the session JSONL: the executor's deltas (magnitude from the label), the robot's segments as returned by mm_act, the frame before the batch",
+ "spatial_t0_s0": {
+  "a1_c1_down_blocked": {
+   "cell": null,
+   "subgoal": "pick_akita_bowl",
+   "attempt": 1,
+   "cycle": 1,
+   "ending": "FROZEN",
+   "ending_text": "frozen: a move stopped early",
+   "stopped_by": null,
+   "located": null,
+   "batch": {
+    "actions": 3,
+    "ran": 3,
+    "motion_s": 12.708,
+    "residual_mm": 4.462596754588469
+   },
+   "frame_before": {
+    "obs_id": 11,
+    "frame_clock_s": 34.9,
+    "pose": {
+     "position_mm": [
+      602.74,
+      203.57,
+      260.64
+     ],
+     "rotation": [
+      [
+       0.998184,
+       -0.041938,
+       -0.043231
+      ],
+      [
+       -0.041471,
+       -0.999072,
+       0.011655
+      ],
+      [
+       -0.04368,
+       -0.009841,
+       -0.998997
+      ]
+     ],
+     "position_m": [
+      0.602739776319946,
+      0.20356767551291435,
+      0.26064470212387725
+     ]
+    },
+    "gripper": {
+     "opening_mm": 79.98980282133707,
+     "commanded": "open",
+     "channel": -1,
+     "moving": false
+    },
+    "grasp": {
+     "opening_mm": 79.98980282133707,
+     "closed_fraction": 1.0150990205753436,
+     "commanded": "open",
+     "holding": null,
+     "reason": "the last gripper command was not close"
+    },
+    "table_z_mm": -11.35
+   },
+   "deltas": [
+    {
+     "kind": "translate",
+     "label": "move forward 4.0 mm (base)",
+     "axis": [
+      1,
+      0,
+      0
+     ],
+     "push": false,
+     "magnitude_mm": 4.0
+    },
+    {
+     "kind": "translate",
+     "label": "move left 3.0 mm (base)",
+     "axis": [
+      0,
+      1,
+      0
+     ],
+     "push": false,
+     "magnitude_mm": 3.0
+    },
+    {
+     "kind": "translate",
+     "label": "move down 236.0 mm (base)",
+     "axis": [
+      0,
+      0,
+      -1
+     ],
+     "push": false,
+     "magnitude_mm": 236.0
+    }
+   ],
+   "segments": [
+    {
+     "label": "move forward 4.0 mm (base) [1/1]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 1.11,
+     "along_axis_mm": 1.11,
+     "lateral_mm": 0.04,
+     "turned_deg": 0,
+     "axis": [
+      1,
+      0,
+      0
+     ],
+     "ticks": 2,
+     "servo_ticks": 2,
+     "hold_ticks": 0,
+     "elapsed_s": 0.068,
+     "frame_clock_s": 35,
+     "grasp": {
+      "opening_mm": 79.9897658554228,
+      "closed_fraction": 1.0150985514647566,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       603.85,
+       203.59,
+       260.67
+      ],
+      "rotation": [
+       [
+        0.99819,
+        -0.042251,
+        -0.042788
+       ],
+       [
+        -0.041776,
+        -0.999056,
+        0.011943
+       ],
+       [
+        -0.043252,
+        -0.010134,
+        -0.999013
+       ]
+      ]
+     },
+     "message": "arrived: moved 1.1 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move left 3.0 mm (base) [1/1]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 0.42,
+     "along_axis_mm": 0.25,
+     "lateral_mm": 0.33,
+     "turned_deg": 0,
+     "axis": [
+      0,
+      1,
+      0
+     ],
+     "ticks": 1,
+     "servo_ticks": 1,
+     "hold_ticks": 0,
+     "elapsed_s": 0.046,
+     "frame_clock_s": 35.05,
+     "grasp": {
+      "opening_mm": 79.98938015553898,
+      "closed_fraction": 1.0150936567961801,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       604.18,
+       203.84,
+       260.63
+      ],
+      "rotation": [
+       [
+        0.998192,
+        -0.042114,
+        -0.04289
+       ],
+       [
+        -0.041629,
+        -0.999059,
+        0.012137
+       ],
+       [
+        -0.043361,
+        -0.01033,
+        -0.999006
+       ]
+      ]
+     },
+     "message": "arrived: moved 0.4 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move down 236.0 mm (base) [1/5]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 44.77,
+     "along_axis_mm": 44.76,
+     "lateral_mm": 0.91,
+     "turned_deg": 0.1,
+     "axis": [
+      0,
+      0,
+      -1
+     ],
+     "ticks": 81,
+     "servo_ticks": 81,
+     "hold_ticks": 0,
+     "elapsed_s": 2.801,
+     "frame_clock_s": 39.1,
+     "grasp": {
+      "opening_mm": 79.98913061902171,
+      "closed_fraction": 1.015090490089108,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       605.07,
+       203.68,
+       215.86
+      ],
+      "rotation": [
+       [
+        0.998155,
+        -0.04142,
+        -0.044393
+       ],
+       [
+        -0.040913,
+        -0.999087,
+        0.012275
+       ],
+       [
+        -0.044861,
+        -0.010436,
+        -0.998939
+       ]
+      ]
+     },
+     "message": "arrived: moved 44.8 mm, turned 0.1 deg"
+    },
+    {
+     "label": "move down 236.0 mm (base) [2/5]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 47.08,
+     "along_axis_mm": 47.08,
+     "lateral_mm": 0.19,
+     "turned_deg": 0,
+     "axis": [
+      0,
+      0,
+      -1
+     ],
+     "ticks": 84,
+     "servo_ticks": 84,
+     "hold_ticks": 0,
+     "elapsed_s": 3.13,
+     "frame_clock_s": 43.3,
+     "grasp": {
+      "opening_mm": 79.98911168591097,
+      "closed_fraction": 1.0150902498212053,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       605.26,
+       203.62,
+       168.79
+      ],
+      "rotation": [
+       [
+        0.998151,
+        -0.041441,
+        -0.044456
+       ],
+       [
+        -0.040934,
+        -0.999087,
+        0.012259
+       ],
+       [
+        -0.044924,
+        -0.010416,
+        -0.998936
+       ]
+      ]
+     },
+     "message": "arrived: moved 47.1 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move down 236.0 mm (base) [3/5]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 47.21,
+     "along_axis_mm": 47.21,
+     "lateral_mm": 0.12,
+     "turned_deg": 0,
+     "axis": [
+      0,
+      0,
+      -1
+     ],
+     "ticks": 83,
+     "servo_ticks": 83,
+     "hold_ticks": 0,
+     "elapsed_s": 2.818,
+     "frame_clock_s": 47.45,
+     "grasp": {
+      "opening_mm": 79.98909897474779,
+      "closed_fraction": 1.015090088512028,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       605.36,
+       203.57,
+       121.58
+      ],
+      "rotation": [
+       [
+        0.998147,
+        -0.041456,
+        -0.044548
+       ],
+       [
+        -0.040949,
+        -0.999086,
+        0.012235
+       ],
+       [
+        -0.045014,
+        -0.010388,
+        -0.998932
+       ]
+      ]
+     },
+     "message": "arrived: moved 47.2 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move down 236.0 mm (base) [4/5]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 47.51,
+     "along_axis_mm": 47.49,
+     "lateral_mm": 1.37,
+     "turned_deg": 0.1,
+     "axis": [
+      0,
+      0,
+      -1
+     ],
+     "ticks": 75,
+     "servo_ticks": 75,
+     "hold_ticks": 0,
+     "elapsed_s": 2.245,
+     "frame_clock_s": 51.2,
+     "grasp": {
+      "opening_mm": 79.98853490632133,
+      "closed_fraction": 1.0150829302832658,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       604.1,
+       203.05,
+       74.09
+      ],
+      "rotation": [
+       [
+        0.998205,
+        -0.041488,
+        -0.043198
+       ],
+       [
+        -0.040971,
+        -0.999078,
+        0.012791
+       ],
+       [
+        -0.043689,
+        -0.010998,
+        -0.998985
+       ]
+      ]
+     },
+     "message": "arrived: moved 47.5 mm, turned 0.1 deg"
+    },
+    {
+     "label": "move down 236.0 mm (base) [5/5]",
+     "kind": "translate",
+     "outcome": "limited",
+     "abort_reason": "blocked",
+     "moved_mm": 27.22,
+     "along_axis_mm": 27.04,
+     "lateral_mm": 3.2,
+     "turned_deg": 0.1,
+     "axis": [
+      0,
+      0,
+      -1
+     ],
+     "ticks": 54,
+     "servo_ticks": 52,
+     "hold_ticks": 2,
+     "elapsed_s": 1.6,
+     "frame_clock_s": 53.9,
+     "grasp": {
+      "opening_mm": 79.88189181737684,
+      "closed_fraction": 1.0137295915910767,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       607.03,
+       201.77,
+       47.06
+      ],
+      "rotation": [
+       [
+        0.998222,
+        -0.042733,
+        -0.041559
+       ],
+       [
+        -0.042244,
+        -0.999028,
+        0.012569
+       ],
+       [
+        -0.042056,
+        -0.010791,
+        -0.999057
+       ]
+      ]
+     },
+     "message": "blocked after 27.0 mm: something is in the way or the arm is at its limit (descending onto an object, this is the fingers touching it)"
+    }
+   ]
+  },
+  "a1_c2_close_gated": {
+   "cell": null,
+   "subgoal": "pick_akita_bowl",
+   "attempt": 1,
+   "cycle": 2,
+   "ending": "FROZEN",
+   "ending_text": "frozen: a move stopped early",
+   "stopped_by": "frozen: a move stopped early",
+   "located": {
+    "label": "black bowl",
+    "point_mm": [
+     606.3453094006326,
+     206.17932014150452,
+     -29.160805067933172
+    ],
+    "error_mm": 10,
+    "doubtful": false
+   },
+   "batch": {
+    "actions": 3,
+    "ran": 2,
+    "motion_s": 0.8009999999999999,
+    "stopped_at": 2,
+    "reason": "the descent was blocked 44 mm short of the grasp depth: lift, look again at the target and descend over it before closing",
+    "residual_mm": 5.609047338005779
+   },
+   "frame_before": {
+    "obs_id": 18,
+    "frame_clock_s": 53.9,
+    "pose": {
+     "position_mm": [
+      607.03,
+      201.77,
+      47.06
+     ],
+     "rotation": [
+      [
+       0.998222,
+       -0.042733,
+       -0.041559
+      ],
+      [
+       -0.042244,
+       -0.999028,
+       0.012569
+      ],
+      [
+       -0.042056,
+       -0.010791,
+       -0.999057
+      ]
+     ],
+     "position_m": [
+      0.6070283678739833,
+      0.20176930869979065,
+      0.04705643466084064
+     ]
+    },
+    "gripper": {
+     "opening_mm": 79.88189181737684,
+     "commanded": "open",
+     "channel": -1,
+     "moving": false
+    },
+    "grasp": {
+     "opening_mm": 79.88189181737684,
+     "closed_fraction": 1.0137295915910767,
+     "commanded": "open",
+     "holding": null,
+     "reason": "the last gripper command was not close"
+    },
+    "table_z_mm": -11.35
+   },
+   "deltas": [
+    {
+     "kind": "translate",
+     "label": "move axis [0.018108810731286562, -0.003371483778605855, 0.0] 18.4 mm (base)",
+     "axis": null,
+     "magnitude_mm": 17.5,
+     "inserted": true,
+     "follow": true
+    },
+    {
+     "kind": "translate",
+     "label": "move left 4.0 mm (base)",
+     "axis": [
+      0,
+      1,
+      0
+     ],
+     "push": false,
+     "magnitude_mm": 4.0
+    },
+    {
+     "kind": "translate",
+     "label": "move down 41.0 mm (base)",
+     "axis": [
+      0,
+      0,
+      -1
+     ],
+     "push": false,
+     "magnitude_mm": 41.0
+    },
+    {
+     "kind": "gripper",
+     "label": "gripper close",
+     "axis": null,
+     "push": false,
+     "gripper_state": "close"
+    }
+   ],
+   "segments": [
+    {
+     "label": "move left 4.0 mm (base) [1/1]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 1.44,
+     "along_axis_mm": 1.21,
+     "lateral_mm": 0.78,
+     "turned_deg": 0.1,
+     "axis": [
+      0,
+      1,
+      0
+     ],
+     "ticks": 7,
+     "servo_ticks": 7,
+     "hold_ticks": 0,
+     "elapsed_s": 0.207,
+     "frame_clock_s": 54.25,
+     "grasp": {
+      "opening_mm": 79.94848507880288,
+      "closed_fraction": 1.0145746837411533,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       607.49,
+       202.98,
+       47.69
+      ],
+      "rotation": [
+       [
+        0.998271,
+        -0.042131,
+        -0.04098
+       ],
+       [
+        -0.041635,
+        -0.99905,
+        0.012888
+       ],
+       [
+        -0.041484,
+        -0.01116,
+        -0.999077
+       ]
+      ]
+     },
+     "message": "arrived: moved 1.4 mm, turned 0.1 deg"
+    },
+    {
+     "label": "move axis [0.018108810731286562, -0.003371483778605855, 0.0] 18.4 mm (base) [1/1]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 17.69,
+     "along_axis_mm": 17.46,
+     "lateral_mm": 2.79,
+     "turned_deg": 0.1,
+     "axis": [
+      0.9831,
+      -0.183,
+      0
+     ],
+     "ticks": 35,
+     "servo_ticks": 35,
+     "hold_ticks": 0,
+     "elapsed_s": 1.321,
+     "frame_clock_s": 56,
+     "grasp": {
+      "opening_mm": 79.94659419572996,
+      "closed_fraction": 1.0145506877630706,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       625.01,
+       201.66,
+       49.72
+      ],
+      "rotation": [
+       [
+        0.998295,
+        -0.042714,
+        -0.039769
+       ],
+       [
+        -0.042236,
+        -0.999026,
+        0.012795
+       ],
+       [
+        -0.040277,
+        -0.011094,
+        -0.999127
+       ]
+      ]
+     },
+     "message": "arrived: moved 17.7 mm, turned 0.1 deg"
+    },
+    {
+     "label": "move down 41.0 mm (base) [1/1]",
+     "kind": "translate",
+     "outcome": "limited",
+     "abort_reason": "blocked",
+     "moved_mm": 5.06,
+     "along_axis_mm": 0.34,
+     "lateral_mm": 5.05,
+     "turned_deg": 0.1,
+     "axis": [
+      0,
+      0,
+      -1
+     ],
+     "ticks": 18,
+     "servo_ticks": 16,
+     "hold_ticks": 2,
+     "elapsed_s": 0.594,
+     "frame_clock_s": 56.9,
+     "grasp": {
+      "opening_mm": 79.88428326067557,
+      "closed_fraction": 1.013759939856289,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       630.03,
+       202.2,
+       49.37
+      ],
+      "rotation": [
+       [
+        0.99833,
+        -0.043616,
+        -0.03787
+       ],
+       [
+        -0.043147,
+        -0.998983,
+        0.013121
+       ],
+       [
+        -0.038404,
+        -0.011465,
+        -0.999197
+       ]
+      ]
+     },
+     "message": "blocked after 0.3 mm: something is in the way or the arm is at its limit (descending onto an object, this is the fingers touching it)"
+    }
+   ]
+  },
+  "a2_c0_forward_10": {
+   "cell": null,
+   "subgoal": "pick_akita_bowl",
+   "attempt": 2,
+   "cycle": 0,
+   "ending": "FROZEN",
+   "ending_text": "frozen: ",
+   "stopped_by": "frozen: ",
+   "located": {
+    "label": "black bowl",
+    "point_mm": [
+     640.4824315946797,
+     201.70112670811463,
+     22.672605432810403
+    ],
+    "error_mm": 39.571164282292564,
+    "doubtful": false
+   },
+   "batch": {
+    "actions": 1,
+    "ran": 1,
+    "motion_s": 0.503,
+    "residual_mm": 3.3173960164895893
+   },
+   "frame_before": {
+    "obs_id": 21,
+    "frame_clock_s": 56.9,
+    "pose": {
+     "position_mm": [
+      630.03,
+      202.2,
+      49.37
+     ],
+     "rotation": [
+      [
+       0.99833,
+       -0.043616,
+       -0.03787
+      ],
+      [
+       -0.043147,
+       -0.998983,
+       0.013121
+      ],
+      [
+       -0.038404,
+       -0.011465,
+       -0.999197
+      ]
+     ],
+     "position_m": [
+      0.6300298494732244,
+      0.20219738214471553,
+      0.04937257247399851
+     ]
+    },
+    "gripper": {
+     "opening_mm": 79.88428326067557,
+     "commanded": "open",
+     "channel": -1,
+     "moving": false
+    },
+    "grasp": {
+     "opening_mm": 79.88428326067557,
+     "closed_fraction": 1.013759939856289,
+     "commanded": "open",
+     "holding": null,
+     "reason": "the last gripper command was not close"
+    },
+    "table_z_mm": -11.35
+   },
+   "deltas": [
+    {
+     "kind": "translate",
+     "label": "move forward 10.0 mm (base)",
+     "axis": [
+      1,
+      0,
+      0
+     ],
+     "push": false,
+     "magnitude_mm": 10.0
+    }
+   ],
+   "segments": [
+    {
+     "label": "move forward 10.0 mm (base) [1/1]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 7.18,
+     "along_axis_mm": 7.17,
+     "lateral_mm": 0.36,
+     "turned_deg": 0.2,
+     "axis": [
+      1,
+      0,
+      0
+     ],
+     "ticks": 13,
+     "servo_ticks": 13,
+     "hold_ticks": 0,
+     "elapsed_s": 0.503,
+     "frame_clock_s": 57.55,
+     "grasp": {
+      "opening_mm": 79.88119602175188,
+      "closed_fraction": 1.013720761697359,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       637.2,
+       202.2,
+       49.74
+      ],
+      "rotation": [
+       [
+        0.998399,
+        -0.04418,
+        -0.03531
+       ],
+       [
+        -0.043731,
+        -0.998953,
+        0.013407
+       ],
+       [
+        -0.035866,
+        -0.011842,
+        -0.999286
+       ]
+      ]
+     },
+     "message": "arrived: moved 7.2 mm, turned 0.2 deg"
+    }
+   ]
+  },
+  "retry_a1_c0_wrong_bowl": {
+   "cell": null,
+   "subgoal": "pick_akita_bowl_retry",
+   "attempt": 1,
+   "cycle": 0,
+   "ending": "FROZEN",
+   "ending_text": "frozen: ",
+   "stopped_by": "frozen: ",
+   "located": {
+    "label": "black bowl",
+    "point_mm": [
+     471.75159309582074,
+     306.17647795608383,
+     5.66344649436612
+    ],
+    "error_mm": 203.51311823941506,
+    "doubtful": false
+   },
+   "batch": {
+    "actions": 2,
+    "ran": 2,
+    "motion_s": 11.218,
+    "residual_mm": 296.7589738113033
+   },
+   "frame_before": {
+    "obs_id": 22,
+    "frame_clock_s": 57.55,
+    "pose": {
+     "position_mm": [
+      637.2,
+      202.2,
+      49.74
+     ],
+     "rotation": [
+      [
+       0.998399,
+       -0.04418,
+       -0.03531
+      ],
+      [
+       -0.043731,
+       -0.998953,
+       0.013407
+      ],
+      [
+       -0.035866,
+       -0.011842,
+       -0.999286
+      ]
+     ],
+     "position_m": [
+      0.6372034496778857,
+      0.2022045091865128,
+      0.0497357884893842
+     ]
+    },
+    "gripper": {
+     "opening_mm": 79.88119602175188,
+     "commanded": "open",
+     "channel": -1,
+     "moving": false
+    },
+    "grasp": {
+     "opening_mm": 79.88119602175188,
+     "closed_fraction": 1.013720761697359,
+     "commanded": "open",
+     "holding": null,
+     "reason": "the last gripper command was not close"
+    },
+    "table_z_mm": -11.35
+   },
+   "deltas": [
+    {
+     "kind": "translate",
+     "label": "lift over the table",
+     "axis": null,
+     "magnitude_mm": 70.7,
+     "inserted": true
+    },
+    {
+     "kind": "translate",
+     "label": "move forward 165.0 mm (base) (shortened to 116 mm: it would end 827 mm from the base, past the 780 mm reach)",
+     "axis": [
+      1,
+      0,
+      0
+     ],
+     "push": false,
+     "magnitude_mm": 116.0
+    }
+   ],
+   "segments": [
+    {
+     "label": "lift over the table [1/2]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 33.77,
+     "along_axis_mm": 33.76,
+     "lateral_mm": 0.86,
+     "turned_deg": 0.1,
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "ticks": 52,
+     "servo_ticks": 52,
+     "hold_ticks": 0,
+     "elapsed_s": 1.592,
+     "frame_clock_s": 60.15,
+     "grasp": {
+      "opening_mm": 79.97683232462299,
+      "closed_fraction": 1.014934420363236,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       637.49,
+       203.02,
+       83.49
+      ],
+      "rotation": [
+       [
+        0.998381,
+        -0.044814,
+        -0.035035
+       ],
+       [
+        -0.044393,
+        -0.998933,
+        0.012703
+       ],
+       [
+        -0.035566,
+        -0.011128,
+        -0.999305
+       ]
+      ]
+     },
+     "message": "arrived: moved 33.8 mm, turned 0.1 deg"
+    },
+    {
+     "label": "lift over the table [2/2]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 36.95,
+     "along_axis_mm": 36.95,
+     "lateral_mm": 0.03,
+     "turned_deg": 0,
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "ticks": 57,
+     "servo_ticks": 57,
+     "hold_ticks": 0,
+     "elapsed_s": 2.112,
+     "frame_clock_s": 63,
+     "grasp": {
+      "opening_mm": 79.98759447606844,
+      "closed_fraction": 1.0150709958891935,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       637.49,
+       202.98,
+       120.44
+      ],
+      "rotation": [
+       [
+        0.998376,
+        -0.044829,
+        -0.035153
+       ],
+       [
+        -0.044407,
+        -0.998933,
+        0.012677
+       ],
+       [
+        -0.035684,
+        -0.011096,
+        -0.999302
+       ]
+      ]
+     },
+     "message": "arrived: moved 36.9 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move forward 165.0 mm (base) (shortened to 116 mm: it would end 827 mm from the base, past the 780 mm reach) (shortened to 115 mm: it would end 780 mm from the base, past the 780 mm reach) [1/3]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 35.71,
+     "along_axis_mm": 35.69,
+     "lateral_mm": 1.07,
+     "turned_deg": 0.1,
+     "axis": [
+      1,
+      0,
+      0
+     ],
+     "ticks": 73,
+     "servo_ticks": 73,
+     "hold_ticks": 0,
+     "elapsed_s": 2.075,
+     "frame_clock_s": 66.65,
+     "grasp": {
+      "opening_mm": 79.98781767210038,
+      "closed_fraction": 1.015073828326147,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       673.18,
+       203.18,
+       119.39
+      ],
+      "rotation": [
+       [
+        0.998421,
+        -0.045428,
+        -0.033033
+       ],
+       [
+        -0.045025,
+        -0.998903,
+        0.012844
+       ],
+       [
+        -0.03358,
+        -0.011336,
+        -0.999372
+       ]
+      ]
+     },
+     "message": "arrived: moved 35.7 mm, turned 0.1 deg"
+    },
+    {
+     "label": "move forward 165.0 mm (base) (shortened to 116 mm: it would end 827 mm from the base, past the 780 mm reach) (shortened to 115 mm: it would end 780 mm from the base, past the 780 mm reach) [2/3]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 38.62,
+     "along_axis_mm": 38.62,
+     "lateral_mm": 0.11,
+     "turned_deg": 0,
+     "axis": [
+      1,
+      0,
+      0
+     ],
+     "ticks": 80,
+     "servo_ticks": 80,
+     "hold_ticks": 0,
+     "elapsed_s": 2.66,
+     "frame_clock_s": 70.65,
+     "grasp": {
+      "opening_mm": 79.98815823431248,
+      "closed_fraction": 1.0150781501816304,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       711.8,
+       203.22,
+       119.29
+      ],
+      "rotation": [
+       [
+        0.998438,
+        -0.045509,
+        -0.032409
+       ],
+       [
+        -0.04511,
+        -0.998898,
+        0.012937
+       ],
+       [
+        -0.032963,
+        -0.011455,
+        -0.999391
+       ]
+      ]
+     },
+     "message": "arrived: moved 38.6 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move forward 165.0 mm (base) (shortened to 116 mm: it would end 827 mm from the base, past the 780 mm reach) (shortened to 115 mm: it would end 780 mm from the base, past the 780 mm reach) [3/3]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 38.23,
+     "along_axis_mm": 38.23,
+     "lateral_mm": 0.37,
+     "turned_deg": 0.8,
+     "axis": [
+      1,
+      0,
+      0
+     ],
+     "ticks": 85,
+     "servo_ticks": 85,
+     "hold_ticks": 0,
+     "elapsed_s": 2.779,
+     "frame_clock_s": 74.9,
+     "grasp": {
+      "opening_mm": 79.98651926261464,
+      "closed_fraction": 1.015057351048409,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       750.03,
+       203.09,
+       118.94
+      ],
+      "rotation": [
+       [
+        0.998656,
+        -0.047959,
+        -0.019666
+       ],
+       [
+        -0.047673,
+        -0.998754,
+        0.014744
+       ],
+       [
+        -0.020349,
+        -0.013787,
+        -0.999698
+       ]
+      ]
+     },
+     "message": "arrived: moved 38.2 mm, turned 0.8 deg"
+    }
+   ]
+  },
+  "top_a1_c0_moved_190": {
+   "cell": null,
+   "subgoal": "grasp_akita_bowl_top",
+   "attempt": 1,
+   "cycle": 0,
+   "ending": "FROZEN",
+   "ending_text": "frozen: ",
+   "stopped_by": "frozen: ",
+   "located": {
+    "label": "akita black bowl",
+    "point_mm": [
+     471.75159309582074,
+     306.17647795608383,
+     5.66344649436612
+    ],
+    "error_mm": 199.10094396790322,
+    "doubtful": false
+   },
+   "batch": {
+    "actions": 3,
+    "ran": 3,
+    "motion_s": 20.698,
+    "residual_mm": 2.3856834092520085
+   },
+   "frame_before": {
+    "obs_id": 38,
+    "frame_clock_s": 103.6,
+    "pose": {
+     "position_mm": [
+      633.36,
+      201.35,
+      47.52
+     ],
+     "rotation": [
+      [
+       0.998509,
+       -0.044611,
+       -0.031456
+      ],
+      [
+       -0.0442,
+       -0.99893,
+       0.013624
+      ],
+      [
+       -0.03203,
+       -0.012213,
+       -0.999412
+      ]
+     ],
+     "position_m": [
+      0.6333631728859686,
+      0.20135483889287586,
+      0.04751787916312422
+     ]
+    },
+    "gripper": {
+     "opening_mm": 79.74503089906912,
+     "commanded": "open",
+     "channel": -1,
+     "moving": false
+    },
+    "grasp": {
+     "opening_mm": 79.74503089906912,
+     "closed_fraction": 1.0119927779069686,
+     "commanded": "open",
+     "holding": null,
+     "reason": "the last gripper command was not close"
+    },
+    "table_z_mm": -11.35
+   },
+   "deltas": [
+    {
+     "kind": "translate",
+     "label": "lift over the table",
+     "axis": null,
+     "magnitude_mm": 72.7,
+     "inserted": true
+    },
+    {
+     "kind": "translate",
+     "label": "move backward 162.0 mm (base)",
+     "axis": [
+      -1,
+      0,
+      0
+     ],
+     "push": false,
+     "magnitude_mm": 162.0
+    },
+    {
+     "kind": "translate",
+     "label": "move left 105.0 mm (base)",
+     "axis": [
+      0,
+      1,
+      0
+     ],
+     "push": false,
+     "magnitude_mm": 105.0
+    }
+   ],
+   "segments": [
+    {
+     "label": "lift over the table [1/2]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 35.17,
+     "along_axis_mm": 35.17,
+     "lateral_mm": 0.8,
+     "turned_deg": 0.1,
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "ticks": 54,
+     "servo_ticks": 54,
+     "hold_ticks": 0,
+     "elapsed_s": 1.658,
+     "frame_clock_s": 106.3,
+     "grasp": {
+      "opening_mm": 79.96364467356615,
+      "closed_fraction": 1.0147670643853572,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       633.57,
+       202.13,
+       82.68
+      ],
+      "rotation": [
+       [
+        0.99849,
+        -0.045248,
+        -0.031157
+       ],
+       [
+        -0.044863,
+        -0.998909,
+        0.01293
+       ],
+       [
+        -0.031708,
+        -0.011512,
+        -0.999431
+       ]
+      ]
+     },
+     "message": "arrived: moved 35.2 mm, turned 0.1 deg"
+    },
+    {
+     "label": "lift over the table [2/2]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 37.55,
+     "along_axis_mm": 37.55,
+     "lateral_mm": 0.08,
+     "turned_deg": 0,
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "ticks": 58,
+     "servo_ticks": 58,
+     "hold_ticks": 0,
+     "elapsed_s": 1.675,
+     "frame_clock_s": 109.2,
+     "grasp": {
+      "opening_mm": 79.98622322856176,
+      "closed_fraction": 1.0150535942710883,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       633.64,
+       202.17,
+       120.23
+      ],
+      "rotation": [
+       [
+        0.998486,
+        -0.045259,
+        -0.031265
+       ],
+       [
+        -0.044874,
+        -0.998909,
+        0.012913
+       ],
+       [
+        -0.031815,
+        -0.01149,
+        -0.999428
+       ]
+      ]
+     },
+     "message": "arrived: moved 37.6 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move backward 162.0 mm (base) [1/4]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 37.72,
+     "along_axis_mm": 37.71,
+     "lateral_mm": 1,
+     "turned_deg": 0.1,
+     "axis": [
+      -1,
+      0,
+      0
+     ],
+     "ticks": 75,
+     "servo_ticks": 75,
+     "hold_ticks": 0,
+     "elapsed_s": 2.256,
+     "frame_clock_s": 112.95,
+     "grasp": {
+      "opening_mm": 79.98857455111016,
+      "closed_fraction": 1.015083433389723,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       595.93,
+       201.97,
+       121.21
+      ],
+      "rotation": [
+       [
+        0.998456,
+        -0.044646,
+        -0.033043
+       ],
+       [
+        -0.044248,
+        -0.99894,
+        0.01269
+       ],
+       [
+        -0.033575,
+        -0.011208,
+        -0.999373
+       ]
+      ]
+     },
+     "message": "arrived: moved 37.7 mm, turned 0.1 deg"
+    },
+    {
+     "label": "move backward 162.0 mm (base) [2/4]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 40.89,
+     "along_axis_mm": 40.89,
+     "lateral_mm": 0.15,
+     "turned_deg": 0,
+     "axis": [
+      -1,
+      0,
+      0
+     ],
+     "ticks": 79,
+     "servo_ticks": 79,
+     "hold_ticks": 0,
+     "elapsed_s": 2.449,
+     "frame_clock_s": 116.9,
+     "grasp": {
+      "opening_mm": 79.98863126018999,
+      "closed_fraction": 1.0150841530480963,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       555.04,
+       202,
+       121.07
+      ],
+      "rotation": [
+       [
+        0.998462,
+        -0.044598,
+        -0.032934
+       ],
+       [
+        -0.044205,
+        -0.998943,
+        0.012583
+       ],
+       [
+        -0.03346,
+        -0.011108,
+        -0.999378
+       ]
+      ]
+     },
+     "message": "arrived: moved 40.9 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move backward 162.0 mm (base) [3/4]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 40.5,
+     "along_axis_mm": 40.5,
+     "lateral_mm": 0.22,
+     "turned_deg": 0,
+     "axis": [
+      -1,
+      0,
+      0
+     ],
+     "ticks": 77,
+     "servo_ticks": 77,
+     "hold_ticks": 0,
+     "elapsed_s": 2.328,
+     "frame_clock_s": 120.75,
+     "grasp": {
+      "opening_mm": 79.98898049009317,
+      "closed_fraction": 1.0150885848996596,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       514.54,
+       202.2,
+       120.97
+      ],
+      "rotation": [
+       [
+        0.998486,
+        -0.044245,
+        -0.032688
+       ],
+       [
+        -0.04387,
+        -0.998964,
+        0.012082
+       ],
+       [
+        -0.033189,
+        -0.01063,
+        -0.999393
+       ]
+      ]
+     },
+     "message": "arrived: moved 40.5 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move backward 162.0 mm (base) [4/4]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 40.2,
+     "along_axis_mm": 40.2,
+     "lateral_mm": 0.04,
+     "turned_deg": 0,
+     "axis": [
+      -1,
+      0,
+      0
+     ],
+     "ticks": 76,
+     "servo_ticks": 76,
+     "hold_ticks": 0,
+     "elapsed_s": 2.288,
+     "frame_clock_s": 124.55,
+     "grasp": {
+      "opening_mm": 79.98898903088855,
+      "closed_fraction": 1.0150886932853878,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       474.34,
+       202.23,
+       120.99
+      ],
+      "rotation": [
+       [
+        0.998488,
+        -0.044223,
+        -0.032643
+       ],
+       [
+        -0.043849,
+        -0.998965,
+        0.012085
+       ],
+       [
+        -0.033144,
+        -0.010636,
+        -0.999394
+       ]
+      ]
+     },
+     "message": "arrived: moved 40.2 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move left 105.0 mm (base) [1/3]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 32.29,
+     "along_axis_mm": 32.27,
+     "lateral_mm": 1.13,
+     "turned_deg": 0.1,
+     "axis": [
+      0,
+      1,
+      0
+     ],
+     "ticks": 63,
+     "servo_ticks": 63,
+     "hold_ticks": 0,
+     "elapsed_s": 1.845,
+     "frame_clock_s": 127.7,
+     "grasp": {
+      "opening_mm": 79.98732831330041,
+      "closed_fraction": 1.0150676181890916,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       473.45,
+       234.5,
+       120.3
+      ],
+      "rotation": [
+       [
+        0.998551,
+        -0.043743,
+        -0.031333
+       ],
+       [
+        -0.043343,
+        -0.998971,
+        0.013338
+       ],
+       [
+        -0.031884,
+        -0.011961,
+        -0.99942
+       ]
+      ]
+     },
+     "message": "arrived: moved 32.3 mm, turned 0.1 deg"
+    },
+    {
+     "label": "move left 105.0 mm (base) [2/3]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 35.11,
+     "along_axis_mm": 35.11,
+     "lateral_mm": 0.13,
+     "turned_deg": 0,
+     "axis": [
+      0,
+      1,
+      0
+     ],
+     "ticks": 68,
+     "servo_ticks": 68,
+     "hold_ticks": 0,
+     "elapsed_s": 3.111,
+     "frame_clock_s": 131.1,
+     "grasp": {
+      "opening_mm": 79.9871691741488,
+      "closed_fraction": 1.0150655986567108,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       473.58,
+       269.62,
+       120.3
+      ],
+      "rotation": [
+       [
+        0.998548,
+        -0.043741,
+        -0.031434
+       ],
+       [
+        -0.043336,
+        -0.99897,
+        0.01346
+       ],
+       [
+        -0.03199,
+        -0.012078,
+        -0.999415
+       ]
+      ]
+     },
+     "message": "arrived: moved 35.1 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move left 105.0 mm (base) [3/3]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 35.24,
+     "along_axis_mm": 35.24,
+     "lateral_mm": 0.16,
+     "turned_deg": 0,
+     "axis": [
+      0,
+      1,
+      0
+     ],
+     "ticks": 69,
+     "servo_ticks": 69,
+     "hold_ticks": 0,
+     "elapsed_s": 3.088,
+     "frame_clock_s": 134.55,
+     "grasp": {
+      "opening_mm": 79.98704933310047,
+      "closed_fraction": 1.0150640778312243,
+      "commanded": "open",
+      "holding": null,
+      "reason": "the last gripper command was not close"
+     },
+     "pose_after": {
+      "position_mm": [
+       473.74,
+       304.86,
+       120.34
+      ],
+      "rotation": [
+       [
+        0.998545,
+        -0.043741,
+        -0.031528
+       ],
+       [
+        -0.043331,
+        -0.998969,
+        0.013577
+       ],
+       [
+        -0.03209,
+        -0.012191,
+        -0.999411
+       ]
+      ]
+     },
+     "message": "arrived: moved 35.2 mm, turned 0.0 deg"
+    }
+   ]
+  },
+  "plans": [
+   [
+    [
+     "pick_akita_bowl",
+     "akita black bowl between the plate and the ramekin"
+    ],
+    [
+     "place_on_plate",
+     "plate"
+    ]
+   ],
+   [
+    [
+     "pick_akita_bowl_retry",
+     "akita black bowl between the plate and the ramekin"
+    ],
+    [
+     "lift_akita_bowl",
+     "akita black bowl between the plate and the ramekin"
+    ],
+    [
+     "move_bowl_to_plate",
+     "plate"
+    ],
+    [
+     "place_bowl_on_plate",
+     "plate"
+    ]
+   ],
+   [
+    [
+     "grasp_akita_bowl",
+     "akita black bowl between the plate and the ramekin"
+    ],
+    [
+     "lift_akita_bowl",
+     "akita black bowl between the plate and the ramekin"
+    ],
+    [
+     "move_bowl_to_plate",
+     "plate"
+    ],
+    [
+     "place_bowl_on_plate",
+     "plate"
+    ]
+   ],
+   [
+    [
+     "grasp_akita_bowl_side",
+     "akita black bowl between the plate and the ramekin"
+    ],
+    [
+     "lift_akita_bowl",
+     "akita black bowl between the plate and the ramekin"
+    ],
+    [
+     "move_bowl_to_plate",
+     "plate"
+    ],
+    [
+     "place_bowl_on_plate",
+     "plate"
+    ]
+   ],
+   [
+    [
+     "grasp_akita_bowl_top",
+     "akita black bowl between the plate and the ramekin"
+    ],
+    [
+     "lift_akita_bowl",
+     "akita black bowl between the plate and the ramekin"
+    ],
+    [
+     "move_bowl_to_plate",
+     "plate"
+    ],
+    [
+     "place_bowl_on_plate",
+     "plate"
+    ]
+   ]
+  ]
+ },
+ "object_t1_s0": {
+  "lift_c1": {
+   "cell": null,
+   "subgoal": "lift_cream_cheese",
+   "attempt": 1,
+   "cycle": 1,
+   "ending": "FROZEN",
+   "ending_text": "frozen: a move stopped early",
+   "stopped_by": null,
+   "located": {
+    "doubtful": false,
+    "error": "no view found \"cream cheese\": raise the tool, move the arm out of the fixed cameras' line of sight, or name it by a distinguishing property"
+   },
+   "batch": {
+    "actions": 3,
+    "ran": 3,
+    "motion_s": 4.55
+   },
+   "frame_before": {
+    "obs_id": 22,
+    "frame_clock_s": 57.5,
+    "pose": {
+     "position_mm": [
+      649.89,
+      -99.09,
+      12.95
+     ],
+     "rotation": [
+      [
+       0.999806,
+       -0.00766,
+       -0.018168
+      ],
+      [
+       -0.007933,
+       -0.999856,
+       -0.015014
+      ],
+      [
+       -0.018051,
+       0.015156,
+       -0.999722
+      ]
+     ],
+     "position_m": [
+      0.6498886642735621,
+      -0.09908828882263596,
+      0.012948724710000706
+     ]
+    },
+    "gripper": {
+     "opening_mm": 42.21745291530427,
+     "commanded": "close",
+     "channel": 1,
+     "moving": false
+    },
+    "grasp": {
+     "opening_mm": 42.21745291530427,
+     "closed_fraction": 0.5357544786206127,
+     "commanded": "close",
+     "holding": true,
+     "reason": "the fingers stopped at 42.2 mm"
+    },
+    "table_z_mm": 0.9
+   },
+   "deltas": [
+    {
+     "kind": "translate",
+     "label": "move up 100.0 mm (base) (the first 17 mm)",
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "push": false,
+     "magnitude_mm": 17.0
+    },
+    {
+     "kind": "translate",
+     "label": "move up 100.0 mm (base) (the rest)",
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "push": false,
+     "magnitude_mm": 83.0
+    }
+   ],
+   "segments": [
+    {
+     "label": "move up 100.0 mm (base) (the first 17 mm) [1/1]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 14.02,
+     "along_axis_mm": 14.02,
+     "lateral_mm": 0.25,
+     "turned_deg": 0,
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "ticks": 23,
+     "servo_ticks": 23,
+     "hold_ticks": 0,
+     "elapsed_s": 0.727,
+     "frame_clock_s": 58.65,
+     "grasp": {
+      "opening_mm": 42.217757320472984,
+      "closed_fraction": 0.5357583416303678,
+      "commanded": "close",
+      "holding": true,
+      "reason": "the fingers stopped at 42.2 mm"
+     },
+     "pose_after": {
+      "position_mm": [
+       649.9,
+       -99.34,
+       26.97
+      ],
+      "rotation": [
+       [
+        0.999814,
+        -0.007583,
+        -0.017734
+       ],
+       [
+        -0.00784,
+        -0.999865,
+        -0.014463
+       ],
+       [
+        -0.017622,
+        0.014599,
+        -0.999738
+       ]
+      ]
+     },
+     "message": "arrived: moved 14.0 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move up 100.0 mm (base) (the rest) (1 of 2) [1/1]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 39.11,
+     "along_axis_mm": 39.11,
+     "lateral_mm": 0.48,
+     "turned_deg": 0,
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "ticks": 61,
+     "servo_ticks": 61,
+     "hold_ticks": 0,
+     "elapsed_s": 1.737,
+     "frame_clock_s": 61.7,
+     "grasp": {
+      "opening_mm": 42.21815868587071,
+      "closed_fraction": 0.5357634350998822,
+      "commanded": "close",
+      "holding": true,
+      "reason": "the fingers stopped at 42.2 mm"
+     },
+     "pose_after": {
+      "position_mm": [
+       650.13,
+       -99.75,
+       66.08
+      ],
+      "rotation": [
+       [
+        0.999821,
+        -0.007247,
+        -0.017492
+       ],
+       [
+        -0.00749,
+        -0.999876,
+        -0.013843
+       ],
+       [
+        -0.017389,
+        0.013971,
+        -0.999751
+       ]
+      ]
+     },
+     "message": "arrived: moved 39.1 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move up 100.0 mm (base) (the rest) (2 of 2) [1/1]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 38.6,
+     "along_axis_mm": 38.59,
+     "lateral_mm": 0.57,
+     "turned_deg": 0,
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "ticks": 60,
+     "servo_ticks": 60,
+     "hold_ticks": 0,
+     "elapsed_s": 2.086,
+     "frame_clock_s": 64.7,
+     "grasp": {
+      "opening_mm": 42.217532286529156,
+      "closed_fraction": 0.5357554858696594,
+      "commanded": "close",
+      "holding": true,
+      "reason": "the fingers stopped at 42.2 mm"
+     },
+     "pose_after": {
+      "position_mm": [
+       650.45,
+       -100.22,
+       104.67
+      ],
+      "rotation": [
+       [
+        0.999827,
+        -0.006797,
+        -0.017315
+       ],
+       [
+        -0.007026,
+        -0.999888,
+        -0.013201
+       ],
+       [
+        -0.017224,
+        0.01332,
+        -0.999763
+       ]
+      ]
+     },
+     "message": "arrived: moved 38.6 mm, turned 0.0 deg"
+    }
+   ]
+  },
+  "lift_c2": {
+   "cell": null,
+   "subgoal": "lift_cream_cheese",
+   "attempt": 1,
+   "cycle": 2,
+   "ending": "FROZEN",
+   "ending_text": "frozen: a move stopped early",
+   "stopped_by": "frozen: a move stopped early",
+   "located": {
+    "doubtful": false,
+    "error": "no view found \"cream cheese\": raise the tool, move the arm out of the fixed cameras' line of sight, or name it by a distinguishing property"
+   },
+   "batch": {
+    "actions": 3,
+    "ran": 3,
+    "motion_s": 4.991
+   },
+   "frame_before": {
+    "obs_id": 25,
+    "frame_clock_s": 64.7,
+    "pose": {
+     "position_mm": [
+      650.45,
+      -100.22,
+      104.67
+     ],
+     "rotation": [
+      [
+       0.999827,
+       -0.006797,
+       -0.017315
+      ],
+      [
+       -0.007026,
+       -0.999888,
+       -0.013201
+      ],
+      [
+       -0.017224,
+       0.01332,
+       -0.999763
+      ]
+     ],
+     "position_m": [
+      0.6504481867594358,
+      -0.10022015325938452,
+      0.10466668815380252
+     ]
+    },
+    "gripper": {
+     "opening_mm": 42.217532286529156,
+     "commanded": "close",
+     "channel": 1,
+     "moving": false
+    },
+    "grasp": {
+     "opening_mm": 42.217532286529156,
+     "closed_fraction": 0.5357554858696594,
+     "commanded": "close",
+     "holding": true,
+     "reason": "the fingers stopped at 42.2 mm"
+    },
+    "table_z_mm": 0.9
+   },
+   "deltas": [
+    {
+     "kind": "translate",
+     "label": "move up 100.0 mm (base) (the first 17 mm)",
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "push": false,
+     "magnitude_mm": 17.0
+    },
+    {
+     "kind": "translate",
+     "label": "move up 100.0 mm (base) (the rest)",
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "push": false,
+     "magnitude_mm": 83.0
+    }
+   ],
+   "segments": [
+    {
+     "label": "move up 100.0 mm (base) (the first 17 mm) [1/1]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 14.1,
+     "along_axis_mm": 14.1,
+     "lateral_mm": 0.27,
+     "turned_deg": 0,
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "ticks": 22,
+     "servo_ticks": 22,
+     "hold_ticks": 0,
+     "elapsed_s": 0.705,
+     "frame_clock_s": 65.8,
+     "grasp": {
+      "opening_mm": 42.21753251789991,
+      "closed_fraction": 0.5357554888058365,
+      "commanded": "close",
+      "holding": true,
+      "reason": "the fingers stopped at 42.2 mm"
+     },
+     "pose_after": {
+      "position_mm": [
+       650.65,
+       -100.4,
+       118.76
+      ],
+      "rotation": [
+       [
+        0.999831,
+        -0.006746,
+        -0.01712
+       ],
+       [
+        -0.006964,
+        -0.999895,
+        -0.012684
+       ],
+       [
+        -0.017032,
+        0.012801,
+        -0.999773
+       ]
+      ]
+     },
+     "message": "arrived: moved 14.1 mm, turned 0.0 deg"
+    },
+    {
+     "label": "move up 100.0 mm (base) (the rest) (1 of 2) [1/1]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 38.71,
+     "along_axis_mm": 38.7,
+     "lateral_mm": 0.61,
+     "turned_deg": 0.1,
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "ticks": 63,
+     "servo_ticks": 63,
+     "hold_ticks": 0,
+     "elapsed_s": 1.843,
+     "frame_clock_s": 68.95,
+     "grasp": {
+      "opening_mm": 42.21771679709335,
+      "closed_fraction": 0.5357578273742811,
+      "commanded": "close",
+      "holding": true,
+      "reason": "the fingers stopped at 42.2 mm"
+     },
+     "pose_after": {
+      "position_mm": [
+       650.16,
+       -100.76,
+       157.47
+      ],
+      "rotation": [
+       [
+        0.999855,
+        -0.006111,
+        -0.015891
+       ],
+       [
+        -0.006305,
+        -0.999906,
+        -0.012191
+       ],
+       [
+        -0.015815,
+        0.01229,
+        -0.999799
+       ]
+      ]
+     },
+     "message": "arrived: moved 38.7 mm, turned 0.1 deg"
+    },
+    {
+     "label": "move up 100.0 mm (base) (the rest) (2 of 2) [1/1]",
+     "kind": "translate",
+     "outcome": "done",
+     "moved_mm": 38.89,
+     "along_axis_mm": 38.88,
+     "lateral_mm": 1.04,
+     "turned_deg": 0.1,
+     "axis": [
+      0,
+      0,
+      1
+     ],
+     "ticks": 69,
+     "servo_ticks": 69,
+     "hold_ticks": 0,
+     "elapsed_s": 2.443,
+     "frame_clock_s": 72.4,
+     "grasp": {
+      "opening_mm": 42.21815806149938,
+      "closed_fraction": 0.5357634271763881,
+      "commanded": "close",
+      "holding": true,
+      "reason": "the fingers stopped at 42.2 mm"
+     },
+     "pose_after": {
+      "position_mm": [
+       649.16,
+       -101.03,
+       196.35
+      ],
+      "rotation": [
+       [
+        0.999884,
+        -0.005432,
+        -0.014234
+       ],
+       [
+        -0.0056,
+        -0.999915,
+        -0.01178
+       ],
+       [
+        -0.014168,
+        0.011858,
+        -0.999829
+       ]
+      ]
+     },
+     "message": "arrived: moved 38.9 mm, turned 0.1 deg"
+    }
+   ]
+  }
+ },
+ "object_t0_s0": {
+  "grasp_a1": {
+   "ending": "ERROR",
+   "ending_text": "the executor stopped on an error",
+   "cycles": [
+    {
+     "index": 0,
+     "stopped_by": "move right 99.0 mm (base) [2/2] ended skipped",
+     "proposal": {
+      "assessment": "The tool point is 16 mm below the top face of the alphabet soup can, but a secure grasp requires it to be at least 20 mm below. The target is 55 mm BACKWARD and 99 mm RIGHT of the tool point. The gripper is PARTLY OPEN (62.0 mm). To satisfy the depth requirement and align with the target, I must first move to the target location (55 mm BACKWARD, 99 mm RIGHT) and then descend 50 mm to ensure the tool point is sufficiently below the top face (approx 34 mm below) before closing.",
+      "done": false,
+      "expect": "The tool point will be positioned over the alphabet soup can, descended to approximately 34 mm below its top face, and the gripper will close around the can.",
+      "deltas": [
+       {
+        "kind": "translate",
+        "label": "move backward 55.0 mm (base)",
+        "axis": [
+         -1,
+         0,
+         0
+        ],
+        "push": false
+       },
+       {
+        "kind": "translate",
+        "label": "move right 99.0 mm (base)",
+        "axis": [
+         0,
+         -1,
+         0
+        ],
+        "push": false
+       },
+       {
+        "kind": "translate",
+        "label": "move down 50.0 mm (base)",
+        "axis": [
+         0,
+         0,
+         -1
+        ],
+        "push": false
+       },
+       {
+        "kind": "gripper",
+        "label": "gripper close",
+        "push": false
+       }
+      ]
+     },
+     "steps": 4
+    },
+    {
+     "index": 1,
+     "stopped_by": null,
+     "proposal": {
+      "assessment": "The tool point is 8 mm below the top face of the alphabet soup can, but a secure grasp requires it to be at least 20 mm below. The target is 61 mm to the right, but the motion limits restrict this reply to gripper actions only. The gripper is currently partly open (61.4 mm) and holding something, but not the target can. I cannot move to the target or descend further due to the 'Only a gripper action' constraint and the refusal of the previous descent plan.",
+      "done": false,
+      "expect": "The gripper opens fully to prepare for a new grasp attempt once the arm can move.",
+      "deltas": [
+       {
+        "kind": "gripper",
+        "label": "gripper open",
+        "push": false
+       }
+      ]
+     },
+     "steps": 1
+    },
+    {
+     "index": 2,
+     "stopped_by": null,
+     "proposal": {
+      "assessment": "The tool point is 6 mm below the top face of the alphabet soup can, which is insufficient for a secure grasp (requires at least 20 mm below). The target is 63 mm to the right, meaning the jaws are not centered on the can. The gripper is fully open. The subgoal is not achieved.",
+      "done": false,
+      "expect": "No action taken due to constraints.",
+      "deltas": []
+     },
+     "steps": 0
+    }
+   ]
+  },
+  "end": null
+ }
+}

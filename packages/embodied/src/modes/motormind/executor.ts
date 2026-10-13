@@ -660,7 +660,9 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			if (cycle.proposal) cycle.proposal.done = true;
 			return finish("HELD", { text: cycle.stopped_by });
 		}
-		if (s.frozen + s.inheritedFrozen >= FROZEN_CYCLES || s.wall >= FROZEN_CYCLES) {
+		// The inherited count is read only by the claim path above (spec-executor §7.2 step 11): a cycle
+		// that moved is not frozen because an earlier subgoal on the same target was.
+		if (s.frozen >= FROZEN_CYCLES || s.wall >= FROZEN_CYCLES) {
 			const width = letGoWidth(s, frame, caps, read, {
 				aboutLettingGo: aboutLettingGo(`${sg.subgoal} ${sg.criterion}`),
 				descentBlocked,

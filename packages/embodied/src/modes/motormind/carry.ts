@@ -53,7 +53,8 @@ export function carryOver(s: SubgoalState, faces: TopFace): Carry {
 			footprintMethod: s.footprintMethod,
 			faces: faces.carry(),
 			emptyCloses: [...s.emptyCloses],
-			frozen: s.frozen + s.inheritedFrozen,
+			// Only this subgoal's run of frozen cycles (spec-executor §16): the count does not accumulate across steps.
+			frozen: s.frozen,
 			residualText:
 				s.residualMm !== undefined
 					? `the last step measured the tool ${Math.round(s.residualMm)} mm from the target`

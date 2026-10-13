@@ -1470,3 +1470,57 @@ test("executor: an action whose reply has no pictures makes the next look a real
 	assert.match(run3.cycles[0].stopped_by ?? "", /refused/);
 	assert.match(m3.calls[1].text, /out of reach: do not propose that direction again/);
 });
+
+// ---------------------------------------------------------------------------
+// the step 4 port defects (docs/motormind/step4-diagnosis.md), on arm B's recorded traces
+// (fixtures/motormind/step4-traces.json: bjb2 .local/runs/mm-step4/base-B, M2 @92ce66a58)
+
+const S4 = read("step4-traces.json");
+const S4_CARRY = (frozen: number) => ({
+	payload: { edge: false, bumped: false, tracking: false },
+	target: "akita black bowl",
+	same: { unshoved: true, faces: { faces: [] }, emptyCloses: [], frozen },
+});
+
+test("executor: step 4 defect 1 — an inherited frozen count freezes only a bare claim, never a cycle that moved; the carry passes this subgoal's count alone", async () => {
+	// spatial t0 s0, pick_akita_bowl attempt 2 cycle 0: the cycle moved 7.2 mm (forward 10 → 7.2 along), yet B
+	// ended it "frozen: " (no reason) on the two frozen cycles inherited from attempt 1; three later attempts on
+	// the same words died the same way after moving 112, 143 and 190 mm.
+	const c = S4.spatial_t0_s0.a2_c0_forward_10;
+	assert.equal(c.stopped_by, "frozen: ");
+	assert.ok(c.segments.reduce((s: number, st: SegmentReport) => s + st.moved_mm, 0) >= 7);
+	const far = S4.spatial_t0_s0.top_a1_c0_moved_190;
+	assert.equal(far.stopped_by, "frozen: ");
+	assert.ok(far.segments.reduce((s: number, st: SegmentReport) => s + st.moved_mm, 0) >= 190);
+	const forward = {
+		assessment: "",
+		done: false,
+		command: { actions: [{ type: "move", direction: "forward", distance_mm: 10 }] },
+		expect: "",
+		confidence: 0.8,
+	};
+	const lastAndDone = {
+		assessment: "",
+		done: true,
+		command: { actions: [{ type: "move", direction: "left", distance_mm: 20 }] },
+		expect: "",
+		confidence: 0.8,
+	};
+	const m = scripted({ executor: [forward, lastAndDone] });
+	const robot = fakeRobot();
+	const cache: FrameCache = { stale: true };
+	const run = await drive(runSubgoal(input({ ask: m.ask, cache, carry: S4_CARRY(2) as never })), robot, cache);
+	assert.equal(run.ending, "DONE_AFTER_LAST", run.ending_text);
+	assert.equal(run.cycles.length, 2);
+	assert.equal(run.cycles[0].stopped_by, undefined);
+	// The carry passes this subgoal's own count (0 after two cycles that moved), not the sum.
+	assert.equal((run.carry as Json).same.frozen, 0);
+	// A bare claim after no motion still reads the inherited count (spec-executor §7.2 step 11).
+	const claim = { assessment: "", done: true, command: null, expect: "", confidence: 0.9 };
+	const m2 = scripted({ executor: [claim] });
+	const robot2 = fakeRobot();
+	const cache2: FrameCache = { stale: true };
+	const run2 = await drive(runSubgoal(input({ ask: m2.ask, cache: cache2, carry: S4_CARRY(1) as never })), robot2, cache2);
+	assert.equal(run2.ending, "FROZEN");
+	assert.match(run2.cycles[0].stopped_by ?? "", /before this claim/);
+});
