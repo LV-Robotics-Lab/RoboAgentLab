@@ -23,6 +23,11 @@
  * tools are cleared and a non-UI run exits 1. Compaction is cancelled while this provider plays
  * (`session_before_compact`). agent_end aborts the in-flight role calls and writes `motormind_end`;
  * the mode's result block takes the mission's state (`result()`).
+ *
+ * A turn pi aborts (`--time-limit`, the user) cuts off the role call in flight, which the executor
+ * and the mission can only read as an error; that is not the episode's ending (DESIGN §7.3), so
+ * `result()` then leaves `status` to the mode's mapping of the ending (timeout, cancelled) and keeps
+ * the mission's own view under `aborted`.
  */
 
 import {
@@ -202,6 +207,8 @@ export function motormindProvider(
 		reissue?: MmCall;
 		end?: MissionEnd;
 		finished: boolean;
+		/** pi aborted a turn (--time-limit, the user): the mission's state after it is not the episode's ending. */
+		aborted?: boolean;
 		episode: AbortController;
 	};
 	let run: Run | undefined;
@@ -277,6 +284,7 @@ export function motormindProvider(
 			ended_on: run.end?.ended_on ?? run.mission.state().ended_on ?? null,
 			turns: run.turns,
 			finished: run.finished,
+			aborted: run.aborted === true,
 			calls: run.calls.length,
 		});
 	});
@@ -436,12 +444,16 @@ export function motormindProvider(
 			const why = err instanceof Error ? err.message : String(err);
 			r.end = { status: "error", ended_on: "mission_threw", summary: why };
 			r.finished = true;
+			if (options?.signal?.aborted) r.aborted = true;
 			return fail(`motormind: ${why}`, options?.signal?.aborted === true);
 		}
 		r.setSignal(undefined);
 		handle?.setDeadline(r.clock.deadline_at);
 		const calls = r.calls.slice(before);
-		if (options?.signal?.aborted) return fail("aborted", true);
+		if (options?.signal?.aborted) {
+			r.aborted = true;
+			return fail("aborted", true);
+		}
 		if (next.done) {
 			r.end = next.value;
 			r.finished = true;
@@ -512,7 +524,12 @@ export function motormindProvider(
 		result: (): Json => {
 			const s: MissionState | undefined = run?.mission.state();
 			return {
-				...(s?.status ? { status: s.status, ended_on: s.ended_on } : {}),
+				// a turn pi aborted: the mission's state is what the cut-off left, not the ending (the mode maps that)
+				...(run?.aborted
+					? { ended_on: "aborted", aborted: { status: s?.status ?? null, ended_on: s?.ended_on ?? null } }
+					: s?.status
+						? { status: s.status, ended_on: s.ended_on }
+						: {}),
 				models: {
 					configured: run?.models ?? roleModels(base, String(pi.getFlag("mm-role-models") ?? "")),
 					answered: [...(run?.answered ?? [])],

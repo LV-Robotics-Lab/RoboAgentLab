@@ -41,7 +41,6 @@ import { EvidenceLog, renderLine } from "../src/modes/motormind/evidence.ts";
 import { type Caps, MOTORMIND_EVENT, type MotorMindHandle, type Observation } from "../src/modes/motormind/index.ts";
 import { runMission } from "../src/modes/motormind/mission.ts";
 import { faithfulPayload, MAX_TOKENS, makeAsk, parseRoleJson, roleModels } from "../src/modes/motormind/models.ts";
-import { PROMPT_NAMES, promptFile, promptHashes } from "../src/modes/motormind/prompts.ts";
 import {
 	boxFault,
 	complaints,
@@ -54,6 +53,7 @@ import {
 	wantsHolding,
 	wantsRelease,
 } from "../src/modes/motormind/planner.ts";
+import { PROMPT_NAMES, promptFile, promptHashes } from "../src/modes/motormind/prompts.ts";
 import {
 	classify,
 	END_ENTRY,
@@ -1640,6 +1640,27 @@ test("provider: one tool call per turn; the same result twice advances the missi
 	assert.ok((res.prompts as Json).plan, "the plan prompt's hash");
 	await f.emit("agent_end", { messages: [] });
 	assert.equal(f.entries.filter((e) => e.type === END_ENTRY).length, 1);
+});
+
+test("provider: a turn pi aborts (--time-limit) leaves status to the mode's mapping and keeps the mission's view under aborted", async () => {
+	const f = fakeProvider({ replies: (role) => (role === "plan" ? PLAN : DONE) });
+	assert.ok(f.prov);
+	await f.emit("session_start");
+	const m1 = await f.turn([USER]);
+	assert.equal(callOf(m1).name, "mm_observe");
+	// pi's deadline fires while the planner is asked: the role call aborts, the executor cannot run
+	const ac = new AbortController();
+	ac.abort();
+	const m2 = await f.turn([USER, m1, f.resultFor(m1, { obs_id: 1 })], ac.signal);
+	assert.equal(m2.stopReason, "aborted");
+	assert.equal(m2.content.filter((c) => c.type === "toolCall").length, 0, "the cut-off turn carries no call");
+	const res = f.prov.result();
+	assert.equal(res.status, undefined, "the mode's ending (timeout) decides, not the cut-off mission");
+	assert.equal(res.ended_on, "aborted");
+	assert.equal(typeof (res.aborted as Json).status, "string", "the mission's own view is kept");
+	await f.emit("agent_end", { messages: [] });
+	const end = f.entries.find((e) => e.type === END_ENTRY)!;
+	assert.equal((end.data as Json).aborted, true);
 });
 
 test("provider: a closed-loop refusal is reconciled with mm_observe and the refused call reissued; the mission ends in finish", async () => {
