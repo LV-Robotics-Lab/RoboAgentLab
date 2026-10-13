@@ -1880,11 +1880,22 @@ test("executor: step 4 defect 8 — a close that holds tracks the payload whatev
 		detail: { opening_mm: 7.6 },
 		grasp: { holding: true, reason: "", opening_mm: 7.6 },
 	};
-	const pose: Pose = { position_m: [0.6, 0.2, 0.02], rotation: RIG.grip_xmat_world };
+	// The bowl (138 mm across, measured) is held by its -x rim: the jaws close along x on this rig, the tool stands
+	// 52 mm from the middle. Its middle hangs 138/2 - (17/2 + 12) = 48.5 mm from the tool toward +x, not "unknown"
+	// (the shoved test reads the thing's half width, 69 mm, not the 7.6 mm gap).
+	s.footprint = [
+		[0.6 - 0.069, 0.2, 0],
+		[0.6 + 0.069, 0.2, 0],
+	];
+	const pose: Pose = { position_m: [0.6 - 0.052, 0.2, 0.02], rotation: RIG.grip_xmat_world };
+	const line = jawLine(pose);
 	noteGrasped(s, rim, CAPS, pose, true);
 	assert.equal(s.payload.tracking, true);
 	assert.equal(s.payload.width_mm, 7.6);
 	assert.equal(s.payload.edge, true);
+	assert.ok(s.payload.offset, "the middle's offset is known");
+	close(dot(s.payload.offset as Vec3, line) * 1000 * Math.sign(dot([0.052, 0, 0], line)), 48.5, 1e-9, "48.5 mm toward the middle");
+	close(s.payload.span_mm as number, 138, 1e-9);
 	assert.equal(s.located, undefined, "the thing left where it was");
 	// The receiver's words come from the criterion of the carry step, now that something is held.
 	assert.equal(receiverWords("The akita black bowl is over the plate and the robot still reports holding it.", "move the gripper sideways until the bowl is over the plate", "akita black bowl"), "plate");

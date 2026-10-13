@@ -720,10 +720,14 @@ export function noteGrasped(s: SubgoalState, step: SegmentReport, caps: Caps, po
 		const m = centreMiss(s, pose);
 		const line = jawLine(pose);
 		const along = m ? dot(m, line) : 0;
-		if (width !== undefined && Math.abs(along) * 1000 > width / 2 + MIN_CLOSE_TOLERANCE_MM) offset = null;
+		// A middle further off than the THING's half width (its outline, not the gap a wall grip settles at) plus the
+		// error a location carries was shoved before the close: where it hangs is unknown. Of a thing wider than
+		// the jaws the middle is half its width in from where the jaws aim, less half a pad (and the outline pad).
+		const half = (span ?? width ?? 0) / 2;
+		if (Math.abs(along) * 1000 > half + MIN_CLOSE_TOLERANCE_MM) offset = null;
 		else if (widerThanJaws(s, caps) && measured !== undefined) {
-			const inset = (measured / 2 - padMm(caps)) / 1000;
-			offset = scale(line, Math.sign(along || 1) * inset);
+			const inset = (measured / 2 - (padMm(caps) / 2 + (s.footprintIsPart ? 0 : OUTLINE_EDGE_PAD_MM))) / 1000;
+			offset = scale(line, Math.sign(along || 1) * Math.max(0, inset));
 		} else offset = scale(line, along);
 	}
 	// The payload is tracked from the close that holds, whatever the gap (the original's "placing" is the
