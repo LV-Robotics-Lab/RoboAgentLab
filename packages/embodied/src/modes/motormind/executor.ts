@@ -383,6 +383,8 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		if (splitACarry(deltas, s, caps)) mended.push("the carry was split into legs");
 		for (const m of mended) onEvent({ type: "mended", what: m });
 		const batch = { actions: deltas.length, ran: 0, motion_s: 0 } as NonNullable<Cycle["batch"]>;
+		// The watcher judges only frames newer than the one before the batch (spec-executor P6).
+		judgedUpTo = Math.max(judgedUpTo, batchStartFrame.frame_clock_s);
 		cycle.batch = batch;
 		let stopped: { at: number; reason: string } | undefined;
 		let ended: { ending: Ending; error?: string } | undefined;
@@ -624,7 +626,6 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 				}
 			}
 		}
-		judgedUpTo = Math.max(judgedUpTo, batchStartFrame.frame_clock_s);
 		s.lastFinding = cycle.finding;
 		s.lastFirstMove = deltas.find((d) => d.kind === "translate");
 		if (stopped) cycle.stopped_by = stopped.reason;
