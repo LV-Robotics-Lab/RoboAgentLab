@@ -44,6 +44,7 @@ import { faithfulPayload, MAX_TOKENS, makeAsk, parseRoleJson, roleModels } from 
 import {
 	boxFault,
 	complaints,
+	acts,
 	envelope,
 	gaveUp,
 	gripperOnly,
@@ -1857,4 +1858,111 @@ test("mission: step 4 defect 3 — a cycle's own error (no acceptable proposal, 
 	});
 	const r2 = await drive(m2, c2, () => ({ ok: true, frame: open, episode_over: false }));
 	assert.deepEqual([r2.end.status, r2.end.ended_on], ["error", "executor_error"]);
+});
+
+test("planner: step 4 defect 5 — the prompts carry the step vocabulary; a six-step pick-and-place in its shape is accepted whole, no step gripper-only", async () => {
+	// Base-B first plans had 2, 3 or 5 steps on 16 of 40 cells (the original: 6 on all 40); the two-step
+	// plans ("pick it", "place it") lost the hover step and descended 236 mm in one go.
+	const f = frame(GOAL.C6.blocked);
+	const bowl = "akita black bowl, the dark patterned bowl standing between the plate and the ramekin";
+	const boxes = { scene: [420, 380, 560, 520], side: [300, 400, 420, 520] };
+	const six = [
+		{
+			name: "over_bowl",
+			subgoal: `open the jaws, move the gripper over the ${bowl} and lower it until it hovers about a palm's height above the bowl, jaws still open`,
+			criterion: "The akita black bowl sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
+			max_cycles: 5,
+		},
+		{
+			name: "take_bowl",
+			subgoal: "descend the rest of the way until the jaws are level with the rim of the akita black bowl, with it between them, and close",
+			criterion: "The robot reports that it is HOLDING the akita black bowl.",
+			max_cycles: 8,
+		},
+		{
+			name: "lift_bowl",
+			subgoal: "raise the gripper straight up by about 15 cm without letting go of the akita black bowl",
+			criterion: "The tool has risen at least 120 mm since this step began and the robot still reports holding the akita black bowl.",
+			max_cycles: 5,
+		},
+		{
+			name: "carry_bowl",
+			subgoal: "move the gripper sideways at this height until the akita black bowl is over the plate, still holding it",
+			criterion: "The akita black bowl is over the plate and the robot still reports holding it.",
+			max_cycles: 10,
+		},
+		{
+			name: "put_bowl",
+			subgoal: "lower the gripper until the akita black bowl is just above the plate, then open the jaws to let it go",
+			criterion: "The jaws are open and the akita black bowl rests on the plate, its middle over the middle of the plate.",
+			max_cycles: 6,
+		},
+		{
+			name: "retreat",
+			subgoal: "raise the gripper straight up by about 15 cm",
+			criterion: "The tool has risen at least 120 mm since this step began.",
+			max_cycles: 5,
+		},
+	].map((s, i) => ({ ...s, target: i === 5 ? "" : bowl, target_boxes: i === 5 ? {} : boxes, clause: i === 5 ? -1 : 0 }));
+	const { ask, calls } = scriptedAsk({
+		planner: [{ clauses: ["the akita black bowl is on the plate"], rationale: "two black bowls; the one between the plate and the ramekin", subgoals: six }],
+	});
+	const out = await plan(ask, {
+		task: "pick up the black bowl between the plate and the ramekin and place it on the plate",
+		frame: f,
+		robotText: "R",
+		capabilities: "C",
+		legend: "L",
+		budget: 10,
+	});
+	assert.ok(out.plan, out.error);
+	assert.equal(calls.length, 1, "accepted at the first try: no complaint, no re-ask");
+	assert.deepEqual(out.reasks, {});
+	assert.deepEqual(
+		out.plan.subgoals.map((s) => s.name),
+		["over_bowl", "take_bowl", "lift_bowl", "carry_bowl", "put_bowl", "retreat"],
+	);
+	assert.deepEqual(
+		out.plan.subgoals.map((s) => s.max_cycles),
+		[5, 8, 5, 10, 6, 5],
+	);
+	// Every step moves the arm (none is read as jaws-only), and the words class them as the executor expects.
+	assert.deepEqual(
+		out.plan.subgoals.map((s) => s.gripper_only),
+		[false, false, false, false, false, false],
+	);
+	assert.deepEqual(
+		out.plan.subgoals.map((s) => wantsHolding(s.criterion)),
+		[false, true, true, true, false, false],
+	);
+	assert.deepEqual(
+		out.plan.subgoals.map((s) => wantsRelease(s.criterion)),
+		[false, false, false, false, true, false],
+	);
+	// The take, carry and put-down act on the object (so clause 0 is acted on, not only looked at); the hover moves
+	// the gripper over it; a lift and a retreat that raise the arm act on nothing, as in the original.
+	assert.deepEqual(
+		out.plan.subgoals.map((s) => acts(s)),
+		[true, true, false, true, true, false],
+	);
+	assert.ok(out.plan.subgoals.slice(0, 5).every((s) => s.target === bowl && Object.keys(s.target_boxes).length === 2));
+	// The prompt carries the vocabulary: the hover step a palm above the object, six steps per object, the kinds.
+	const text = `${calls[0].prompt.system}\n${calls[0].prompt.text}`;
+	assert.match(text, /hover over it/);
+	assert.match(text, /palm's height above the object/);
+	assert.match(text, /SIX steps per object/);
+	assert.match(text, /take it .*lift it .*carry it .*put it down .*retreat/s);
+	assert.match(text, /take from the side/);
+	assert.match(text, /look from higher up/);
+	assert.match(text, /Never two steps per object/);
+	// Every slot of both prompt files is one the planner fills; none is left in the text it sends.
+	const slots = (name: "plan" | "replan") => [...promptFile(name).text.matchAll(/\{([a-z_]+)\}/g)].map((m) => m[1]);
+	const common = ["task", "robot", "capabilities", "cameras", "legend", "budget", "soft", "max_subgoals", "fixed"];
+	assert.deepEqual([...new Set(slots("plan"))].sort(), [...common].sort());
+	assert.deepEqual(
+		[...new Set(slots("replan"))].sort(),
+		[...common, "clauses", "plan", "trigger", "unmet", "note", "done_names", "extras"].sort(),
+	);
+	assert.doesNotMatch(calls[0].prompt.text, /\{[a-z_]+\}/);
+	assert.doesNotMatch(calls[0].prompt.system, /\{[a-z_]+\}/);
 });
