@@ -46,6 +46,7 @@ import {
 	noMotion,
 	noteEmptyClose,
 	noteGrasped,
+	partOf,
 	quarterTurnForReach,
 	receiverWords,
 	residualOf,
@@ -56,7 +57,7 @@ import {
 	widerThanJaws,
 } from "../src/modes/motormind/gates.ts";
 import { boxOnPlane, planeErrorMm, project, toPixels, triangulate } from "../src/modes/motormind/geometry.ts";
-import { locate, namesAPart, parseLocateReply } from "../src/modes/motormind/locate.ts";
+import { aPartWord, locate, namesAPart, parseLocateReply } from "../src/modes/motormind/locate.ts";
 import { firstMoveIsATest, liftBeforeSideways, splitACarry } from "../src/modes/motormind/mend.ts";
 import { ClearanceTracker, legend, TopFace } from "../src/modes/motormind/observe.ts";
 import {
@@ -2048,4 +2049,27 @@ test("executor: round 2 defect 4 — a descent pressing through contact is not a
 		elapsed_s: 0.2,
 	} as SegmentReport;
 	assert.equal(shoved([skid], [], 10), true);
+});
+
+// ---------------------------------------------------------------------------
+// the step 4 round 3 defects (docs/motormind/step4-diagnosis-3.md), on arm B3's recorded traces
+// (fixtures/motormind/step4-diag3.json: bjb2 .local/runs/mm-step4/base-B3, main @fe7fe9bf0)
+
+const D3 = read("step4-diag3.json");
+
+test("executor: round 3 defect 1 — the part a take step names is a word of the part vocabulary owned by the target; 'the rest of the way' and 'the part of the box' name no part, and locate ignores a part word outside the vocabulary", () => {
+	for (const c of D3.part_words.cases as Json[]) {
+		assert.equal(partOf(c.subgoal, c.target), c.want ?? undefined, `${c.cell}: "${c.subgoal}"`);
+	}
+	// The three B3 take sentences all gave "rest" before: a part that does not exist, every look down the part branch.
+	assert.equal((D3.part_words.cases as Json[]).filter((c) => c.old === "rest").length, 4);
+	// The vocabulary: a side or top part, singular, else nothing.
+	assert.equal(aPartWord("handles"), "handle");
+	assert.equal(aPartWord("Lid"), "lid");
+	assert.equal(aPartWord("rest"), undefined);
+	assert.equal(aPartWord("way"), undefined);
+	assert.equal(aPartWord("middle"), undefined);
+	// A compound head still reads as a part ("the mug handle"); a bare object does not.
+	assert.equal(namesAPart("the chocolate pudding box"), undefined);
+	assert.equal(namesAPart("top of the dark brown drawer unit"), "top");
 });

@@ -1,0 +1,57 @@
+{
+	"_source": "bjb2 .local/runs/mm-step4/base-B3 (main @fe7fe9bf0), the session JSONL's custom entries (motormind_plan / motormind_verdict / motormind_cycle) transcribed by .local/runs/mm-step4/diag3/cells/*.txt; arm A (the original, .local/runs/mm-orig/base-nomon-nomem) for the side take and the turn criterion (step4-diagnosis-3.md)",
+	"part_words": {
+		"_note": "round 3 defect 1: the vocabulary's take sentence 'descend the rest of the way … the part of <object>' gave partOf() the part 'rest' (the old 'X of Y' regex took the first match); every take look then went down the part branch and came back doubtful",
+		"cases": [
+			{
+				"cell": "object t8_s1 take_pudding",
+				"subgoal": "Descend the rest of the way until the jaws are level with the part of the chocolate pudding box to be squeezed, with it between them, and close.",
+				"target": "the chocolate pudding box",
+				"old": "rest",
+				"want": null
+			},
+			{
+				"cell": "goal t7_s0 take_knob",
+				"subgoal": "descend the rest of the way until the jaws are level with the part of the black stove knob to be squeezed, with it between them, and close.",
+				"target": "the black stove knob",
+				"old": "rest",
+				"want": null
+			},
+			{
+				"cell": "object t7_s1 take_milk",
+				"subgoal": "Descend the rest of the way until the jaws are level with the part of the red and white milk carton to be squeezed, with it between them, and close.",
+				"target": "the red and white milk carton on the left side of the table",
+				"old": "rest",
+				"want": null
+			},
+			{
+				"cell": "goal t4_s0 take_bowl",
+				"subgoal": "descend the rest of the way until the jaws are level with the rim of the silver patterned bowl, with it between them, and close",
+				"target": "the silver patterned bowl",
+				"old": "rest",
+				"want": "rim"
+			},
+			{
+				"cell": "goal t0_s1 grasp_middle_handle",
+				"subgoal": "Move the gripper to the middle handle of the dark cabinet, aligning the open jaws with the handle, and close them.",
+				"target": "the middle handle of the dark cabinet",
+				"old": null,
+				"want": "handle"
+			},
+			{
+				"cell": "goal t0_s0 take_middle_handle",
+				"subgoal": "Move the gripper to the middle drawer handle of the dark cabinet, approach it from the side so the jaws are parallel to the handle, and close the jaws to grasp it.",
+				"target": "the middle drawer handle of the dark cabinet",
+				"old": "handle",
+				"want": "handle"
+			},
+			{
+				"cell": "a part of something else is where the thing stands",
+				"subgoal": "move the jaws over the bowl on the edge of the table and close",
+				"target": "the black bowl",
+				"old": "edge",
+				"want": null
+			}
+		]
+	}
+}

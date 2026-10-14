@@ -14,9 +14,10 @@ import type { Box, CameraName, Frame, SegmentReport } from "./contract.ts";
 import { approach, jawsDown } from "./contract.ts";
 import { add, apply, dot, matmul, norm, ROTATION, rotationAbout, sayOffset, scale, sub, unit } from "./frames.ts";
 import { apartXy, longestAcross } from "./geometry.ts";
+import { aPartWord } from "./locate.ts";
 import type { ClearanceRead } from "./observe.ts";
 import type { Caps, Delta, Pose, Vec3 } from "./types.ts";
-import { stripPlace } from "./words.ts";
+import { objectHead, stripPlace } from "./words.ts";
 
 // constants (spec-executor §18)
 export const DOWN_WITHIN_DEG = 45;
@@ -171,12 +172,46 @@ export function aboutLettingGo(s: string): boolean {
 /** The step acts on what it names (a part is sought): it wants to hold, or has turn / twist / rotate / press. */
 export const actsOnWhatItNames = (subgoal: string, criterion: string, target = "") =>
 	wantsHolding(criterion, target) || phrase(subgoal, TURN_WORDS) || phrase(criterion, TURN_WORDS);
-/** The part named as "X of <target>" in the subgoal sentence. */
+/** Modifiers that say which part, not what the thing is ("the near side", "the top drawer"). */
+const PART_MODIFIERS = new Set([
+	"near",
+	"far",
+	"front",
+	"back",
+	"left",
+	"right",
+	"top",
+	"bottom",
+	"upper",
+	"lower",
+	"outer",
+	"inner",
+]);
+const PART_ARTICLES = new Set(["the", "a", "an", "its", "this", "that"]);
+const stem = (w: string) => w.replace(/s$/, "");
+/**
+ * The part the step says the jaws close on, as "<part> of <the target>" in its sentence: a word of the
+ * part vocabulary (locate's side and top parts, the edge parts) followed by "of", whose owner (the next
+ * eight words) names the target's head noun. Round 3 defect 1: the vocabulary's "descend the REST of
+ * the way … the PART of the box" matched the old "X of Y" regex as the part "rest", and every take step
+ * then located a part that does not exist (102 of 134 take looks doubtful). "rest", "part", "way" and
+ * "middle" are not parts; a part OF something else is where the thing stands, not its part.
+ */
 export function partOf(subgoal: string, target: string): string | undefined {
-	const m = /\b(the\s+)?([a-z]+(?:\s+[a-z]+)?)\s+of\s+(?:the\s+)?([a-z][a-z ]*)/i.exec(subgoal);
-	if (!m) return undefined;
-	const head = m[3].toLowerCase();
-	if (!target || head.includes(target.toLowerCase().split(/\s+/)[0] ?? "")) return m[2].toLowerCase();
+	const said = tokens(subgoal);
+	const head = new Set(
+		tokens(objectHead(target))
+			.filter((w) => w.length > 2 && !PART_ARTICLES.has(w) && !PART_MODIFIERS.has(w))
+			.map(stem),
+	);
+	for (let i = 0; i + 1 < said.length; i++) {
+		if (said[i + 1] !== "of") continue;
+		const part = aPartWord(said[i]) ?? (EDGE_PART_WORDS.includes(stem(said[i])) ? stem(said[i]) : undefined);
+		if (!part) continue;
+		const whose = new Set(said.slice(i + 2, i + 10).map(stem));
+		if (head.size && ![...head].some((w) => whose.has(w))) continue;
+		return part;
+	}
 	return undefined;
 }
 /**

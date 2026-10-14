@@ -138,6 +138,14 @@ export function namesAPart(words: string): string | undefined {
 	return undefined;
 }
 export const isTopPart = (part: string) => TOP_PARTS.includes(part);
+/**
+ * The word as one of the parts, singular ("handles" → "handle"), or undefined when it names no part
+ * (round 3 defect 1: "rest", "part", "way" and "middle" are not parts, whatever precedes "of").
+ */
+export function aPartWord(word: string): string | undefined {
+	const stem = word.toLowerCase().replace(/[,.']/g, "").replace(/s$/, "");
+	return [...SIDE_PARTS, ...TOP_PARTS].find((p) => p.replace(/s$/, "") === stem);
+}
 
 /**
  * The words say the thing is held up by something: on, in, inside, atop, upon or within, followed
@@ -435,7 +443,8 @@ export async function locate(o: LocateInput): Promise<Located> {
 		out.error = "no fixed view has an image and its calibration: a pixel cannot be turned into a position";
 		return out;
 	}
-	if (o.part !== false) out.part = o.part_word ?? namesAPart(o.words);
+	// A given part word that is not in the part vocabulary is no part: the words are read instead.
+	if (o.part !== false) out.part = (o.part_word && aPartWord(o.part_word)) || namesAPart(o.words);
 	const tableZ = o.table_z_m;
 	const closeIn = tableZ !== null && (o.tool_z_m - (o.top_z_m ?? tableZ)) * 1000 < WRIST_USEFUL_BELOW_MM;
 
