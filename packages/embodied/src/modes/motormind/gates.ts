@@ -977,6 +977,15 @@ export function payloadMet(steps: SegmentReport[], before: boolean, holding: boo
 	return met || (before && !rose);
 }
 
+/**
+ * How an action ended: its last segment that ran. The segments after one that stopped short are reported
+ * `skipped` (the original never runs them, and judges the batch on the one that stopped): judged on the
+ * skipped one, a contact push or a limited descent ended the batch, and the close written after it in the
+ * same reply never ran (smoke 11, goal t0 s1: a side take's push met the handle five times, no close).
+ */
+export const actionOutcome = (steps: SegmentReport[]): SegmentReport | undefined =>
+	[...steps].reverse().find((st) => st.outcome !== "skipped") ?? steps.at(-1);
+
 /** Dragging: holding, jaws not horizontal, and a sideways move was blocked. */
 export const dragging = (step: SegmentReport, frame: Frame, caps: Caps) =>
 	frame.grasp.holding === true &&

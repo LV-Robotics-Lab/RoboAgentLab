@@ -35,6 +35,7 @@ import {
 import { actArgs, runSubgoal } from "../src/modes/motormind/executor.ts";
 import { apply, dot, IDENTITY, labelDirection, matmul, sub, transpose, unit } from "../src/modes/motormind/frames.ts";
 import {
+	actionOutcome,
 	actsOnWhatItNames,
 	aimPoint,
 	centreMiss,
@@ -2676,4 +2677,37 @@ test("executor: smoke 10 (goal t7 s0) — holding what a turn step turns, the to
 		whereTheToolIs(s, open, CAPS, 41, TABLE_Z + 0.041, "the wrist's median of the faces it saw", read),
 		/below the top face/,
 	);
+});
+
+test("executor: smoke 11 (goal t0 s1) — an action is judged on its last segment that ran, not on the skipped ones after a contact", () => {
+	const seg = (label: string, outcome: SegmentReport["outcome"], abort?: "blocked"): SegmentReport => ({
+		label,
+		kind: "translate",
+		outcome,
+		...(abort ? { abort_reason: abort } : {}),
+		moved_mm: outcome === "skipped" ? 0 : 30,
+		along_axis_mm: outcome === "skipped" ? 0 : 29,
+		lateral_mm: 2,
+		turned_deg: 0.1,
+		ticks: outcome === "skipped" ? 0 : 20,
+		elapsed_s: outcome === "skipped" ? 0 : 0.4,
+	});
+	// The recorded push: [1/3] done, [2/3] contact (blocked), [3/3] skipped; the close after it must run.
+	const push = [
+		seg("move right 124.0 mm (base) [1/3]", "done"),
+		seg("move right 124.0 mm (base) [2/3]", "contact", "blocked"),
+		seg("move right 124.0 mm (base) [3/3]", "skipped"),
+	];
+	assert.equal(actionOutcome(push)?.outcome, "contact");
+	assert.equal(
+		actionOutcome([
+			seg("move down 137.0 mm (base) [1/3]", "limited", "blocked"),
+			seg("[2/3]", "skipped"),
+			seg("[3/3]", "skipped"),
+		])?.outcome,
+		"limited",
+	);
+	// Nothing ran (all skipped by a cancel): the skipped one stands, and the batch stops.
+	assert.equal(actionOutcome([seg("[1/2]", "skipped"), seg("[2/2]", "skipped")])?.outcome, "skipped");
+	assert.equal(actionOutcome([]), undefined);
 });

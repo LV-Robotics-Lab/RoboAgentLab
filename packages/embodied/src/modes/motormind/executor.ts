@@ -37,6 +37,7 @@ import {
 import { norm, sub } from "./frames.ts";
 import {
 	aboutLettingGo,
+	actionOutcome,
 	actsOnWhatItNames,
 	arrived,
 	chainGates,
@@ -584,7 +585,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 				cancelledMid = true;
 				break;
 			}
-			const last = steps.at(-1);
+			const last = actionOutcome(steps);
 			if (last && (dragging(last, frame, caps) || !["done", "limited", "contact"].includes(last.outcome))) {
 				stopped = {
 					at: i,
