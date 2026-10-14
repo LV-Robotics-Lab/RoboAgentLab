@@ -120,5 +120,42 @@
 				28
 			]
 		}
+	},
+	"wrist_relook_override": {
+		"_note": "round 3 defect 3, object t8_s1: the hover step located the pudding box at [473,-244,-21] (10 mm bar, two views) and the take step carried it; take_pudding#1 c2's wrist re-look before the close read a 'part' (defect 1) and came back doubtful on the table at [494,-241,1] 58 mm wide, which replaced the point (wrist-only = override); take_pudding#2 c1's re-look read [483,79,191], 20 mm bar, doubtful, 320 mm off, replaced it again, and the model copied '320 mm LEFT' into a move",
+		"target": "the chocolate pudding box",
+		"kept": {
+			"point_mm": [
+				473,
+				-244,
+				-21
+			],
+			"error_mm": 10,
+			"doubtful": false,
+			"method": "scene and side met 4 mm apart at the contact edge"
+		},
+		"wrist_answers": [
+			{
+				"cycle": "take_pudding#1 c2",
+				"point_mm": [
+					494,
+					-241,
+					1
+				],
+				"error_mm": 58,
+				"doubtful": true
+			},
+			{
+				"cycle": "take_pudding#2 c1",
+				"point_mm": [
+					483,
+					79,
+					191
+				],
+				"error_mm": 20,
+				"doubtful": true
+			}
+		],
+		"model_move_after": "move left 320.0 mm (base)"
 	}
 }

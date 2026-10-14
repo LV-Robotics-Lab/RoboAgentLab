@@ -54,6 +54,7 @@ import {
 	residualOf,
 	shoved,
 	stoppedAlongTheJaws,
+	takesOver,
 	wantsHolding,
 	wantsRelease,
 	whereTheTargetIs,
@@ -2173,4 +2174,50 @@ test("executor: round 3 defect 2 — a descent that met the thing last cycle let
 	keepBlockedAxes(s2, [right, downDone], true);
 	assert.deepEqual(s2.blockedAxes, [[0, -1, 0]]);
 	assert.deepEqual(t.refusals_per_suite.B3, [77, 60, 28]);
+});
+
+test("executor: round 3 defect 3 — a wrist-only look is an answer under the sticky rule, not an override: the doubtful part read 320 mm off does not replace the carried point", () => {
+	const t = D3.wrist_relook_override;
+	const mm = (p: number[]): Vec3 => [p[0] / 1000, p[1] / 1000, p[2] / 1000];
+	const kept = () => ({
+		words: t.target,
+		point: mm(t.kept.point_mm),
+		method: t.kept.method,
+		error_mm: t.kept.error_mm,
+		error_class: "",
+		on_face: false,
+		doubtful: t.kept.doubtful,
+		cameras: ["scene", "side"] as CameraName[],
+	});
+	const old = kept();
+	for (const a of t.wrist_answers as Json[]) {
+		const r = takesOver(
+			old,
+			{ point: mm(a.point_mm), error_mm: a.error_mm, doubtful: a.doubtful, method: "wrist alone" },
+			false,
+		);
+		assert.deepEqual(r.point, old.point, a.cycle);
+		assert.ok(r.jumped !== undefined && r.jumped > 1, a.cycle);
+		assert.match(r.method, /was not taken/);
+	}
+	// The second answer was 320 mm from the kept point: what the model was told to move.
+	const far = t.wrist_answers[1];
+	assert.ok(Math.hypot(far.point_mm[0] - t.kept.point_mm[0], far.point_mm[1] - t.kept.point_mm[1]) > 300);
+	assert.equal(t.model_move_after, "move left 320.0 mm (base)");
+	// A confident wrist answer with a bar no wider is taken (the pre-descent follow still works); a doubtful one with a
+	// narrower bar is not, until a second look confirms it; an empty close aimed from the kept point lets a near answer in.
+	const near: Vec3 = [0.476, -0.246, -0.021];
+	assert.deepEqual(takesOver(kept(), { point: near, error_mm: 8, doubtful: false, method: "w" }, false).point, near);
+	const o2 = kept();
+	const doubtfulNear = takesOver(o2, { point: near, error_mm: 8, doubtful: true, method: "w" }, false);
+	assert.deepEqual(doubtfulNear.point, o2.point);
+	assert.match(doubtfulNear.method, /doubtful bar/);
+	assert.deepEqual(takesOver(o2, { point: near, error_mm: 8, doubtful: true, method: "w" }, false).point, near);
+	const o3 = kept();
+	const wideButNear = takesOver(o3, { point: near, error_mm: 40, doubtful: false, method: "w" }, true);
+	assert.deepEqual(wideButNear.point, near);
+	assert.deepEqual(
+		takesOver(undefined, { point: near, error_mm: 40, doubtful: true, method: "w" }, false).point,
+		near,
+	);
 });

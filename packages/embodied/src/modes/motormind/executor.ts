@@ -72,6 +72,7 @@ import {
 	sideTakeBlock,
 	sinceLastFrame,
 	sinceStart,
+	takesOver,
 	whereTheTargetIs,
 	whereTheToolIs,
 } from "./gates.ts";
@@ -886,21 +887,18 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		}
 		// The sticky rule (spec-locate §8.3): the point kept under these words, a carried one included (the
 		// original keys it on the words, so a retry on the same object cannot be sent to a look-alike by
-		// one wide-barred answer: spatial t0 s0 drove 160 mm to the other bowl twice).
+		// one wide-barred answer: spatial t0 s0 drove 160 mm to the other bowl twice). A wrist-only look is an
+		// answer like any other (round 3 defect 3), not an override.
 		const old = s.located && s.located.words === words ? s.located : undefined;
 		const emptyNear = old ? s.emptyCloses.some((p) => apartXy(p, old.point) * 1000 <= old.error_mm) : false;
-		const override = o.wristOnly || (emptyNear && old && apartXy(point, old.point) * 1000 <= old.error_mm);
-		let method = located.method;
-		let jumped: number | undefined;
-		if (old && !override) {
-			const confirms = old.waiting && apartXy(point, old.waiting) * 1000 <= Math.max(located.error_mm ?? 0, 1);
-			if (!((located.error_mm ?? Infinity) <= old.error_mm || confirms)) {
-				jumped = apartXy(point, old.point) * 1000;
-				old.waiting = point;
-				method = `${old.method}; a new answer ${Math.round(jumped)} mm away with a wider bar (${Math.round(located.error_mm ?? 0)} vs ${Math.round(old.error_mm)} mm) was not taken`;
-				point = old.point;
-			}
-		}
+		const taken = takesOver(
+			old,
+			{ point, error_mm: located.error_mm, doubtful: located.doubtful, method: located.method },
+			emptyNear,
+		);
+		point = taken.point;
+		const method = taken.method;
+		const jumped = taken.jumped;
 		if (point !== old?.point) {
 			s.located = {
 				words,

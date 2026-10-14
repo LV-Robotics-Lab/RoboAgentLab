@@ -387,6 +387,36 @@ export function newState(o: {
 	};
 }
 
+/**
+ * The sticky rule (spec-locate §8.3) on a new answer for the words a point is kept under: the answer
+ * replaces the kept point when its bar is no wider (a doubtful answer never displaces a confident one
+ * by its bar alone), when it confirms the answer left waiting by the last look (within max(bar, 1 mm)),
+ * or, after an empty close aimed from the kept point, when it lands within the kept bar (`emptyNear`).
+ * Otherwise the kept point stands, the new one waits for a second look, and the method says so. Round
+ * 3 defect 3: a wrist-only look replaced the point unconditionally, so a doubtful part read 320 mm off
+ * (object t8_s1 c1) sent the tool 320 mm left; a wrist look is an answer like any other now (the
+ * follow move after it then has nothing to follow when the answer was not taken).
+ */
+export function takesOver(
+	old: LocatedPoint | undefined,
+	answer: { point: Vec3; error_mm?: number; doubtful: boolean; method: string },
+	emptyNear: boolean,
+): { point: Vec3; method: string; jumped?: number } {
+	if (!old) return { point: answer.point, method: answer.method };
+	const bar = answer.error_mm ?? Number.POSITIVE_INFINITY;
+	const apart = apartXy(answer.point, old.point) * 1000;
+	if (emptyNear && apart <= old.error_mm) return { point: answer.point, method: answer.method };
+	const noWider = bar <= old.error_mm && !(answer.doubtful && !old.doubtful);
+	const confirms = old.waiting !== undefined && apartXy(answer.point, old.waiting) * 1000 <= Math.max(bar, 1);
+	if (noWider || confirms) return { point: answer.point, method: answer.method };
+	old.waiting = answer.point;
+	return {
+		point: old.point,
+		jumped: apart,
+		method: `${old.method}; a new answer ${Math.round(apart)} mm away with a ${answer.doubtful && !old.doubtful ? "doubtful" : "wider"} bar (${Math.round(Number.isFinite(bar) ? bar : 0)} vs ${Math.round(old.error_mm)} mm) was not taken`,
+	};
+}
+
 /** The object's width (mm) from what was measured: the footprint's longest span, else the last width. */
 export const objectWidthMm = (s: SubgoalState) =>
 	s.footprint && s.footprint.length >= 2 ? longestAcross(s.footprint) * 1000 : s.lastWidthMm;
