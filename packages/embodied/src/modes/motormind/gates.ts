@@ -945,6 +945,18 @@ export function shoved(steps: SegmentReport[], deltas: Delta[], errorMm: number 
 	return steps.some((st) => st.kind === "translate" && st.axis && st.axis[2] < -0.5 && st.lateral_mm >= limit);
 }
 
+/**
+ * What the payload met (spec-executor §11.1, the original's `_payload_met`): holding, a move of this cycle
+ * that did not run to its end met something with what the jaws hold; it stays met across cycles (and
+ * subgoals, through the carried payload) until a cycle rises more than 1 mm. Not holding, nothing changes.
+ */
+export function payloadMet(steps: SegmentReport[], before: boolean, holding: boolean): boolean {
+	if (!holding) return before;
+	const rose = steps.some((st) => st.axis && st.axis[2] > 0.9 && st.along_axis_mm > NO_MOTION_MM);
+	const met = steps.some((st) => st.axis && st.outcome !== "done");
+	return met || (before && !rose);
+}
+
 /** Dragging: holding, jaws not horizontal, and a sideways move was blocked. */
 export const dragging = (step: SegmentReport, frame: Frame, caps: Caps) =>
 	frame.grasp.holding === true &&

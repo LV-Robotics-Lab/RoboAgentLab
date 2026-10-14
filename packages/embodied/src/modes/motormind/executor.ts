@@ -63,6 +63,7 @@ import {
 	noteTurnStop,
 	partOf,
 	payloadBlock,
+	payloadMet,
 	payloadOffset,
 	receiverWords,
 	releaseAllowanceMm,
@@ -78,7 +79,7 @@ import {
 	whereTheToolIs,
 } from "./gates.ts";
 import { apartXy, longestAcross, measuresMore } from "./geometry.ts";
-import { heldPixels, type Located, locate, WRIST_USEFUL_BELOW_MM } from "./locate.ts";
+import { heldPixels, type Located, locate, receiverTop, WRIST_USEFUL_BELOW_MM } from "./locate.ts";
 import { firstMoveIsATest, followDelta, letGoWidth, liftBeforeSideways, releaseWidthMm, splitACarry } from "./mend.ts";
 import {
 	type ClearanceRead,
@@ -639,8 +640,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		keepBlockedAxes(s, cycle.steps, holdingNow);
 		noteTurnStop(s, deltas, cycle.steps, holdingNow, cycle.finding);
 		if (shoved(cycle.steps, deltas, s.errorMm)) s.unshoved = false;
-		if (holdingNow && cycle.steps.some((st) => st.kind === "translate" && st.abort_reason === "blocked"))
-			s.payload.bumped = true;
+		s.payload.bumped = payloadMet(cycle.steps, s.payload.bumped, holdingNow);
 		// The jaws "changed" by what this cycle COMMANDED against the batch-start frame (spec-executor
 		// §13.7): a close the depth gate stopped before it ran still counts, as in the original.
 		const motionCheck = noMotion(cycle.steps, deltas, jawsChanged(deltas, batchStartFrame));
@@ -912,6 +912,8 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		point = taken.point;
 		const method = taken.method;
 		const jumped = taken.jumped;
+		// A receiver's height is its top (round 3 defect 5).
+		if (s.payload.tracking && point !== old?.point) point = receiverTop(point, located, words);
 		if (point !== old?.point) {
 			s.located = {
 				words,

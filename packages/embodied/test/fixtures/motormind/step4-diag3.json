@@ -280,5 +280,67 @@
 			"pad": 17,
 			"lowest_face": 77.6
 		}
+	},
+	"carry_lift": {
+		"_note": "round 3 defect 5, goal t4_s0 carry_bowl#1 (bowl -> cabinet top): the bowl was lifted 150 mm over the table; c0's first leg toward the cabinet was cut short (limited, blocked: the payload dragging), c1 and c2 copied the same move and were cut short at once; the lift mender measured 150 mm of clearance over the TABLE and inserted nothing; the reach gate's cut set the wall flag and the step ended WALL -> replan 'carry the bowl to the open table'. The original's lift_before_sideways puts a 100 mm lift before any sideways move while the payload has met something and has not risen since",
+		"subgoal": "move the gripper sideways at this height until the silver patterned bowl is over the top of the dark brown drawer unit, still holding it",
+		"criterion": "the silver patterned bowl is over the top of the dark brown drawer unit and the robot still reports holding it",
+		"target": "the silver patterned bowl",
+		"receiver_words": "top of the dark brown drawer unit",
+		"receiver_located_mm": [
+			753,
+			-258,
+			-68
+		],
+		"table_z_mm": -68,
+		"payload": {
+			"width_mm": 7.6,
+			"span_mm": 150,
+			"edge": true,
+			"tracking": true
+		},
+		"tool_over_table_mm": 150,
+		"c0_steps": [
+			{
+				"label": "move forward 185.0 mm (base) (shortened to 185 mm: past the 780 mm reach) (the first 17 mm) [1/1]",
+				"kind": "translate",
+				"outcome": "done",
+				"abort_reason": "",
+				"along_axis_mm": 13,
+				"lateral_mm": 1,
+				"turned_deg": 0.1,
+				"axis": [
+					1,
+					0,
+					0
+				]
+			},
+			{
+				"label": "move forward 185.0 mm (base) (shortened to 185 mm: past the 780 mm reach) (the rest) (1 of 6) [1/1]",
+				"kind": "translate",
+				"outcome": "limited",
+				"abort_reason": "blocked",
+				"along_axis_mm": 7,
+				"lateral_mm": 10,
+				"turned_deg": 2.2,
+				"axis": [
+					1,
+					0,
+					0
+				]
+			}
+		],
+		"c1_deltas": [
+			{
+				"direction": "forward",
+				"distance_mm": 166
+			},
+			{
+				"direction": "right",
+				"distance_mm": 266
+			}
+		],
+		"c1_reason": "the payload is dragging: a sideways move was blocked while holding",
+		"ending": "WALL"
 	}
 }

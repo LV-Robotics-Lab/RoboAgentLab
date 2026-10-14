@@ -139,6 +139,20 @@ export function namesAPart(words: string): string | undefined {
 }
 export const isTopPart = (part: string) => TOP_PARTS.includes(part);
 /**
+ * A receiver's height is its top (round 3 defect 5): the plate's rim, the cabinet's top face ("top of the
+ * drawer unit" names a top part), never the table read under it, or the put step presses the payload into
+ * the body and the lift mender measures clearance to the table. The point's x and y are kept.
+ */
+export function receiverTop(point: Vec3, l: Pick<Located, "top_point" | "part_point">, words: string): Vec3 {
+	const topPart = isTopPart(namesAPart(words) ?? "");
+	const z = Math.max(
+		point[2],
+		l.top_point?.[2] ?? Number.NEGATIVE_INFINITY,
+		topPart ? (l.part_point?.[2] ?? Number.NEGATIVE_INFINITY) : Number.NEGATIVE_INFINITY,
+	);
+	return z > point[2] ? [point[0], point[1], z] : point;
+}
+/**
  * The word as one of the parts, singular ("handles" → "handle"), or undefined when it names no part
  * (round 3 defect 1: "rest", "part", "way" and "middle" are not parts, whatever precedes "of").
  */

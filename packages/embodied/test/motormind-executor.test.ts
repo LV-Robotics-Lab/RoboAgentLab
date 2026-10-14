@@ -51,6 +51,7 @@ import {
 	noteEmptyClose,
 	noteGrasped,
 	partOf,
+	payloadMet,
 	quarterTurnForReach,
 	receiverWords,
 	residualOf,
@@ -65,7 +66,7 @@ import {
 	widerThanJaws,
 } from "../src/modes/motormind/gates.ts";
 import { boxOnPlane, planeErrorMm, project, toPixels, triangulate } from "../src/modes/motormind/geometry.ts";
-import { aPartWord, locate, namesAPart, parseLocateReply } from "../src/modes/motormind/locate.ts";
+import { aPartWord, locate, namesAPart, parseLocateReply, receiverTop } from "../src/modes/motormind/locate.ts";
 import { firstMoveIsATest, liftBeforeSideways, splitACarry } from "../src/modes/motormind/mend.ts";
 import { ClearanceTracker, legend, TopFace } from "../src/modes/motormind/observe.ts";
 import {
@@ -2316,4 +2317,109 @@ test("executor: round 3 defect 3 (side take) — the part phrase is asked for, a
 	assert.match(low.text, /Standoff point \[69[34], -42, 89\]/);
 	s2.located.point = [a.part_point_mm[0] / 1000, a.part_point_mm[1] / 1000, a.table_z_mm / 1000 + 0.07];
 	assert.match(sideTakeBlock(s2, f2, CAPS).cannot ?? "", /70 mm over the table/);
+});
+
+test("executor: round 3 defect 5 — a payload that met something has no clearance: the lift goes in before the next sideways move, and stays due until a cycle rises", () => {
+	const t = D3.carry_lift;
+	const tableZ = t.table_z_mm / 1000;
+	const down: Mat3 = [
+		[1, 0, 0],
+		[0, -1, 0],
+		[0, 0, -1],
+	];
+	const s = newState({ subgoal: t.subgoal, criterion: t.criterion, target: t.target, planBoxes: {} });
+	s.payload = { ...t.payload, bumped: false };
+	s.receiver = {
+		center: (t.receiver_located_mm as number[]).map((v) => v / 1000) as Vec3,
+		radius_mm: 100,
+		error_mm: 18,
+		words: t.receiver_words,
+	};
+	s.located = {
+		words: t.receiver_words,
+		point: s.receiver.center,
+		method: "scene and side",
+		error_mm: 18,
+		error_class: "",
+		on_face: false,
+		cameras: ["scene", "side"],
+	};
+	assert.equal(receiverWords(t.criterion, t.subgoal, t.target), t.receiver_words);
+	// c0's end: the first leg toward the cabinet was cut short while holding: the payload met something.
+	const c0 = (t.c0_steps as Json[]).map((st) => ({
+		...st,
+		moved_mm: st.along_axis_mm,
+		ticks: 20,
+		elapsed_s: 1,
+	})) as SegmentReport[];
+	assert.equal(payloadMet(c0, false, true), true);
+	assert.equal(payloadMet(c0, false, false), false, "not holding: nothing met");
+	s.payload.bumped = payloadMet(c0, s.payload.bumped, true);
+	// c1: the same move again from 150 mm over the table. The old mender measured 150 mm clear of the table and inserted nothing.
+	const f = {
+		...frameAt(
+			{ position_m: [0.58, 0.01, tableZ + t.tool_over_table_mm / 1000], rotation: down },
+			{ holding: true, opening: 7.6, commanded: "close" },
+		),
+		table_z_m: tableZ,
+	};
+	const mk = (o: Json) => toDelta({ index: 0, type: "move", frame: "base", note: "", ...o }, CAPS);
+	const deltas = (t.c1_deltas as Json[]).map(mk);
+	const notBumped = newState({ subgoal: t.subgoal, criterion: t.criterion, target: t.target, planBoxes: {} });
+	notBumped.payload = { ...t.payload, bumped: false };
+	notBumped.located = s.located;
+	assert.equal(
+		liftBeforeSideways(
+			deltas.map((d) => ({ ...d })),
+			notBumped,
+			f,
+			CAPS,
+			{ gripperOnly: false },
+		),
+		undefined,
+	);
+	const what = liftBeforeSideways(deltas, s, f, CAPS, { gripperOnly: false });
+	assert.ok(what, "a lift was inserted");
+	assert.equal(deltas[0].label, LIFT_LABEL);
+	close(deltas[0].magnitude, 0.1, 1e-9, "TRAVEL_MM over what the payload rests on");
+	assert.equal(deltas.length, 3);
+	// The lift ran: the payload rose, and the next cycle measures its clearance again.
+	const rose: SegmentReport = {
+		label: `${LIFT_LABEL} [1/2]`,
+		kind: "translate",
+		outcome: "done",
+		moved_mm: 50,
+		along_axis_mm: 50,
+		lateral_mm: 0,
+		turned_deg: 0,
+		axis: [0, 0, 1],
+		ticks: 80,
+		elapsed_s: 2,
+	};
+	assert.equal(payloadMet([rose], true, true), false);
+	// Met again on the way: it stays met through a cycle that did not rise.
+	assert.equal(payloadMet([{ ...rose, axis: [0, -1, 0], outcome: "done" }], true, true), true);
+	assert.equal(t.ending, "WALL");
+	// The receiver was located on the table plane under the cabinet ([753,-258,-68], table -68). Its height is
+	// its top: "top of …" names a top part, so a part point or a measured top face raises it (synthetic heights).
+	const onTable = s.receiver.center;
+	assert.equal(namesAPart(t.receiver_words), "top");
+	const raised = receiverTop(onTable, { part_point: [0.75, -0.26, tableZ + 0.2] }, t.receiver_words);
+	close(raised[2], tableZ + 0.2, 1e-9, "the top part's height");
+	assert.deepEqual(raised.slice(0, 2), onTable.slice(0, 2), "x and y are kept");
+	close(
+		receiverTop(onTable, { top_point: [0.75, -0.26, tableZ + 0.18] }, "dark brown drawer unit")[2],
+		tableZ + 0.18,
+		1e-9,
+	);
+	assert.equal(
+		receiverTop(onTable, { part_point: [0.75, -0.26, tableZ + 0.2] }, "dark brown drawer unit"),
+		onTable,
+		"a part point of no top part is no top",
+	);
+	assert.equal(
+		receiverTop(onTable, { top_point: [0.75, -0.26, tableZ - 0.01] }, t.receiver_words),
+		onTable,
+		"never lowered",
+	);
 });

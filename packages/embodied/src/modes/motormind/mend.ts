@@ -86,7 +86,10 @@ export function liftBeforeSideways(
 		top = f.table_z_m + Math.max(height, 0);
 	}
 	if (s.located) top = Math.max(top, s.located.point[2]);
-	const clearance = (f.pose.position_m[2] - top) * 1000;
+	// What a held payload met stands as high as the payload hangs: it rests on it, with no clearance at all,
+	// and any move sideways drags it across (round 3 defect 5: the bowl 150 mm up, caught on the cabinet, was
+	// judged 150 mm clear of the TABLE and dragged three cycles to a WALL ending).
+	const clearance = holding && s.payload.bumped ? 0 : (f.pose.position_m[2] - top) * 1000;
 	if (clearance + before >= CLEAR_MM) return undefined;
 	const lift = TRAVEL_MM - clearance - before;
 	if (lift <= 0) return undefined;
