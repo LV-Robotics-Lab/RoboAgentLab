@@ -36,6 +36,7 @@ import { actArgs, runSubgoal } from "../src/modes/motormind/executor.ts";
 import { apply, dot, IDENTITY, labelDirection, matmul, sub, transpose, unit } from "../src/modes/motormind/frames.ts";
 import {
 	actsOnWhatItNames,
+	aimPoint,
 	centreMiss,
 	closeDepthGate,
 	closeOutcome,
@@ -2312,9 +2313,9 @@ test("executor: round 3 defect 3 (side take) — the part phrase is asked for, a
 	const side = sideTakeBlock(s2, f2, CAPS);
 	assert.equal(side.cannot, undefined);
 	assert.match(side.text, /the jaws go in RIGHT/);
-	assert.match(side.text, /Standoff point \[69[34], -42, 123\]/);
+	assert.match(side.text, /stand-off point \[69[34], -42, 123\]/);
 	assert.match(side.text, /rotate "roll_cw" 90/, "arm A's turn (c0 roll_cw)");
-	assert.match(side.text, /move right with stop_on_contact for 124 mm/);
+	assert.match(side.text, /move right by 124 mm \(the stand-off plus two pads\) with stop_on_contact/);
 	// The height threshold: floor - half gap + pad = 77.6 mm, not the 100 mm floor; the standoff never goes below the floor.
 	const th = t.threshold_mm;
 	assert.equal(Math.round((th.tilted_floor - th.jaw_half_gap + th.pad) * 10) / 10, th.lowest_face);
@@ -2322,7 +2323,7 @@ test("executor: round 3 defect 3 (side take) — the part phrase is asked for, a
 	s2.located.point = [a.part_point_mm[0] / 1000, a.part_point_mm[1] / 1000, a.table_z_mm / 1000 + 0.08];
 	const low = sideTakeBlock(s2, f2, CAPS);
 	assert.equal(low.cannot, undefined, "80 mm over the table is taken");
-	assert.match(low.text, /Standoff point \[69[34], -42, 89\]/);
+	assert.match(low.text, /stand-off point \[69[34], -42, 89\]/);
 	s2.located.point = [a.part_point_mm[0] / 1000, a.part_point_mm[1] / 1000, a.table_z_mm / 1000 + 0.07];
 	assert.match(sideTakeBlock(s2, f2, CAPS).cannot ?? "", /70 mm over the table/);
 });
@@ -2533,11 +2534,21 @@ test("executor: smoke 6 (goal t0 s1) — a side take's body is what the part sta
 	const first = sideTakeBlock(s, f, CAPS);
 	assert.equal(first.cannot, undefined);
 	assert.match(first.text, /face looks LEFT; the jaws go in RIGHT/);
-	assert.match(first.text, /rotate "roll_cw" 90 so the jaws point right/);
-	assert.match(first.text, /Standoff point \[550, 80, 109\]/);
+	assert.match(first.text, /rotate "roll_cw" 90 points the jaws right/);
+	assert.match(
+		first.text,
+		/stand-off point \[550, 80, 109\] mm, 90 mm in front of the face and level with the part: 110 mm FORWARD and 80 mm LEFT and 140 mm DOWN of the tool point/,
+	);
 	assert.equal(sideTurn([0, 1, 0], [0, 0, -1], CAPS), "roll_cw");
 	assert.equal(sideTurn([1, 0, 0], [0, 0, -1], CAPS), "pitch_down", "a face looking forward: the jaws point backward");
 	assert.equal(sideTurn([-1, 0, 0], [0, 0, -1], CAPS), undefined, "pitch_up reaches only 53.6 deg");
+	// The aim of a side take not yet turned in is the stand-off in front of the face, not the part (smoke 8: the
+	// target block said the tool was 2 mm from the handle, and the jaws were rolled and pushed in from above it).
+	assert.deepEqual(
+		aimPoint(s, f.pose, CAPS)?.map((v) => Math.round(v * 1000)),
+		[550, 80, Math.round((TABLE_Z + 0.12) * 1000)],
+	);
+	assert.match(whereTheTargetIs(s, f, CAPS, undefined), /110 mm FORWARD and 80 mm LEFT of the tool point/);
 	// Later looks move the body (another read, a re-look): the face stays as first read.
 	s.located.body = [0.7, -0.02, TABLE_Z + 0.15];
 	assert.match(sideTakeBlock(s, f, CAPS).text, /face looks LEFT/);
@@ -2552,6 +2563,8 @@ test("executor: smoke 6 (goal t0 s1) — a side take's body is what the part sta
 		sideTakeBlock(s, { ...f, pose: { ...f.pose, rotation: level } }, CAPS).text,
 		/the jaws already point right/,
 	);
+	// Turned into the face, the aim is the part itself: the move in stops against the face.
+	assert.deepEqual(aimPoint(s, { ...f.pose, rotation: level }, CAPS), s.located.point);
 	// No body outlined: which way the face faces is not known (the original's CANNOT), not "away from the tool".
 	const s2 = newState({
 		subgoal: `take ${words} from the side and close on it`,

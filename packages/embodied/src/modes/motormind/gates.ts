@@ -532,9 +532,19 @@ export function edgePoint(s: SubgoalState, pose: Pose, caps: Caps): Vec3 | undef
 	if (radius(side) > caps.reach_m && radius(-side) <= caps.reach_m) side = -side;
 	return add(middle, scale(axis, (side * e.mm) / 1000));
 }
-/** Where the tool has to get to: the edge point of a thing wider than the jaws, else the located point (a side take's stand-off is the side block's). */
-export const aimPoint = (s: SubgoalState, pose: Pose, caps: Caps): Vec3 | undefined =>
-	s.located ? (s.sideStep ? s.located.point : (edgePoint(s, pose, caps) ?? s.located.point)) : undefined;
+/**
+ * Where the tool has to get to: for a side take not yet turned into its face, the stand-off in front of the
+ * face (the original's aim: "in front of it, not at it"; smoke 8, goal t0 s1: aimed at the handle itself, the
+ * target block said the tool was 2 mm from it, and the jaws were rolled and pushed in from above it, into
+ * the cabinet); the edge point of a thing wider than the jaws; else the located point.
+ */
+export const aimPoint = (s: SubgoalState, pose: Pose, caps: Caps): Vec3 | undefined => {
+	if (!s.located) return undefined;
+	if (!s.sideStep) return edgePoint(s, pose, caps) ?? s.located.point;
+	const a = approach(pose).axis;
+	const out = readSideFace(s, a, caps)?.out;
+	return out && dot(out, a) >= -0.7 ? add(s.located.point, scale(out, SLIDE_STANDOFF_MM / 1000)) : s.located.point;
+};
 /**
  * The horizontal offset of the aim point from the tool (m), or undefined. While placing, from the
  * centre of what the jaws hold (the tool plus the payload offset), as the target block says it: the
@@ -1190,6 +1200,20 @@ export function sideTurn(out: Vec3, a: Vec3, caps: Caps): string | undefined {
 	return best && best[0] < -0.7 ? best[1] : undefined;
 }
 
+/**
+ * A side take's face, read once a subgoal from the first point located on it (the original's `_face_said`):
+ * undefined before a point on the face; `out` undefined when no body was outlined.
+ */
+export function readSideFace(s: SubgoalState, a: Vec3, caps: Caps): SubgoalState["sideFace"] {
+	if (!s.sideStep || !s.located?.on_face) return s.sideFace;
+	if (!s.sideFace) {
+		const out = faceOut(s.located.point, s.located.body);
+		const turn = out ? sideTurn(out, a, caps) : undefined;
+		s.sideFace = out ? { out, ...(turn ? { turn } : {}) } : {};
+	}
+	return s.sideFace;
+}
+
 /** Block 6: the side-take notes, when they apply. */
 export function sideTakeBlock(s: SubgoalState, f: Frame, caps: Caps): { text: string; cannot?: string } {
 	const horizontal = isHorizontal(f.pose, caps);
@@ -1213,11 +1237,8 @@ export function sideTakeBlock(s: SubgoalState, f: Frame, caps: Caps): { text: st
 		// the middle of what the part stands out of toward the part, and the turn of this arm that points the jaws
 		// into it. Smoke 6 (goal t0 s1): read every cycle and from the tool when no body was outlined, the face
 		// went FORWARD, LEFT, BACKWARD in one attempt, and "pitch 90 deg" turned the jaws backward.
-		if (!s.sideFace) {
-			const out = faceOut(face, s.located.body);
-			s.sideFace = out ? { out, ...(sideTurn(out, a, caps) ? { turn: sideTurn(out, a, caps) } : {}) } : {};
-		}
-		const out = s.sideFace.out;
+		const sideFace = readSideFace(s, a, caps) ?? {};
+		const out = sideFace.out;
 		const floor = caps.tilted_floor_m * 1000;
 		const height = f.table_z_m !== null ? (face[2] - f.table_z_m) * 1000 : undefined;
 		// The jaws close up-down: a part up to a pad inside the half gap below the tilted floor is still between them.
@@ -1227,7 +1248,7 @@ export function sideTakeBlock(s: SubgoalState, f: Frame, caps: Caps): { text: st
 			? "no two views outlined the thing it stands out of, so which way its face faces is not known"
 			: height !== undefined && height < lowest
 				? `the face is ${r0(height)} mm over the table, and tilted this arm's tool point gets no lower than ${r0(floor)} mm (a part down to ${r0(lowest)} mm is still between the jaws)`
-				: !s.sideFace.turn && !turned
+				: !sideFace.turn && !turned
 					? "no turn this arm makes in full points the jaws into it"
 					: undefined;
 		if (cannot || !out) return { text: "", cannot: cannot ?? "" };
@@ -1235,10 +1256,10 @@ export function sideTakeBlock(s: SubgoalState, f: Frame, caps: Caps): { text: st
 		if (f.table_z_m !== null) stop[2] = Math.max(stop[2], f.table_z_m + floor / 1000);
 		const into = levelWord(scale(out, -1));
 		const turn = turned
-			? `the jaws already point ${into}`
-			: `rotate "${s.sideFace.turn}" 90 so the jaws point ${into}`;
+			? `the jaws already point ${into}, into the face`
+			: `go across at this height and turn there, in open air: rotate "${sideFace.turn}" 90 points the jaws ${into}, into the face; only then come down`;
 		return {
-			text: `SIDE TAKE: the face looks ${levelWord(out).toUpperCase()}; the jaws go in ${into.toUpperCase()}. Standoff point [${stop.map((v) => r0(v * 1000)).join(", ")}] mm (${r0(SLIDE_STANDOFF_MM)} mm off the face). Needed: ${turn}; then move ${into} with stop_on_contact for ${r0(SLIDE_STANDOFF_MM + 2 * padMm(caps))} mm (the standoff plus two pads) and close in the same reply.`,
+			text: `SIDE TAKE: the face looks ${levelWord(out).toUpperCase()}; the jaws go in ${into.toUpperCase()}. Come to the stand-off point [${stop.map((v) => r0(v * 1000)).join(", ")}] mm, ${r0(SLIDE_STANDOFF_MM)} mm in front of the face and level with the part: ${sayOffset(sub(stop, f.pose.position_m))} of the tool point; ${turn}. From there move ${into} by ${r0(SLIDE_STANDOFF_MM + 2 * padMm(caps))} mm (the stand-off plus two pads) with stop_on_contact and close in that same reply: the move stops against the face with the part between the pads.`,
 		};
 	}
 	return { text: "" };
