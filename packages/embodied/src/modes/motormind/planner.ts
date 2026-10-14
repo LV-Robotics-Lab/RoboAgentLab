@@ -71,8 +71,29 @@ const GRIPPER_VERBS = /\b(open|close|release|let go|squeeze|clamp)\w*\b/i;
 const ACT_WORDS =
 	/\b(pick|grasp|grab|take|lift|carry|place|put|release|push|pull|press|turn|twist|rotate|slide|open|close|drop|move|insert|pour|stack)\w*\b/i;
 const SIDE_WORDS = /\bfrom the side\b/i;
-const TILT_WORDS = /\b(tilt|tilted|sideways grasp|horizontal(ly)? grasp|pitch|roll)\w*\b/i;
-const HANDLE_WORDS = /\b(handle|knob|lever|pull|drawer|door)\b/i;
+/** A step asking for the jaws turned level in its own words ("tilt the jaws", "level them", "jaws are level" but not "level with"). */
+const TILTS_THE_JAWS =
+	/\btilt(?:s|ed|ing)?\s+(?:the\s+)?(?:jaws|them|gripper|tool|hand)\b|\blevel\s+them\b|\b(?:jaws|they)\s+are\s+level\b(?!\s+with)|\blevel,?\s+(?:open\s+)?jaws?\b/i;
+/** Things that slide in a track and are opened by their handle (the cabinet's handles are its drawers' and doors'). */
+const SLIDING = "drawer|door|lid|panel|slider|tray|cover|hatch|shutter|cabinet|cupboard";
+const SLIDING_HANDLE = new RegExp(
+	`\\bhandle of (?:the |its )?(?:[a-z]+ ){0,3}(?:${SLIDING})\\b|\\b(?:${SLIDING})(?:'s)? handle\\b`,
+	"i",
+);
+const CLOSES_ON = /\b(?:close (?:on|them|the (?:gripper )?jaws)|closes? the jaws|grasp(?:s|ing)?|grip(?:s|ping)?)\b/i;
+/**
+ * The step tilts the jaws, or closes them on the handle of a thing that slides, and does not say "from
+ * the side" (spec-planner §4.3 `side`). Round 3 defect 6: the old test fired on any handle / knob /
+ * drawer / door word in a step whose criterion had a holding word, so carry steps "over the top of the
+ * drawer unit … still holding" and knob steps were re-asked twice each (30 of 30 re-asks, 40 s a plan)
+ * for words they could not write. A knob is turned, not slid; a carry past a drawer is not a take.
+ */
+export function sideTakeUnsaid(subgoal: string): boolean {
+	const text = subgoal.toLowerCase().replace(/\s+/g, " ").trim();
+	if (SIDE_WORDS.test(text)) return false;
+	if (TILTS_THE_JAWS.test(text)) return !text.includes("vertical");
+	return SLIDING_HANDLE.test(text) && CLOSES_ON.test(text);
+}
 /** Part words stripped from a target so it names the whole object (spec-planner §4.4 step 2). */
 const PART_WORDS =
 	/^(?:the\s+)?(?:top|lid|rim|edge|handle|side|front|back|corner|body|base|cap|spout|wall|face|middle|center|centre)\s+of\s+/i;
@@ -361,12 +382,7 @@ export function complaints(
 			key: "boxes",
 			text: `${unboxed.map((s) => String(s.name)).join(", ")} name a target but draw no valid box on a fixed camera (${o.fixed.join(", ")})`,
 		});
-	const side = steps.filter(
-		(s) =>
-			(TILT_WORDS.test(String(s.subgoal ?? "")) ||
-				(HANDLE_WORDS.test(String(s.subgoal ?? "")) && HOLD_WORDS.test(String(s.criterion ?? "")))) &&
-			!SIDE_WORDS.test(String(s.subgoal ?? "")),
-	);
+	const side = steps.filter((s) => sideTakeUnsaid(String(s.subgoal ?? "")));
 	if (side.length)
 		out.push({
 			key: "side",

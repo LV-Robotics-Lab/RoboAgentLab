@@ -65,6 +65,7 @@ import {
 	plan,
 	replan,
 	sameObject,
+	sideTakeUnsaid,
 	wantsHolding,
 	wantsRelease,
 } from "../src/modes/motormind/planner.ts";
@@ -633,7 +634,7 @@ test("planner: complaints — size, boxes, side, orphan clause, look-only clause
 		subgoals: [
 			{
 				name: "a",
-				subgoal: "pull the drawer handle",
+				subgoal: "close on the drawer handle and pull",
 				criterion: "the handle is held",
 				target: "drawer",
 				target_boxes: {},
@@ -2404,4 +2405,30 @@ test("words: round 2 defect 3 — an object's place phrase is not a release word
 		});
 		assert.deepEqual([c.cell, r.status, r.gate], [c.cell, "done", ""]);
 	}
+});
+
+const D3 = JSON.parse(readFileSync(new URL("./fixtures/motormind/step4-diag3.json", import.meta.url), "utf8"));
+
+test("planner: round 3 defect 6 — the side complaint is for a tilt or a close on a sliding thing's handle, not for a carry past a drawer unit or a knob", () => {
+	const t = D3.side_predicate as { no_complaint: string[]; complaint: string[] };
+	for (const sg of t.no_complaint) assert.equal(sideTakeUnsaid(sg), false, sg);
+	for (const sg of t.complaint) assert.equal(sideTakeUnsaid(sg), true, sg);
+	assert.equal(sideTakeUnsaid("tilt the jaws level and close on the cup"), true);
+	assert.equal(sideTakeUnsaid("tilt the jaws level, keeping them vertical"), false);
+	assert.equal(sideTakeUnsaid("move the gripper to the handle of the top drawer"), false, "gripper is no grip");
+	// The recorded first plan of t4_s0 now draws no side complaint (it drew two re-asks, 61 s).
+	const raw = {
+		subgoals: t.no_complaint.slice(0, 6).map((subgoal, i) => ({
+			name: `s${i}`,
+			subgoal,
+			criterion: "the robot still reports holding the silver patterned bowl",
+			target: "the silver patterned bowl",
+			clause: 0,
+		})),
+		rationale: "",
+		clauses: ["The bowl rests on the top of the drawer unit"],
+		recoverable: true,
+	};
+	const keys = complaints(raw, { first: false, fixed: [], cannot: [], budget: 10, task: "t" }).map((c) => c.key);
+	assert.ok(!keys.includes("side"), keys.join(","));
 });
