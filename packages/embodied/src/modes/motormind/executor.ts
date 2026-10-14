@@ -47,6 +47,7 @@ import {
 	forbidText,
 	type GateContext,
 	isPositional,
+	isTurnStep,
 	jawHalfGapMm,
 	jawsChanged,
 	keepBlockedAxes,
@@ -809,11 +810,16 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		o: { wristOnly?: boolean } = {},
 	): Promise<{ reach: Reach; records: RoleCallRecord[] } | undefined> {
 		const caps = frame.caps;
+		// Holding: the receiver's words, none for a turn step (the knob is in the jaws, not somewhere to go) or
+		// when the step names no destination; nothing is then located and no target block written (round 3 defect 4).
 		const words = s.payload.tracking
-			? receiverWords(sg.criterion, sg.subgoal, sg.target)
+			? isTurnStep(sg.subgoal, sg.criterion)
+				? ""
+				: receiverWords(sg.criterion, sg.subgoal, sg.target)
 			: s.sideStep
 				? sidePartWords(sg.subgoal, sg.target)
 				: sg.target || sg.subgoal;
+		if (!words) return undefined;
 		let why: string | undefined;
 		if (o.wristOnly) why = "a wrist look";
 		else if (!s.located || s.located.words !== words || (s.sideStep && !s.located.on_face)) why = "not located yet";

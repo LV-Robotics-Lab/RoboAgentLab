@@ -157,5 +157,64 @@
 			}
 		],
 		"model_move_after": "move left 320.0 mm (base)"
+	},
+	"turn_steps": {
+		"_note": "round 3 defect 4: holding the knob, receiverWords() found no destination phrase and fell back to the target, so the turn step located the knob in the jaws from a fixed view (another black thing) and the target block sent the model there; the original returns '' and takes no look. A's turn step (base-nomon-nomem t7_s0) only yawed and succeeded",
+		"cases": [
+			{
+				"cell": "B3 goal t7_s0 turn_knob",
+				"subgoal": "turn the black stove knob about the vertical axis by about 90 degrees without letting go.",
+				"criterion": "the black stove knob is rotated to a new position.",
+				"target": "the black stove knob",
+				"located_mm": [
+					-408,
+					386,
+					0
+				],
+				"located_error_mm": 28,
+				"model_move": "move backward 669.0 mm (base)"
+			},
+			{
+				"cell": "B3 goal t7_s1 turn_stove_knob_retry",
+				"subgoal": "Turn the black stove knob about the vertical axis by about 90 degrees without letting go.",
+				"criterion": "The black stove knob's marking aims somewhere new.",
+				"target": "the black stove knob",
+				"located_mm": [
+					539,
+					-171,
+					-11
+				],
+				"located_error_mm": 459,
+				"model_move": "move forward 280.0 mm (base)"
+			},
+			{
+				"cell": "A nomon goal t7_s0 turn (succeeded with rotate yaw_right 90)",
+				"subgoal": "turn the tool about the vertical axis by about 90 degrees without letting go of the black control knob on the stove",
+				"criterion": "The black control knob on the stove has turned: its pointer or marking aims somewhere new in the picture.",
+				"target": "the black control knob on the stove",
+				"located_mm": null,
+				"located_error_mm": null,
+				"model_move": "rotate yaw_right 90"
+			}
+		],
+		"lift_while_holding": {
+			"cell": "B3 goal t7_s1 lift_stove_knob",
+			"subgoal": "Raise the gripper straight up by about 15 cm without letting go of the black stove knob.",
+			"criterion": "The tool has risen at least 120 mm since this step began and the robot still reports holding the black stove knob.",
+			"target": "the black stove knob",
+			"located_mm": [
+				539,
+				-171,
+				-11
+			],
+			"located_error_mm": 459
+		},
+		"carry_keeps_its_receiver": {
+			"cell": "B3 goal t4_s0 carry_bowl",
+			"subgoal": "move the gripper sideways at this height until the silver patterned bowl is over the top of the dark brown drawer unit, still holding it",
+			"criterion": "the silver patterned bowl is over the top of the dark brown drawer unit and the robot still reports holding it",
+			"target": "the silver patterned bowl",
+			"want": "top of the dark brown drawer unit"
+		}
 	}
 }

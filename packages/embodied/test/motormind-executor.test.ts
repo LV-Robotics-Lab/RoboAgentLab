@@ -34,12 +34,14 @@ import {
 import { actArgs, runSubgoal } from "../src/modes/motormind/executor.ts";
 import { apply, dot, IDENTITY, labelDirection, matmul, sub, transpose, unit } from "../src/modes/motormind/frames.ts";
 import {
+	actsOnWhatItNames,
 	centreMiss,
 	closeDepthGate,
 	closeOutcome,
 	dragging,
 	edgeOffsetMm,
 	edgePoint,
+	isTurnStep,
 	jawLine,
 	jawsChanged,
 	jawsShut,
@@ -2220,4 +2222,26 @@ test("executor: round 3 defect 3 — a wrist-only look is an answer under the st
 		takesOver(undefined, { point: near, error_mm: 40, doubtful: true, method: "w" }, false).point,
 		near,
 	);
+});
+
+test("executor: round 3 defect 4 — a turn step holding the knob seeks no receiver, and a step that names no destination seeks nothing; a carry step keeps its receiver", () => {
+	const t = D3.turn_steps;
+	for (const c of t.cases as Json[]) {
+		assert.equal(isTurnStep(c.subgoal, c.criterion), true, c.cell);
+		assert.equal(receiverWords(c.criterion, c.subgoal, c.target), "", c.cell);
+		assert.equal(actsOnWhatItNames(c.subgoal, c.criterion, c.target), true, c.cell);
+	}
+	// What B3 did instead: located "the knob" 669 and 499 mm from the jaws that held it, and drove.
+	assert.deepEqual(
+		(t.cases as Json[]).filter((c) => c.located_mm).map((c) => c.located_error_mm),
+		[28, 459],
+	);
+	const lift = t.lift_while_holding;
+	assert.equal(isTurnStep(lift.subgoal, lift.criterion), false);
+	assert.equal(receiverWords(lift.criterion, lift.subgoal, lift.target), "");
+	const carry = t.carry_keeps_its_receiver;
+	assert.equal(receiverWords(carry.criterion, carry.subgoal, carry.target), carry.want);
+	// "in the picture" is a camera, not a destination.
+	assert.equal(receiverWords("the knob's pointer aims somewhere new in the picture", "", "the knob"), "");
+	assert.equal(receiverWords("the bowl is in the wrist view over the plate", "", "the bowl"), "plate");
 });

@@ -133,7 +133,21 @@ export const LEANING_WORDS = [
 	"nudge",
 ];
 export const EDGE_PART_WORDS = ["rim", "edge", "lip", "handle", "wall", "side", "brim"];
-export const TURN_WORDS = ["turn", "twist", "rotate", "press"];
+export const TURN_WORDS = [
+	"turn",
+	"turns",
+	"turned",
+	"turning",
+	"twist",
+	"twists",
+	"twisted",
+	"twisting",
+	"rotate",
+	"rotates",
+	"rotated",
+	"rotating",
+	"press",
+];
 
 const phrase = (s: string, words: readonly string[]) => {
 	const t = ` ${tokens(s).join(" ")} `;
@@ -169,9 +183,12 @@ export function aboutLettingGo(s: string): boolean {
 	if (phrase(s, RELEASE_WORDS) || phrase(s, PLACING_WORDS) || phrase(s, DROPPING_WORDS)) return true;
 	return hasAny(s, ["open", "opens", "opened"]) && hasAny(s, ["jaw", "jaws", "gripper", "finger", "fingers", "grip"]);
 }
+/** The step turns what the jaws hold (a knob, a dial): turn / twist / rotate words in its sentence or criterion. */
+export const isTurnStep = (subgoal: string, criterion: string) =>
+	phrase(subgoal, TURN_WORDS) || phrase(criterion, TURN_WORDS);
 /** The step acts on what it names (a part is sought): it wants to hold, or has turn / twist / rotate / press. */
 export const actsOnWhatItNames = (subgoal: string, criterion: string, target = "") =>
-	wantsHolding(criterion, target) || phrase(subgoal, TURN_WORDS) || phrase(criterion, TURN_WORDS);
+	wantsHolding(criterion, target) || isTurnStep(subgoal, criterion);
 /** Modifiers that say which part, not what the thing is ("the near side", "the top drawer"). */
 const PART_MODIFIERS = new Set([
 	"near",
@@ -217,21 +234,27 @@ export function partOf(subgoal: string, target: string): string | undefined {
 /**
  * The receiver's words while placing (spec-executor §9): what follows on / in / into / onto / over /
  * above / toward (the vocabulary's carry criterion says "over") in the criterion, then the subgoal,
- * else the target. The held thing's own place phrases are taken out first, and a phrase the sentence
- * goes on from with "is / are" is part of the subject's name, not the receiver ("the black bowl on the
- * ramekin is placed on the plate" → plate; round 2 defect 3 sent bowls back to the ramekin).
+ * else "" — nothing to seek. The held thing's own place phrases are taken out first, and a phrase the
+ * sentence goes on from with "is / are" is part of the subject's name, not the receiver ("the black bowl
+ * on the ramekin is placed on the plate" → plate; round 2 defect 3 sent bowls back to the ramekin).
+ * "in the picture / view / image" is a camera, not a place. Round 3 defect 4: the fallback was the
+ * target itself, so a knob-turn step located the knob in the jaws from a fixed view, 190–669 mm off,
+ * and the model drove there; the original returns "" and no look is taken.
  */
 export function receiverWords(criterion: string, subgoal: string, target: string): string {
 	const re =
 		/\b(?:on|onto|in|into|inside|within|atop|upon|over|above|toward|towards)\s+(?:the\s+)?([a-z][a-z0-9 _-]*?)(\s+(?:is|are|was|were|with|while|and|so|until|then|,)|[.,;]|$)/gi;
 	for (const text of [criterion, subgoal]) {
-		const t = stripPlace(text, target).replace(/in the (wrist|scene|side) (view|camera|picture)/gi, " ");
+		const t = stripPlace(text, target).replace(
+			/in the (?:(?:wrist|scene|side) )?(?:view|camera|picture|image|frame)\b/gi,
+			" ",
+		);
 		for (const m of t.matchAll(re)) {
 			if (/^\s+(is|are|was|were)$/i.test(m[2])) continue;
 			if (m[1]?.trim()) return m[1].trim();
 		}
 	}
-	return target;
+	return "";
 }
 /** The part phrase before "from the side". */
 export function sidePartWords(subgoal: string, target: string): string {
