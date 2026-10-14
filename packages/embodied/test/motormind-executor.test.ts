@@ -2412,6 +2412,18 @@ test("executor: round 3 defect 5 — a payload that met something has no clearan
 	// its top: "top of …" names a top part, so a part point or a measured top face raises it (synthetic heights).
 	const onTable = s.receiver.center;
 	assert.equal(namesAPart(t.receiver_words), "top");
+	// Smoke 6: the put step's words for the same receiver.
+	assert.equal(
+		receiverWords(
+			"the jaws are open and the silver patterned bowl rests on the top surface of the dark brown drawer unit",
+			"",
+			t.target,
+		),
+		"top surface of the dark brown drawer unit",
+	);
+	assert.equal(namesAPart("top surface of the dark brown drawer unit"), "top");
+	assert.equal(namesAPart("the top face of the box"), "top");
+	assert.equal(namesAPart("the front face of the cabinet"), "face", "a side part's face is the side part's own word");
 	const raised = receiverTop(onTable, { part_point: [0.75, -0.26, tableZ + 0.2] }, t.receiver_words);
 	close(raised[2], tableZ + 0.2, 1e-9, "the top part's height");
 	assert.deepEqual(raised.slice(0, 2), onTable.slice(0, 2), "x and y are kept");

@@ -125,6 +125,9 @@ export function namesAPart(words: string): string | undefined {
 	let i = 0;
 	while (i < t.length && ARTICLES.includes(t[i])) i++;
 	const head = t.slice(i, i + 3);
+	// "the top surface of the cabinet" / "the top face of the box" name the top as "the top of" does
+	// (smoke 6, goal t4 s0: the put step's "top surface of the drawer unit" was read on the table, 437 mm down).
+	if (TOP_PARTS.includes(head[0]) && (head[1] === "surface" || head[1] === "face") && head[2] === "of") return head[0];
 	const parts = [...SIDE_PARTS, ...TOP_PARTS];
 	// "handle of the mug" / "near side of the bowl" / "mug handle" / "lid".
 	for (let k = 0; k < Math.min(head.length, 2); k++) {
