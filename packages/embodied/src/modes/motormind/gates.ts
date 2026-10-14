@@ -1260,10 +1260,17 @@ export const SIDE_BODY_LOOKS = 3;
 export function sideTakeBlock(s: SubgoalState, f: Frame, caps: Caps): { text: string; cannot?: string } {
 	const horizontal = isHorizontal(f.pose, caps);
 	const down = jawsDown(f.pose);
-	if (f.grasp.holding === true && horizontal)
+	if (f.grasp.holding === true && horizontal) {
+		// The pull named in direction words, as the original's THE PULL (smoke 13, goal t0 s1: the handle held
+		// with the jaws pointing right, "the opposite of the direction the jaws face" was read as BACKWARD and
+		// the drawer, which opens to the left, was pulled into the cabinet's side twice).
+		const a = approach(f.pose).axis;
+		const into = levelWord(a);
+		const pull = levelWord(scale(a, -1));
 		return {
-			text: "SIDE TAKE: the jaws hold something sideways. Pull straight back along the approach axis (the opposite of the direction the jaws face), neither up nor turning, until it stops moving; then open.",
+			text: `SIDE TAKE, THE PULL: the jaws point ${into.toUpperCase()}, into the face of what they hold, so it opens with a pull ${pull.toUpperCase()}, away from its body along its line: move ${pull}, neither up nor turning, until it stops giving; then open the jaws.`,
 		};
+	}
 	if (!down && !s.sideStep)
 		return {
 			text: `SIDE TAKE: the jaws are tilted but this step is not a side take. ${horizontal ? "Back off along the approach first, then" : "Then"} ${turnBackDown(f.pose)} to face down again.`,

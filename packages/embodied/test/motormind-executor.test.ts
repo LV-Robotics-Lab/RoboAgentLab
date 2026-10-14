@@ -2584,6 +2584,16 @@ test("executor: smoke 6 (goal t0 s1) — a side take's body is what the part sta
 		sideTakeBlock(s, { ...f, pose: { ...f.pose, rotation: level } }, CAPS).text,
 		/the jaws already point right/,
 	);
+	// Holding the handle with the jaws pointing right, the pull is named: LEFT (smoke 13 pulled BACKWARD).
+	const held = sideTakeBlock(
+		s,
+		{ ...f, pose: { ...f.pose, rotation: level }, grasp: { ...f.grasp, holding: true } },
+		CAPS,
+	);
+	assert.match(
+		held.text,
+		/jaws point RIGHT, into the face .* a pull LEFT, away from its body along its line: move left/,
+	);
 	// Turned into the face, the aim is the part itself: the move in stops against the face.
 	assert.deepEqual(aimPoint(s, { ...f.pose, rotation: level }, CAPS), s.located.point);
 	// No body outlined: which way the face faces is not known, not "away from the tool". The cameras are asked
