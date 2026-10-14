@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed OpenCode Go Gemini models failing with a 404 by moving OpenCode Zen and OpenCode Go to the `opencode.ai/inference` endpoints, and added Google Generative AI support to the OpenCode Go provider
+- Fixed OpenCode Go MiniMax M2.7 failing with "Model does not support this protocol" by using the Anthropic Messages API
 - Fixed `server_busy` and `servers are currently busy` provider errors ending the turn instead of being retried ([#10543](https://github.com/earendil-works/pi/issues/10543))
 - Fixed NInfer queue admission timeouts (`inference request expired while waiting for admission`, sent mid-stream without an HTTP status) ending the turn instead of being retried
 
