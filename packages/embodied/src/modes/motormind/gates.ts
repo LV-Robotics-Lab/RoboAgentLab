@@ -917,11 +917,16 @@ export function noteOpened(s: SubgoalState) {
 }
 
 /** A blocked segment going down: the close-in look is due again; every blocked axis is kept this cycle. */
-export function noteBlocked(s: SubgoalState, step: SegmentReport) {
+export function noteBlocked(s: SubgoalState, step: SegmentReport, moveAxis?: Vec3) {
 	if (step.abort_reason !== "blocked") return;
 	if (step.axis) {
 		s.blockedAxes.push(step.axis);
 		if (step.axis[2] < -0.5) s.lookedClose = false;
+	} else if (moveAxis && step.kind === "translate") {
+		// A contact push reports no axis, but it met something along the one it was given (the original's
+		// mid-batch `_blocked_axis = delta.axis`): smoke 9, goal t0 s1, a side take's push into the handle
+		// stopped on contact and the close in the same reply was refused as "advance ... until something is met".
+		s.blockedAxes.push(moveAxis);
 	}
 }
 /**

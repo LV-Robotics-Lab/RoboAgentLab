@@ -51,6 +51,7 @@ import {
 	keepBlockedAxes,
 	newState,
 	noMotion,
+	noteBlocked,
 	noteEmptyClose,
 	noteGrasped,
 	partOf,
@@ -2574,4 +2575,59 @@ test("executor: smoke 6 (goal t0 s1) — a side take's body is what the part sta
 	});
 	s2.located = { ...s.located, body: undefined };
 	assert.match(sideTakeBlock(s2, f, CAPS).cannot ?? "", /which way its face faces is not known/);
+});
+
+test("executor: smoke 9 (goal t0 s1) — a side take's contact push that stops on the face lets the close in the same reply through", () => {
+	// The jaws rolled to point right (into a face looking left), a contact push right met the handle and stopped:
+	// a push reports no axis, so the block was not seen and the close was refused as "advance until something is met".
+	const rolled: Mat3 = [
+		[1, 0, 0],
+		[0, 0, -1],
+		[0, 1, 0],
+	];
+	const words = "the handle of the middle drawer of the dark cabinet";
+	const s = newState({
+		subgoal: `take ${words} from the side and close on it`,
+		criterion: "held",
+		target: words,
+		planBoxes: {},
+	});
+	assert.equal(s.sideStep, true);
+	const f = { ...frameAt({ position_m: [0.684, -0.12, TABLE_Z + 0.112], rotation: rolled }), table_z_m: TABLE_Z };
+	assert.deepEqual(approach(f.pose).axis, [0, -1, 0]);
+	const push = toDelta(
+		{ index: 0, type: "move", direction: "right", distance_mm: 124, stop_on_contact: true, frame: "base", note: "" },
+		CAPS,
+	);
+	const closeDelta = toDelta({ index: 1, type: "gripper", state: "close", frame: "base", note: "" }, CAPS);
+	const ctx = {
+		state: s,
+		frame: f,
+		caps: CAPS,
+		read: { clearance_mm: undefined, seen: false } as never,
+		running: true,
+		heightMm: undefined,
+		topZ: undefined,
+		descentBlocked: false,
+	};
+	const met: SegmentReport = {
+		label: "move right 124.0 mm (base) [3/3]",
+		kind: "translate",
+		outcome: "contact",
+		abort_reason: "blocked",
+		moved_mm: 19,
+		along_axis_mm: 19,
+		lateral_mm: 7,
+		turned_deg: 0.4,
+		ticks: 30,
+		elapsed_s: 0.4,
+	};
+	noteBlocked(s, met);
+	assert.match(
+		closeDepthGate([closeDelta], ctx) ?? "",
+		/advance along the approach axis/,
+		"the old code: no axis, no block",
+	);
+	noteBlocked(s, met, push.axis as Vec3);
+	assert.equal(closeDepthGate([closeDelta], ctx), undefined);
 });

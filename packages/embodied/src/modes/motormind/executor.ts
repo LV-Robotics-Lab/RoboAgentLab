@@ -529,7 +529,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 				onEvent({ type: "step_end", cycle: cycle.index, step: st });
 				if (st.kind === "translate" && st.abort_reason === "blocked" && st.axis && st.axis[2] < -0.5)
 					descentBlocked = true;
-				noteBlocked(s, st);
+				noteBlocked(s, st, d.axis as Vec3 | undefined);
 				if (st.kind === "gripper" && st.outcome === "done") {
 					if (d.gripper_state === "close") {
 						const holding = closeOutcome(st, s);
