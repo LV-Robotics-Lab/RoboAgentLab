@@ -74,6 +74,7 @@ import {
 	SIDE_BODY_LOOKS,
 	type SubgoalState,
 	shoved,
+	sidePartWord,
 	sidePartWords,
 	sideTakeBlock,
 	sinceLastFrame,
@@ -880,7 +881,11 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			tool_z_m: frame.pose.position_m[2],
 			top_z_m: faces.topZ(frame.table_z_m),
 			part: !!acts,
-			...(acts && s.wantsHolding ? { part_word: partOf(sg.subgoal, sg.target) } : {}),
+			...(s.sideStep
+				? { part_word: sidePartWord(words) }
+				: acts && s.wantsHolding
+					? { part_word: partOf(sg.subgoal, sg.target) }
+					: {}),
 			...(useBoxes ? { boxes: s.planBoxes } : {}),
 			...(s.located && s.located.words === words ? { last_seen: s.located.point, hint_boxes: s.planBoxes } : {}),
 			...(o.wristOnly ? { wrist_only: true } : {}),

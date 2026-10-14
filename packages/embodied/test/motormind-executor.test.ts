@@ -62,6 +62,7 @@ import {
 	residualOf,
 	SIDE_BODY_LOOKS,
 	shoved,
+	sidePartWord,
 	sidePartWords,
 	sideTakeBlock,
 	sideTurn,
@@ -2274,6 +2275,22 @@ test("executor: round 3 defect 3 (side take) — the part phrase is asked for, a
 	assert.equal(sidePartWords(a.subgoal, a.target), "the handle of the middle drawer of the cabinet");
 	assert.equal(sidePartWords("come at the top drawer from the side and close", "the top drawer"), "the top drawer");
 	assert.equal(sidePartWords("approach it from the side", "the cabinet"), "the cabinet");
+	// Smoke 12: the handle named before the face it stands on is the part, its modifiers kept; its part word is "handle".
+	const s12 = sidePartWords(
+		"Move the gripper to the middle silver handle on the front of the dark cabinet, approach it from the side, and close the jaws to grasp it.",
+		"the middle drawer of the dark cabinet",
+	);
+	assert.equal(s12, "the middle silver handle on the front of the dark cabinet");
+	assert.equal(sidePartWord(s12), "handle");
+	assert.equal(sidePartWord("the handle of the middle drawer of the cabinet"), "handle");
+	assert.equal(
+		sidePartWords("Take the handle of the middle drawer from the side and close on it.", "x"),
+		"the handle of the middle drawer",
+	);
+	assert.equal(
+		sidePartWords("Move the gripper to the handle of the top drawer, approach it from the side, and close.", "x"),
+		"the handle of the top drawer",
+	);
 	const down: Mat3 = [
 		[1, 0, 0],
 		[0, -1, 0],

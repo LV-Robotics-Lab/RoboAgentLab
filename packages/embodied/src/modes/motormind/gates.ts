@@ -256,6 +256,14 @@ export function receiverWords(criterion: string, subgoal: string, target: string
 	}
 	return "";
 }
+/** The part word of a side take's words: the first word naming a part ("handle" in "the middle silver handle on ..."). */
+export function sidePartWord(words: string): string | undefined {
+	for (const w of words.toLowerCase().match(/[a-z]+/g) ?? []) {
+		const part = aPartWord(w) ?? (EDGE_PART_WORDS.includes(stem(w)) ? stem(w) : undefined);
+		if (part) return part;
+	}
+	return undefined;
+}
 /** The part phrase before "from the side". */
 /**
  * The part phrase a side-take step names, the words a camera can box it by: "the <part> of <what it is
@@ -267,6 +275,14 @@ export function receiverWords(criterion: string, subgoal: string, target: string
  */
 export function sidePartWords(subgoal: string, target: string): string {
 	const text = subgoal.replace(/\s+/g, " ").trim();
+	// A handle named before where it stands ("the middle silver handle on the front of the dark cabinet") is the
+	// part, not the face it stands on (smoke 12, goal t0 s1: "front of the dark cabinet" was looked for, the
+	// point read at the face's middle 27 mm off the handle, and the close shut on nothing).
+	const held =
+		/\b((?:the|a|an|its)\s+(?:(?!(?:to|the|a|an|its|gripper|jaws|tool|over|at|on|of)\b)[a-z-]+\s+){0,3}?(?:handle|knob|lever|bar)s?)\s+(on|of|at|in)\s+(.+?)(?=[,;.]| and\b| then\b| from the side\b|$)/i.exec(
+			text,
+		);
+	if (held) return `${held[1]} ${held[2]} ${held[3].trim()}`.replace(/\s+/g, " ");
 	const phraseRe = /\b([a-z]+) of (.+?)(?=[,;.]| and\b| then\b| from the side\b|$)/gi;
 	for (const m of text.matchAll(phraseRe)) {
 		const part =
