@@ -2434,4 +2434,26 @@ test("planner: round 3 defect 6 — the side complaint is for a tilt or a close 
 	};
 	const keys = complaints(raw, { first: false, fixed: [], cannot: [], budget: 10, task: "t" }).map((c) => c.key);
 	assert.ok(!keys.includes("side"), keys.join(","));
+	// Smoke 7 (goal t0 s1): told only that its step did "not say from the side", the planner wrote the same
+	// top-down grasp twice more; the complaint names the vocabulary's step to write instead.
+	const topDown = {
+		...raw,
+		subgoals: [
+			{
+				name: "grasp_handle",
+				subgoal:
+					"Move the gripper to the handle of the middle drawer of the dark cabinet, align the jaws horizontally to enclose the handle, and close the jaws.",
+				criterion: "The robot reports that it is HOLDING the handle of the middle drawer.",
+				target: "the middle drawer of the dark cabinet",
+				clause: 0,
+			},
+		],
+	};
+	const side = complaints(topDown, { first: false, fixed: [], cannot: [], budget: 10, task: "t" }).find(
+		(c) => c.key === "side",
+	);
+	assert.match(
+		side?.text ?? "",
+		/grasp_handle .*"take the handle of <the drawer or door> from the side and close on it"/,
+	);
 });

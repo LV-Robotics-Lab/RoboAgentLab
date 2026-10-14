@@ -386,7 +386,7 @@ export function complaints(
 	if (side.length)
 		out.push({
 			key: "side",
-			text: `${side.map((s) => String(s.name)).join(", ")} tilt the gripper or grasp a sliding handle but do not say "from the side"`,
+			text: `${side.map((s) => String(s.name)).join(", ")} close on the handle of something that slides, or tilt the jaws, without saying "from the side", the only words that let the robot tilt them. Write each as the vocabulary's step "take the handle of <the drawer or door> from the side and close on it": one step that makes its own approach, with no step before it that tilts the jaws`,
 		});
 	if (o.first && !raw.clauses?.length)
 		out.push({ key: "clauses", text: "the first plan must list the task's clauses" });
