@@ -536,5 +536,470 @@
     "want": "white plate"
    }
   ]
+ },
+ "object_t3_s0_take_drift": {
+  "_note": "take_bbq_sauce_retry attempt 1 (the point carried in was [668,-93]; truth about 654): every cycle's descent was a push=true delta blocked by contact on the cap (lateral 1.4-2.9 mm), the shove rule then looked again each cycle and the anchor followed the tool 687 -> 700 -> 707 -> 710 -> 712 -> 714 (next attempt)",
+  "truth_x_mm": 654,
+  "carried_point_mm": [
+   668,
+   -93,
+   113
+  ],
+  "cycles": [
+   {
+    "index": 0,
+    "located": null,
+    "deltas": [
+     {
+      "kind": "translate",
+      "label": "move backward 5.0 mm (base)",
+      "axis": [
+       -1,
+       0,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move left 2.0 mm (base)",
+      "axis": [
+       0,
+       1,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move down 30.0 mm (base)",
+      "axis": [
+       0,
+       0,
+       -1
+      ],
+      "push": true
+     }
+    ],
+    "steps": [
+     {
+      "label": "move backward 5.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 2.29,
+      "lateral_mm": 0.83,
+      "turned_deg": 0.2
+     },
+     {
+      "label": "move left 2.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0,
+      "lateral_mm": 0,
+      "turned_deg": 0
+     },
+     {
+      "label": "move down 30.0 mm (base) [1/1]",
+      "outcome": "contact",
+      "abort_reason": "blocked",
+      "along_axis_mm": 0.91,
+      "lateral_mm": 1.43,
+      "turned_deg": 0.3
+     }
+    ],
+    "batch": {
+     "actions": 3,
+     "ran": 3,
+     "motion_s": 0.757,
+     "residual_mm": 4.7168667790869145
+    }
+   },
+   {
+    "index": 1,
+    "located": {
+     "label": "brown bbq sauce bottle with red cap",
+     "point_mm": [
+      687.3542748322641,
+      -91.8636804344622,
+      113.14873980717414
+     ],
+     "error_mm": 10,
+     "doubtful": true
+    },
+    "deltas": [
+     {
+      "kind": "translate",
+      "label": "move backward 4.0 mm (base)",
+      "axis": [
+       -1,
+       0,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move left 2.0 mm (base)",
+      "axis": [
+       0,
+       1,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move down 30.0 mm (base)",
+      "axis": [
+       0,
+       0,
+       -1
+      ],
+      "push": true
+     }
+    ],
+    "steps": [
+     {
+      "label": "move backward 4.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 1.1,
+      "lateral_mm": 0.63,
+      "turned_deg": 0.2
+     },
+     {
+      "label": "move left 2.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0,
+      "lateral_mm": 0,
+      "turned_deg": 0
+     },
+     {
+      "label": "move down 30.0 mm (base) [1/1]",
+      "outcome": "contact",
+      "abort_reason": "blocked",
+      "along_axis_mm": 0.72,
+      "lateral_mm": 1.62,
+      "turned_deg": 0.2
+     }
+    ],
+    "batch": {
+     "actions": 3,
+     "ran": 3,
+     "motion_s": 0.492,
+     "residual_mm": 5.24087670580257
+    }
+   },
+   {
+    "index": 2,
+    "located": {
+     "label": "brown bbq sauce bottle with red cap",
+     "point_mm": [
+      700.449744914367,
+      -91.34100416762384,
+      113.14873980717414
+     ],
+     "error_mm": 41.028004834130265,
+     "doubtful": true
+    },
+    "deltas": [
+     {
+      "kind": "translate",
+      "label": "move forward 8.0 mm (base)",
+      "axis": [
+       1,
+       0,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move left 3.0 mm (base)",
+      "axis": [
+       0,
+       1,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move down 30.0 mm (base)",
+      "axis": [
+       0,
+       0,
+       -1
+      ],
+      "push": true
+     }
+    ],
+    "steps": [
+     {
+      "label": "move forward 8.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 5.27,
+      "lateral_mm": 0.55,
+      "turned_deg": 0.3
+     },
+     {
+      "label": "move left 3.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0.22,
+      "lateral_mm": 0.43,
+      "turned_deg": 0
+     },
+     {
+      "label": "move down 30.0 mm (base) [1/1]",
+      "outcome": "contact",
+      "abort_reason": "blocked",
+      "along_axis_mm": -0.19,
+      "lateral_mm": 2.9,
+      "turned_deg": 0.2
+     }
+    ],
+    "batch": {
+     "actions": 3,
+     "ran": 3,
+     "motion_s": 0.8879999999999999,
+     "residual_mm": 2.817015397348514
+    }
+   },
+   {
+    "index": 3,
+    "located": {
+     "label": "brown bbq sauce bottle with red cap",
+     "point_mm": [
+      706.6351789992174,
+      -90.26639262677084,
+      113.14873980717414
+     ],
+     "error_mm": 58.55005838331539,
+     "doubtful": false
+    },
+    "deltas": [
+     {
+      "kind": "translate",
+      "label": "move forward 6.0 mm (base)",
+      "axis": [
+       1,
+       0,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move left 4.0 mm (base)",
+      "axis": [
+       0,
+       1,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move down 30.0 mm (base)",
+      "axis": [
+       0,
+       0,
+       -1
+      ],
+      "push": true
+     }
+    ],
+    "steps": [
+     {
+      "label": "move forward 6.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 3.05,
+      "lateral_mm": 0.32,
+      "turned_deg": 0.3
+     },
+     {
+      "label": "move left 4.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 1.59,
+      "lateral_mm": 0.98,
+      "turned_deg": 0.1
+     },
+     {
+      "label": "move down 30.0 mm (base) [1/1]",
+      "outcome": "contact",
+      "abort_reason": "blocked",
+      "along_axis_mm": 0.37,
+      "lateral_mm": 2.1,
+      "turned_deg": 0.2
+     }
+    ],
+    "batch": {
+     "actions": 3,
+     "ran": 3,
+     "motion_s": 0.913,
+     "residual_mm": 2.5440594742864207
+    }
+   },
+   {
+    "index": 4,
+    "located": {
+     "label": "brown bbq sauce bottle with red cap",
+     "point_mm": [
+      709.8573896030565,
+      -89.67102963136058,
+      113.14873980717414
+     ],
+     "error_mm": 49.6776291902194,
+     "doubtful": true
+    },
+    "deltas": [
+     {
+      "kind": "translate",
+      "label": "move forward 3.0 mm (base)",
+      "axis": [
+       1,
+       0,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move left 3.0 mm (base)",
+      "axis": [
+       0,
+       1,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move down 30.0 mm (base)",
+      "axis": [
+       0,
+       0,
+       -1
+      ],
+      "push": true
+     }
+    ],
+    "steps": [
+     {
+      "label": "move forward 3.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0.3,
+      "lateral_mm": 0.18,
+      "turned_deg": 0
+     },
+     {
+      "label": "move left 3.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0.22,
+      "lateral_mm": 0.24,
+      "turned_deg": 0
+     },
+     {
+      "label": "move down 30.0 mm (base) [1/1]",
+      "outcome": "contact",
+      "abort_reason": "blocked",
+      "along_axis_mm": 0.12,
+      "lateral_mm": 2.13,
+      "turned_deg": 0.2
+     }
+    ],
+    "batch": {
+     "actions": 3,
+     "ran": 3,
+     "motion_s": 0.48,
+     "residual_mm": 3.2052009415873486
+    }
+   },
+   {
+    "index": 5,
+    "located": {
+     "label": "brown bottle",
+     "point_mm": [
+      712.4154746982696,
+      -90.46106853560778,
+      113.14873980717414
+     ],
+     "error_mm": 62.60361617565574,
+     "doubtful": false
+    },
+    "deltas": [
+     {
+      "kind": "translate",
+      "label": "move forward 3.0 mm (base)",
+      "axis": [
+       1,
+       0,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move left 2.0 mm (base)",
+      "axis": [
+       0,
+       1,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move down 31.0 mm (base)",
+      "axis": [
+       0,
+       0,
+       -1
+      ],
+      "push": true
+     }
+    ],
+    "steps": [
+     {
+      "label": "move forward 3.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0.3,
+      "lateral_mm": 0.18,
+      "turned_deg": 0
+     },
+     {
+      "label": "move left 2.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0,
+      "lateral_mm": 0,
+      "turned_deg": 0
+     },
+     {
+      "label": "move down 31.0 mm (base) [1/1]",
+      "outcome": "contact",
+      "abort_reason": "blocked",
+      "along_axis_mm": 0.05,
+      "lateral_mm": 2.41,
+      "turned_deg": 0.2
+     }
+    ],
+    "batch": {
+     "actions": 3,
+     "ran": 3,
+     "motion_s": 0.41100000000000003,
+     "residual_mm": 2.841922243870987
+    }
+   }
+  ],
+  "ending": "FROZEN"
  }
 }

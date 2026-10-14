@@ -34,8 +34,8 @@ import {
 import { actArgs, runSubgoal } from "../src/modes/motormind/executor.ts";
 import { apply, dot, IDENTITY, labelDirection, matmul, sub, transpose, unit } from "../src/modes/motormind/frames.ts";
 import {
-	closeOutcome,
 	centreMiss,
+	closeOutcome,
 	dragging,
 	edgeOffsetMm,
 	edgePoint,
@@ -670,7 +670,10 @@ test("executor: the recovery rules read M1's recorded segments by their fields, 
 	assert.equal(blocked.outcome, "limited");
 	assert.equal(blocked.abort_reason, "blocked");
 	// A blocked descent that made 15 of 50 mm: the cycle "did not move" (stopped early), unless the jaws changed.
-	const down50 = toDelta({ index: 0, type: "move", direction: "down", distance_mm: 50, frame: "base", note: "" }, CAPS);
+	const down50 = toDelta(
+		{ index: 0, type: "move", direction: "down", distance_mm: 50, frame: "base", note: "" },
+		CAPS,
+	);
 	assert.equal(noMotion([blocked], [down50], false).frozen, true);
 	assert.equal(noMotion([blocked], [down50], true).frozen, false);
 	// The skid: 5.3 mm sideways on a 10 mm rise; a descent with that drift would count as shoved.
@@ -1531,7 +1534,11 @@ test("executor: step 4 defect 1 — an inherited frozen count freezes only a bar
 	const m2 = scripted({ executor: [claim] });
 	const robot2 = fakeRobot();
 	const cache2: FrameCache = { stale: true };
-	const run2 = await drive(runSubgoal(input({ ask: m2.ask, cache: cache2, carry: S4_CARRY(1) as never })), robot2, cache2);
+	const run2 = await drive(
+		runSubgoal(input({ ask: m2.ask, cache: cache2, carry: S4_CARRY(1) as never })),
+		robot2,
+		cache2,
+	);
 	assert.equal(run2.ending, "FROZEN");
 	assert.match(run2.cycles[0].stopped_by ?? "", /before this claim/);
 });
@@ -1633,15 +1640,25 @@ test("executor: step 4 defect 4 — stopped short is judged over the whole batch
 	const r = noMotion(blocked.segments, s4Deltas(blocked), false);
 	assert.equal(r.frozen, true);
 	assert.match(r.why, /^a move stopped early: a segment was blocked/);
-	const asked200 = [s4Delta({ kind: "translate", label: "move left 200.0 mm (base)", axis: [0, 1, 0], magnitude_mm: 200 }, 0)];
-	const short: SegmentReport[] = [{ ...blocked.segments[0], outcome: "done", abort_reason: undefined, moved_mm: 30, along_axis_mm: 30 }];
+	const asked200 = [
+		s4Delta({ kind: "translate", label: "move left 200.0 mm (base)", axis: [0, 1, 0], magnitude_mm: 200 }, 0),
+	];
+	const short: SegmentReport[] = [
+		{ ...blocked.segments[0], outcome: "done", abort_reason: undefined, moved_mm: 30, along_axis_mm: 30 },
+	];
 	const r2 = noMotion(short, asked200, false);
 	assert.equal(r2.frozen, true);
 	assert.match(r2.why, /^a move stopped early: the batch made 30\.0 of the 200\.0 mm/);
 	assert.equal(noMotion([{ ...short[0], moved_mm: 60, along_axis_mm: 60 }], asked200, false).frozen, false);
 	// Moved under 1 mm in all: frozen whatever was asked; a turn of half a degree is motion.
-	assert.match(noMotion([{ ...short[0], moved_mm: 0.4, along_axis_mm: 0.4 }], asked200, false).why, /moved 0\.4 mm in all/);
-	assert.equal(noMotion([{ ...short[0], moved_mm: 0.4, along_axis_mm: 0.4, turned_deg: 0.6 }], asked200, false).frozen, false);
+	assert.match(
+		noMotion([{ ...short[0], moved_mm: 0.4, along_axis_mm: 0.4 }], asked200, false).why,
+		/moved 0\.4 mm in all/,
+	);
+	assert.equal(
+		noMotion([{ ...short[0], moved_mm: 0.4, along_axis_mm: 0.4, turned_deg: 0.6 }], asked200, false).frozen,
+		false,
+	);
 	// The 190 mm cycle of defect 1 asked 72 (inserted lift) + 162 + 105 and made it all: not frozen by any rule.
 	const far = S4.spatial_t0_s0.top_a1_c0_moved_190;
 	assert.equal(noMotion(far.segments, s4Deltas(far), false).frozen, false);
@@ -1661,7 +1678,10 @@ test("executor: step 4 defect 6 — a one-view answer with a wide bar is doubtfu
 		objects: [{ label: "akita black bowl", bbox_2d: perfectBox(scene, "akita_black_bowl_2").map(Math.round) }],
 		target: "akita black bowl",
 	};
-	const plate = { objects: [{ label: "plate", bbox_2d: perfectBox(scene, "plate_1").map(Math.round) }], target: "plate" };
+	const plate = {
+		objects: [{ label: "plate", bbox_2d: perfectBox(scene, "plate_1").map(Math.round) }],
+		target: "plate",
+	};
 	const nothing = { objects: [], target: "" };
 	const tag = (c: Camera): Camera => ({ ...c, raw512: c.name, marked512: c.name });
 	const l = await locate({
@@ -1752,7 +1772,12 @@ test("executor: step 4 defect 6 — a one-view answer with a wide bar is doubtfu
 			input({
 				ask: m1.ask,
 				cache: cache1,
-				subgoal: { subgoal: "move the jaws over the plate", criterion: "the tool is centred over the plate", target: "plate", target_boxes: {} },
+				subgoal: {
+					subgoal: "move the jaws over the plate",
+					criterion: "the tool is centred over the plate",
+					target: "plate",
+					target_boxes: {},
+				},
 			}),
 		),
 		robot1,
@@ -1774,13 +1799,22 @@ test("executor: step 4 defect 7 — a thing wider than the jaws is aimed at its 
 	// blocked 25 mm above the top face. The original shifts the aim by width/2 - (pad/2 + 12 mm) along the jaw line.
 	const truth = objectsBase.akita_black_bowl_1;
 	const s = newState({
-		subgoal: "descend the rest of the way until the jaws are level with the rim of the akita black bowl, with it between them, and close",
+		subgoal:
+			"descend the rest of the way until the jaws are level with the rim of the akita black bowl, with it between them, and close",
 		criterion: "The robot reports that it is HOLDING the akita black bowl.",
 		target: "akita black bowl",
 		planBoxes: {},
 	});
 	const middle: Vec3 = [truth[0], truth[1], TABLE_Z + 0.02];
-	s.located = { words: "akita black bowl", point: middle, method: "two views met", error_mm: 10, error_class: "", on_face: false, cameras: ["scene", "side"] };
+	s.located = {
+		words: "akita black bowl",
+		point: middle,
+		method: "two views met",
+		error_mm: 10,
+		error_class: "",
+		on_face: false,
+		cameras: ["scene", "side"],
+	};
 	s.footprint = [
 		[truth[0] - 0.059, truth[1], TABLE_Z],
 		[truth[0] + 0.059, truth[1], TABLE_Z],
@@ -1808,13 +1842,24 @@ test("executor: step 4 defect 7 — a thing wider than the jaws is aimed at its 
 	s.footprintIsPart = true;
 	close(edgeOffsetMm(s, CAPS)!.mm, 59 - 17 / 2, 1e-9);
 	s.footprintIsPart = false;
-	const push = newState({ subgoal: "push the akita black bowl along the table with the jaws closed", criterion: "the bowl has moved", target: "akita black bowl", planBoxes: {} });
+	const push = newState({
+		subgoal: "push the akita black bowl along the table with the jaws closed",
+		criterion: "the bowl has moved",
+		target: "akita black bowl",
+		planBoxes: {},
+	});
 	push.located = s.located;
 	push.footprint = s.footprint;
 	assert.equal(edgeOffsetMm(push, CAPS), undefined);
 	assert.equal(edgePoint(push, pose, CAPS), undefined);
 	// The hover step before the take aims at the edge too; a narrower object is aimed at its middle.
-	const hover = newState({ subgoal: "open the jaws, move the gripper over the akita black bowl and lower it until it hovers about a palm's height above the bowl, jaws still open", criterion: "the bowl sits directly under the gripper, the jaws are open", target: "akita black bowl", planBoxes: {} });
+	const hover = newState({
+		subgoal:
+			"open the jaws, move the gripper over the akita black bowl and lower it until it hovers about a palm's height above the bowl, jaws still open",
+		criterion: "the bowl sits directly under the gripper, the jaws are open",
+		target: "akita black bowl",
+		planBoxes: {},
+	});
 	hover.located = s.located;
 	hover.footprint = s.footprint;
 	assert.ok(edgePoint(hover, pose, CAPS));
@@ -1854,7 +1899,10 @@ test("executor: step 4 defect 7 — a thing wider than the jaws is aimed at its 
 		],
 	};
 	assert.equal(quarterTurnForReach(s, alongY, CAPS), 'rotate "yaw_left" 90');
-	assert.match(whereTheTargetIs(s, frameAt(alongY), CAPS, TABLE_Z + 0.034), /NEITHER RIM along that line is inside this arm's reach\. rotate "yaw_left" 90/);
+	assert.match(
+		whereTheTargetIs(s, frameAt(alongY), CAPS, TABLE_Z + 0.034),
+		/NEITHER RIM along that line is inside this arm's reach\. rotate "yaw_left" 90/,
+	);
 });
 
 test("executor: step 4 defect 8 — a close that holds tracks the payload whatever the gap, so the carry seeks the receiver", () => {
@@ -1866,7 +1914,15 @@ test("executor: step 4 defect 8 — a close that holds tracks the payload whatev
 		target: "akita black bowl",
 		planBoxes: {},
 	});
-	s.located = { words: "akita black bowl", point: [0.6, 0.2, 0.0], method: "m", error_mm: 10, error_class: "", on_face: false, cameras: ["scene"] };
+	s.located = {
+		words: "akita black bowl",
+		point: [0.6, 0.2, 0.0],
+		method: "m",
+		error_mm: 10,
+		error_class: "",
+		on_face: false,
+		cameras: ["scene"],
+	};
 	const rim: SegmentReport = {
 		label: "gripper close",
 		kind: "gripper",
@@ -1894,9 +1950,102 @@ test("executor: step 4 defect 8 — a close that holds tracks the payload whatev
 	assert.equal(s.payload.width_mm, 7.6);
 	assert.equal(s.payload.edge, true);
 	assert.ok(s.payload.offset, "the middle's offset is known");
-	close(dot(s.payload.offset as Vec3, line) * 1000 * Math.sign(dot([0.052, 0, 0], line)), 48.5, 1e-9, "48.5 mm toward the middle");
+	close(
+		dot(s.payload.offset as Vec3, line) * 1000 * Math.sign(dot([0.052, 0, 0], line)),
+		48.5,
+		1e-9,
+		"48.5 mm toward the middle",
+	);
 	close(s.payload.span_mm as number, 138, 1e-9);
 	assert.equal(s.located, undefined, "the thing left where it was");
 	// The receiver's words come from the criterion of the carry step, now that something is held.
-	assert.equal(receiverWords("The akita black bowl is over the plate and the robot still reports holding it.", "move the gripper sideways until the bowl is over the plate", "akita black bowl"), "plate");
+	assert.equal(
+		receiverWords(
+			"The akita black bowl is over the plate and the robot still reports holding it.",
+			"move the gripper sideways until the bowl is over the plate",
+			"akita black bowl",
+		),
+		"plate",
+	);
+});
+
+// ---------------------------------------------------------------------------
+// the step 4 round 2 defects (docs/motormind/step4-diagnosis-2.md), on arm B2's recorded traces
+// (fixtures/motormind/step4-diag2.json: bjb2 .local/runs/mm-step4/base-B2, main @ce9928415)
+
+test("executor: round 2 defect 4 — a descent pressing through contact is not a shove: the take step keeps its anchor instead of looking again every cycle and drifting with the tool", () => {
+	const D2 = read("step4-diag2.json");
+	const t = D2.object_t3_s0_take_drift;
+	const AXIS: Record<string, [number, number, number]> = {
+		forward: [1, 0, 0],
+		backward: [-1, 0, 0],
+		left: [0, 1, 0],
+		right: [0, -1, 0],
+		down: [0, 0, -1],
+		up: [0, 0, 1],
+	};
+	const dir = (label: string) => AXIS[/move (\w+)/.exec(label)?.[1] ?? ""];
+	const drift: number[] = [];
+	for (const c of t.cycles as Json[]) {
+		const deltas = (c.deltas as Json[]).map((d, index) => ({
+			index,
+			kind: d.kind,
+			axis: d.axis,
+			magnitude: 0.03,
+			speed: 0.05,
+			stop_on_contact: true,
+			push: d.push,
+		})) as Delta[];
+		const steps = (c.steps as Json[]).map((st) => ({
+			label: st.label,
+			kind: "translate",
+			outcome: st.outcome,
+			...(st.abort_reason ? { abort_reason: st.abort_reason } : {}),
+			moved_mm: Math.hypot(st.along_axis_mm as number, st.lateral_mm as number),
+			along_axis_mm: st.along_axis_mm,
+			lateral_mm: st.lateral_mm,
+			turned_deg: st.turned_deg,
+			axis: dir(st.label as string),
+			ticks: 1,
+			elapsed_s: 0.2,
+		})) as SegmentReport[];
+		// Each cycle: a push=true descent blocked by contact with a lateral drift under max(3 mm, the 10 mm bar).
+		assert.ok(
+			deltas.some((d) => d.push && d.axis?.[2] === -1),
+			`cycle ${c.index}: the descent was a push`,
+		);
+		assert.ok(steps.some((st) => st.abort_reason === "blocked" && st.axis?.[2] === -1));
+		assert.ok(steps.every((st) => st.lateral_mm < 3));
+		assert.equal(shoved(steps, deltas, 10), false, `cycle ${c.index}`);
+		if (c.located) drift.push(Math.round((c.located as Json).point_mm[0]));
+	}
+	// What B2 did instead: a look every cycle, the anchor walking away from the truth with the tool.
+	assert.deepEqual(drift, [687, 700, 707, 710, 712]);
+	assert.ok(drift.every((x, i) => i === 0 || x > drift[i - 1]));
+	assert.ok(Math.abs(t.carried_point_mm[0] - t.truth_x_mm) < Math.abs(drift.at(-1)! - t.truth_x_mm));
+	// A sideways push, or a descent that skids, still counts.
+	const push = {
+		index: 0,
+		kind: "translate",
+		axis: [1, 0, 0],
+		magnitude: 0.02,
+		speed: 0.05,
+		stop_on_contact: true,
+		push: true,
+	} as Delta;
+	assert.equal(shoved([], [push], 10), true);
+	const skid = {
+		label: "move down 30.0 mm (base) [1/1]",
+		kind: "translate",
+		outcome: "contact",
+		abort_reason: "blocked",
+		moved_mm: 12,
+		along_axis_mm: 0.9,
+		lateral_mm: 12,
+		turned_deg: 0.2,
+		axis: [0, 0, -1],
+		ticks: 1,
+		elapsed_s: 0.2,
+	} as SegmentReport;
+	assert.equal(shoved([skid], [], 10), true);
 });

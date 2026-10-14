@@ -793,9 +793,15 @@ export function keepBlockedAxes(s: SubgoalState, steps: SegmentReport[], holding
 export const stoppedAlongTheJaws = (s: SubgoalState, pose: Pose) =>
 	s.blockedAxes.some((a) => dot(a, approach(pose).axis) > 0.9);
 
-/** This cycle may have moved the object: a push, or a descent that drifted sideways by max(3 mm, the error). */
+/**
+ * This cycle may have moved the object: a sideways push, or a descent that drifted sideways by max(3 mm,
+ * the error). A descent that presses through contact is not a push of the object: counting it made a
+ * take step look again every cycle while the tool stood on the bottle's cap, and each look, with the
+ * tool over the thing, moved the anchor toward the tool (round 2 defect 4: 668 → 714 mm against a
+ * truth of about 654). The point stays anchored to the frame that located it; a lateral skid still counts.
+ */
 export function shoved(steps: SegmentReport[], deltas: Delta[], errorMm: number | undefined): boolean {
-	if (deltas.some((d) => d.push)) return true;
+	if (deltas.some((d) => d.push && !(d.kind === "translate" && d.axis && Math.abs(d.axis[2]) >= 0.5))) return true;
 	const limit = Math.max(SKID_MM, errorMm ?? 0);
 	return steps.some((st) => st.kind === "translate" && st.axis && st.axis[2] < -0.5 && st.lateral_mm >= limit);
 }
