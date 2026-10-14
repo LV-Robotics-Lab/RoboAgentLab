@@ -214,7 +214,8 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		if (s.spent >= maxCycles) return finish("CYCLES_EXHAUSTED");
 		if (clock.cancelled()) return finish("CANCELLED", { text: clock.cancelled()?.reason });
 		s.atTheWall = false;
-		s.blockedAxes = [];
+		// The blocked axes the last cycle kept stand through this one (spec-executor §13.4): a descent that
+		// met the thing lets the close through, this cycle too.
 		const cycleStart = Date.now();
 		const cycleCalls: RoleCallRecord[] = [];
 		let cycleMotion = 0;
@@ -303,7 +304,6 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		const forbid = forbidText(s, sg.gripper_only, fine);
 		const names = frame.camera_names.filter((n) => frame.cameras[n]?.marked512);
 		const pics: ImageContent[] = images(frame, "marked512", names);
-		const descentBlockedSoFar = false;
 		const gateCtx = (running: boolean, f: Frame, r: ClearanceRead, descentBlocked: boolean): GateContext => ({
 			state: s,
 			frame: f,
@@ -328,7 +328,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			forbid,
 			caps,
 			gate: (deltas) => {
-				const why = chainGates(deltas, gateCtx(false, frame, read, descentBlockedSoFar));
+				const why = chainGates(deltas, gateCtx(false, frame, read, false));
 				if (why) return why;
 				firstMoveIsATest(deltas, s, caps, { running: false, gripperOnly: sg.gripper_only });
 				return undefined;

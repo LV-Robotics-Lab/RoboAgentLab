@@ -35,6 +35,7 @@ import { actArgs, runSubgoal } from "../src/modes/motormind/executor.ts";
 import { apply, dot, IDENTITY, labelDirection, matmul, sub, transpose, unit } from "../src/modes/motormind/frames.ts";
 import {
 	centreMiss,
+	closeDepthGate,
 	closeOutcome,
 	dragging,
 	edgeOffsetMm,
@@ -42,6 +43,7 @@ import {
 	jawLine,
 	jawsChanged,
 	jawsShut,
+	keepBlockedAxes,
 	newState,
 	noMotion,
 	noteEmptyClose,
@@ -51,6 +53,7 @@ import {
 	receiverWords,
 	residualOf,
 	shoved,
+	stoppedAlongTheJaws,
 	wantsHolding,
 	wantsRelease,
 	whereTheTargetIs,
@@ -2072,4 +2075,102 @@ test("executor: round 3 defect 1 — the part a take step names is a word of the
 	// A compound head still reads as a part ("the mug handle"); a bare object does not.
 	assert.equal(namesAPart("the chocolate pudding box"), undefined);
 	assert.equal(namesAPart("top of the dark brown drawer unit"), "top");
+});
+
+test("executor: round 3 defect 2 — a descent that met the thing last cycle lets this cycle's close through: the blocked axis is kept across cycles, and the close-depth gate reads it", () => {
+	const t = D3.close_after_contact;
+	const tableZ = t.table_z_mm / 1000;
+	const down: Mat3 = [
+		[1, 0, 0],
+		[0, -1, 0],
+		[0, 0, -1],
+	];
+	const closeDelta = toDelta({ index: 0, type: "gripper", state: "close", frame: "base", note: "" }, CAPS);
+	const ctx = (s: ReturnType<typeof newState>, f: Frame, running: boolean) => ({
+		state: s,
+		frame: f,
+		caps: CAPS,
+		read: { clearance_mm: undefined, seen: false } as never,
+		running,
+		heightMm: undefined,
+		topZ: undefined,
+		descentBlocked: false,
+	});
+	for (const pair of t.pairs as Json[]) {
+		const s = newState({ subgoal: t.subgoal, criterion: t.criterion, target: t.target, planBoxes: {} });
+		assert.equal(s.wantsHolding, true);
+		s.located = {
+			words: t.target,
+			point: (t.located_mm as number[]).map((v) => v / 1000) as Vec3,
+			method: "scene and side met 19 mm apart",
+			error_mm: t.located_error_mm,
+			error_class: "",
+			on_face: false,
+			cameras: ["scene", "side"],
+		};
+		// The frame after the contact descent: the tool over the handle, jaws down, no top face measured (a handle has none).
+		const f = { ...frameAt({ position_m: [0.711, -0.141, tableZ + 0.195], rotation: down }), table_z_m: tableZ };
+		const descent: SegmentReport = {
+			...pair.descent,
+			kind: "translate",
+			moved_mm: pair.descent.along_axis_mm,
+			axis: [0, 0, -1],
+			ticks: 34,
+			elapsed_s: 2,
+		};
+		// What the old code did: the gate saw no block (the batch was new), arranged a re-look, and refused the close after it.
+		const old = newState({ subgoal: t.subgoal, criterion: t.criterion, target: t.target, planBoxes: {} });
+		assert.equal(closeDepthGate([closeDelta], ctx(old, f, false)), undefined);
+		assert.equal(old.relookArranged, true);
+		old.relookArranged = false;
+		assert.match(closeDepthGate([closeDelta], ctx(old, f, true)) ?? "", /top face has never been measured/);
+		assert.equal(closeDepthGate([closeDelta], ctx(old, f, true)), t.refused);
+		// Now: the cycle's end keeps the blocked descent (32 mm then contact: the batch's last move; 0 mm: under 1 mm).
+		keepBlockedAxes(s, [descent], false);
+		assert.deepEqual(s.blockedAxes, [[0, 0, -1]], pair.cycles);
+		assert.equal(stoppedAlongTheJaws(s, f.pose), true);
+		assert.equal(closeDepthGate([closeDelta], ctx(s, f, false)), undefined, pair.cycles);
+		assert.equal(
+			s.relookArranged,
+			false,
+			`${pair.cycles}: no re-look arranged, so no doubtful wrist point replaces the handle`,
+		);
+		assert.equal(closeDepthGate([closeDelta], ctx(s, f, true)), undefined, pair.cycles);
+		// The kept axis stands one cycle: a cycle whose batch ran no move leaves none for the next.
+		keepBlockedAxes(s, [], false);
+		assert.deepEqual(s.blockedAxes, []);
+		assert.equal(stoppedAlongTheJaws(s, f.pose), false);
+	}
+	// A sideways block that is not the batch's last move and advanced over 1 mm is not kept; holding keeps every block.
+	const s2 = newState({ subgoal: t.subgoal, criterion: t.criterion, target: t.target, planBoxes: {} });
+	const right: SegmentReport = {
+		label: "move right 151.0 mm (base) [1/4]",
+		kind: "translate",
+		outcome: "limited",
+		abort_reason: "blocked",
+		moved_mm: 35,
+		along_axis_mm: 35,
+		lateral_mm: 1,
+		turned_deg: 0,
+		axis: [0, -1, 0],
+		ticks: 30,
+		elapsed_s: 1,
+	};
+	const downDone: SegmentReport = {
+		label: "move down 50.0 mm (base) [1/1]",
+		kind: "translate",
+		outcome: "done",
+		moved_mm: 50,
+		along_axis_mm: 50,
+		lateral_mm: 0,
+		turned_deg: 0,
+		axis: [0, 0, -1],
+		ticks: 80,
+		elapsed_s: 2,
+	};
+	keepBlockedAxes(s2, [right, downDone], false);
+	assert.deepEqual(s2.blockedAxes, []);
+	keepBlockedAxes(s2, [right, downDone], true);
+	assert.deepEqual(s2.blockedAxes, [[0, -1, 0]]);
+	assert.deepEqual(t.refusals_per_suite.B3, [77, 60, 28]);
 });

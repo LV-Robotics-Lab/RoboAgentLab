@@ -53,5 +53,72 @@
 				"want": null
 			}
 		]
+	},
+	"close_after_contact": {
+		"_note": "round 3 defect 2, goal t0_s0 grasp_middle_handle_top attempt 1: c1 'move down 50 PUSH' met the handle (contact, blocked after 32 mm); c2's close was refused for an unmeasured top face (the gate read only its own batch), a wrist re-look gave a doubtful table point 76 mm wide and the model drove off after it; c5/c6 the same with a 0 mm descent. 'top face has never been measured' refusals per suite (spatial/object/goal): B 3/7/11, B2 40/2/54, B3 77/60/28",
+		"subgoal": "Move the gripper directly above the middle drawer handle of the dark cabinet and lower it vertically until the handle is between the jaws, then close the jaws.",
+		"criterion": "The robot reports that it is HOLDING the handle of the middle drawer.",
+		"target": "the middle drawer handle of the dark cabinet",
+		"located_mm": [
+			711,
+			-141,
+			98
+		],
+		"located_error_mm": 19,
+		"table_z_mm": -11,
+		"refused": "the object's top face has never been measured: descend over it until the wrist sees it, then close",
+		"pairs": [
+			{
+				"cycles": "c1 -> c2",
+				"descent": {
+					"label": "move down 50.0 mm (base) [1/1]",
+					"outcome": "contact",
+					"abort_reason": "blocked",
+					"along_axis_mm": 32.3,
+					"lateral_mm": 3,
+					"turned_deg": 0.1
+				},
+				"relook_mm": [
+					655,
+					-124,
+					-11
+				],
+				"relook_error_mm": 76
+			},
+			{
+				"cycles": "c5 -> c6",
+				"descent": {
+					"label": "move down 50.0 mm (base) [1/1]",
+					"outcome": "contact",
+					"abort_reason": "blocked",
+					"along_axis_mm": 0.0,
+					"lateral_mm": 1,
+					"turned_deg": 0
+				},
+				"relook_mm": [
+					662,
+					-146,
+					-11
+				],
+				"relook_error_mm": 76
+			}
+		],
+		"refusals_per_suite": {
+			"B": [
+				3,
+				7,
+				11
+			],
+			"B2": [
+				40,
+				2,
+				54
+			],
+			"B3": [
+				77,
+				60,
+				28
+			]
+		}
 	}
 }

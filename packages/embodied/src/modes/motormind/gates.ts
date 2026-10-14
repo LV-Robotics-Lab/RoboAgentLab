@@ -620,8 +620,13 @@ export const closeDepthGate: Gate = (deltas, ctx) => {
 	const p = poseAfterMoves(deltas, frame.pose, at);
 	const grasp = isGraspStep(state, frame, ctx.topZ);
 	if (ctx.topZ !== undefined && (p[2] - ctx.topZ) * 1000 > FAR_ABOVE_MM && !grasp) return undefined;
+	// A descent stopped dead has the pads resting on the thing: in this batch, or in the last cycle (the
+	// blocked axis kept across cycles, spec-executor §13.4). Round 3 defect 2 read only this batch: the
+	// cycle after a contact descent had its close refused for an unmeasured top face, a wrist re-look
+	// arranged, and the handle chased from the re-look's doubtful point (B3: 165 such refusals).
+	const stopped = ctx.descentBlocked || stoppedAlongTheJaws(state, frame.pose);
 	if (ctx.heightMm === undefined || ctx.topZ === undefined) {
-		if (ctx.descentBlocked || !grasp) return undefined;
+		if (stopped || !grasp) return undefined;
 		const down = jawsDown(frame.pose) || frame.table_z_m === null;
 		if (down && (!running || state.relookArranged)) {
 			state.relookArranged = true;
@@ -650,8 +655,8 @@ export const closeDepthGate: Gate = (deltas, ctx) => {
 			const off = m ? Math.abs(dot(m, jawLine(frame.pose))) * 1000 : 0;
 			return w / 2 + off < jawHalfGapMm(caps);
 		})();
-	if (belowTop + slack >= depth || (ctx.descentBlocked && fits)) return undefined;
-	if (ctx.descentBlocked) {
+	if (belowTop + slack >= depth || (stopped && fits)) return undefined;
+	if (stopped) {
 		if (depth - belowTop <= padMm(caps) && widerThanJaws(state, caps)) return undefined;
 		if (state.closeDepthRefusedAt.some((q) => norm(sub(q, frame.pose.position_m)) < EMPTY_CLOSE_RADIUS_M))
 			return undefined;
@@ -817,13 +822,22 @@ export function noteBlocked(s: SubgoalState, step: SegmentReport) {
 		if (step.axis[2] < -0.5) s.lookedClose = false;
 	}
 }
-/** At the cycle's end: only the axes that advanced under 1 mm stay, or every one while holding. */
+/**
+ * At the cycle's end: the blocked axes this cycle leaves for the next (spec-executor §13.4): those
+ * that advanced under 1 mm, every one while holding, and the batch's last move (the tool stands where
+ * the block left it: a 50 mm contact descent that met the handle after 32 mm is the pads resting on
+ * it). They stand until the next cycle's end recomputes them; a cycle that ran no move leaves none.
+ */
 export function keepBlockedAxes(s: SubgoalState, steps: SegmentReport[], holding: boolean) {
-	if (holding) return;
-	const kept: Vec3[] = [];
-	for (const st of steps)
-		if (st.abort_reason === "blocked" && st.axis && Math.abs(st.along_axis_mm) < 1) kept.push(st.axis);
-	s.blockedAxes = kept;
+	const lastMove = steps.filter((st) => st.kind === "translate").at(-1);
+	s.blockedAxes = steps
+		.filter(
+			(st) =>
+				st.abort_reason === "blocked" &&
+				st.axis &&
+				(holding || Math.abs(st.along_axis_mm) < NO_MOTION_MM || st === lastMove),
+		)
+		.map((st) => st.axis as Vec3);
 }
 export const stoppedAlongTheJaws = (s: SubgoalState, pose: Pose) =>
 	s.blockedAxes.some((a) => dot(a, approach(pose).axis) > 0.9);
