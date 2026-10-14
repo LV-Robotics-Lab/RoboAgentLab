@@ -59,6 +59,7 @@ import {
 	quarterTurnForReach,
 	receiverWords,
 	residualOf,
+	SIDE_BODY_LOOKS,
 	shoved,
 	sidePartWords,
 	sideTakeBlock,
@@ -2567,7 +2568,9 @@ test("executor: smoke 6 (goal t0 s1) — a side take's body is what the part sta
 	);
 	// Turned into the face, the aim is the part itself: the move in stops against the face.
 	assert.deepEqual(aimPoint(s, { ...f.pose, rotation: level }, CAPS), s.located.point);
-	// No body outlined: which way the face faces is not known (the original's CANNOT), not "away from the tool".
+	// No body outlined: which way the face faces is not known, not "away from the tool". The cameras are asked
+	// again (smoke 10: the first look boxed the whole cabinet as the handle); after SIDE_BODY_LOOKS such looks,
+	// the original's CANNOT.
 	const s2 = newState({
 		subgoal: `take ${words} from the side and close on it`,
 		criterion: "held",
@@ -2575,7 +2578,18 @@ test("executor: smoke 6 (goal t0 s1) — a side take's body is what the part sta
 		planBoxes: {},
 	});
 	s2.located = { ...s.located, body: undefined };
+	s2.sideNoBody = 1;
+	const unknown = sideTakeBlock(s2, f, CAPS);
+	assert.equal(unknown.cannot, undefined);
+	assert.match(unknown.text, /not known yet .*asked again/);
+	assert.equal(s2.sideFace, undefined, "nothing is kept without a body");
+	assert.deepEqual(aimPoint(s2, f.pose, CAPS), s2.located.point);
+	s2.sideNoBody = SIDE_BODY_LOOKS;
 	assert.match(sideTakeBlock(s2, f, CAPS).cannot ?? "", /which way its face faces is not known/);
+	// A later look that outlines the body reads the face then.
+	s2.sideNoBody = 1;
+	s2.located.body = l.part_body;
+	assert.match(sideTakeBlock(s2, f, CAPS).text, /face looks LEFT/);
 });
 
 test("executor: smoke 9 (goal t0 s1) — a side take's contact push that stops on the face lets the close in the same reply through", () => {

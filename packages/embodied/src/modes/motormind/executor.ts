@@ -17,6 +17,7 @@ import { actionLabel } from "./command.ts";
 import {
 	ACT_REFUSED,
 	type ActArgs,
+	approach,
 	type Cycle,
 	describeRobot,
 	type Ending,
@@ -65,9 +66,11 @@ import {
 	payloadBlock,
 	payloadMet,
 	payloadOffset,
+	readSideFace,
 	receiverWords,
 	releaseAllowanceMm,
 	residualOf,
+	SIDE_BODY_LOOKS,
 	type SubgoalState,
 	shoved,
 	sidePartWords,
@@ -827,6 +830,9 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		let why: string | undefined;
 		if (o.wristOnly) why = "a wrist look";
 		else if (!s.located || s.located.words !== words || (s.sideStep && !s.located.on_face)) why = "not located yet";
+		// A side take whose face is located but whose body no two views outlined asks again (sideTakeBlock).
+		else if (s.sideStep && !readSideFace(s, approach(frame.pose).axis, caps)?.out && s.sideNoBody < SIDE_BODY_LOOKS)
+			why = "which way the face faces is not known yet";
 		else if (!s.unshoved) why = "something was shoved since the last look";
 		else if (
 			s.located.doubtful &&
@@ -938,7 +944,12 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			};
 			s.errorMm = s.located.error_mm;
 			s.errorClass = s.located.error_class;
-		} else if (old) old.method = method;
+		} else if (old) {
+			old.method = method;
+			// The sticky point stays; a body this look outlined is still the body (the face is read from it).
+			if (s.sideStep && !old.body && located.part_body && onFace) old.body = located.part_body;
+		}
+		if (s.sideStep && onFace && !s.located?.body) s.sideNoBody++;
 		if (
 			located.footprint &&
 			measuresMore(located.footprint, s.footprint, located.cameras.includes("wrist"), frame.grasp.holding === true)

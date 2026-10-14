@@ -409,6 +409,8 @@ export type SubgoalState = {
 	releasedInCode?: { width_mm: number };
 	/** A side take's face, read once a subgoal: the level direction word it looks out along, and the turn that points the jaws into it. */
 	sideFace?: { out?: Vec3; turn?: string };
+	/** Looks at a side take's face that outlined no body to read its direction from. */
+	sideNoBody: number;
 };
 
 export function newState(o: {
@@ -446,6 +448,7 @@ export function newState(o: {
 		wall: 0,
 		inheritedFrozen: 0,
 		askedPosition: false,
+		sideNoBody: 0,
 	};
 }
 
@@ -1215,14 +1218,18 @@ export function sideTurn(out: Vec3, a: Vec3, caps: Caps): string | undefined {
  * undefined before a point on the face; `out` undefined when no body was outlined.
  */
 export function readSideFace(s: SubgoalState, a: Vec3, caps: Caps): SubgoalState["sideFace"] {
-	if (!s.sideStep || !s.located?.on_face) return s.sideFace;
-	if (!s.sideFace) {
-		const out = faceOut(s.located.point, s.located.body);
-		const turn = out ? sideTurn(out, a, caps) : undefined;
-		s.sideFace = out ? { out, ...(turn ? { turn } : {}) } : {};
-	}
+	if (!s.sideStep || !s.located?.on_face || s.sideFace) return s.sideFace;
+	const out = faceOut(s.located.point, s.located.body);
+	// No body yet: nothing is kept, and the executor looks again (up to SIDE_BODY_LOOKS looks), where the
+	// original read the face once and ended the step CANNOT (smoke 10, goal t0 s1: the first look's scene
+	// answer boxed the whole cabinet as the handle, no body, CANNOT, and the replan went top-down).
+	if (!out) return undefined;
+	const turn = sideTurn(out, a, caps);
+	s.sideFace = { out, ...(turn ? { turn } : {}) };
 	return s.sideFace;
 }
+/** How many looks at a side take's face may outline no body before the step cannot be done. */
+export const SIDE_BODY_LOOKS = 3;
 
 /** Block 6: the side-take notes, when they apply. */
 export function sideTakeBlock(s: SubgoalState, f: Frame, caps: Caps): { text: string; cannot?: string } {
@@ -1254,6 +1261,10 @@ export function sideTakeBlock(s: SubgoalState, f: Frame, caps: Caps): { text: st
 		// The jaws close up-down: a part up to a pad inside the half gap below the tilted floor is still between them.
 		const lowest = floor - jawHalfGapMm(caps) + padMm(caps);
 		const turned = out !== undefined && dot(out, a) < -0.7;
+		if (!out && s.sideNoBody < SIDE_BODY_LOOKS)
+			return {
+				text: "SIDE TAKE: which way the face faces is not known yet (no two views outlined the thing it stands out of): the cameras are asked again; stay clear of the face until then.",
+			};
 		const cannot = !out
 			? "no two views outlined the thing it stands out of, so which way its face faces is not known"
 			: height !== undefined && height < lowest
