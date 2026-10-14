@@ -15,6 +15,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { carryLegLabel, DROP_LABEL, LIFT_LABEL, TEST_REST, toDelta } from "../src/modes/motormind/command.ts";
 import {
 	type Ask,
+	approach,
 	type Box,
 	type Camera,
 	type CameraName,
@@ -41,6 +42,7 @@ import {
 	dragging,
 	edgeOffsetMm,
 	edgePoint,
+	faceOut,
 	isTurnStep,
 	jawLine,
 	jawsChanged,
@@ -58,6 +60,7 @@ import {
 	shoved,
 	sidePartWords,
 	sideTakeBlock,
+	sideTurn,
 	stoppedAlongTheJaws,
 	takesOver,
 	wantsHolding,
@@ -2308,13 +2311,10 @@ test("executor: round 3 defect 3 (side take) — the part phrase is asked for, a
 	const f2 = frame(a.tool_mm, a.table_z_mm / 1000);
 	const side = sideTakeBlock(s2, f2, CAPS);
 	assert.equal(side.cannot, undefined);
-	assert.match(side.text, /face it toward RIGHT/);
+	assert.match(side.text, /the jaws go in RIGHT/);
 	assert.match(side.text, /Standoff point \[69[34], -42, 123\]/);
-	assert.match(side.text, /pitch 90 deg/);
+	assert.match(side.text, /rotate "roll_cw" 90/, "arm A's turn (c0 roll_cw)");
 	assert.match(side.text, /move right with stop_on_contact for 124 mm/);
-	// Without a body the feed comes from where the tool is (forward of it here).
-	s2.located.body = undefined;
-	assert.match(sideTakeBlock(s2, f2, CAPS).text, /face it toward FORWARD/);
 	// The height threshold: floor - half gap + pad = 77.6 mm, not the 100 mm floor; the standoff never goes below the floor.
 	const th = t.threshold_mm;
 	assert.equal(Math.round((th.tilted_floor - th.jaw_half_gap + th.pad) * 10) / 10, th.lowest_face);
@@ -2430,4 +2430,123 @@ test("executor: round 3 defect 5 — a payload that met something has no clearan
 		onTable,
 		"never lowered",
 	);
+});
+
+test("executor: smoke 6 (goal t0 s1) — a side take's body is what the part stands out of, never the robot; the face is read once and turned into by a tilt the arm makes", async () => {
+	// A cabinet 200 mm deep with a handle standing out of its +y (left) face; one view's cabinet box stops a few
+	// pixels short of the handle's middle, which the robot arm's box covers (the recorded side view: handle
+	// [278,542,345,622], "dark cabinet" [0,357,305,818], "robot arm" [295,0,670,615]).
+	const cuboid = (cam: Camera, c: number[], h: number[]): Box => {
+		const us: number[] = [];
+		const vs: number[] = [];
+		for (const sx of [-1, 1])
+			for (const sy of [-1, 1])
+				for (const sz of [-1, 1]) {
+					const p = project(cam, [c[0] + sx * h[0], c[1] + sy * h[1], c[2] + sz * h[2]]) as [number, number];
+					us.push(p[0]);
+					vs.push(p[1]);
+				}
+		const k = 1000 / RIG.render;
+		return [Math.min(...us) * k, Math.min(...vs) * k, Math.max(...us) * k, Math.max(...vs) * k].map(
+			Math.round,
+		) as Box;
+	};
+	const cabinet = { c: [0.55, -0.12, TABLE_Z + 0.15], h: [0.1, 0.1, 0.15] };
+	const handle = { c: [0.55, -0.01, TABLE_Z + 0.15], h: [0.04, 0.01, 0.01] };
+	const words = "the handle of the middle drawer of the dark cabinet";
+	const reply = (cam: Camera, cut: boolean) => {
+		const hb = cuboid(cam, handle.c, handle.h);
+		const cb = cuboid(cam, cabinet.c, cabinet.h);
+		const [u, v] = [(hb[0] + hb[2]) / 2, (hb[1] + hb[3]) / 2];
+		const inside = u >= cb[0] && u <= cb[2] && v >= cb[1] && v <= cb[3];
+		if (cut && inside) {
+			// Pull the cabinet's nearest edge 6 px short of the handle's middle.
+			const d = [u - cb[0], cb[2] - u, v - cb[1], cb[3] - v];
+			const k = d.indexOf(Math.min(...d));
+			if (k === 0) cb[0] = Math.round(u + 6);
+			else if (k === 1) cb[2] = Math.round(u - 6);
+			else if (k === 2) cb[1] = Math.round(v + 6);
+			else cb[3] = Math.round(v - 6);
+		}
+		return {
+			objects: [
+				{ label: "dark cabinet", bbox_2d: cb },
+				{ label: words.replace(/^the /, ""), bbox_2d: hb },
+				{ label: "robot arm", bbox_2d: [Math.round(u - 60), 0, Math.round(u + 300), Math.round(v + 40)] },
+			],
+			target: words.replace(/^the /, ""),
+		};
+	};
+	const tag = (c: Camera): Camera => ({ ...c, raw512: c.name, marked512: c.name });
+	const look = (cut: boolean) =>
+		locate({
+			views: { scene: tag(scene), side: tag(side) },
+			words,
+			table_z_m: TABLE_Z,
+			tool_z_m: TABLE_Z + 0.3,
+			tallest_mm: 300,
+			holding: false,
+			part: true,
+			ask: async (_r, _p, images) =>
+				ok(reply(images[0].data === "scene" ? scene : side, cut && images[0].data === "side")),
+		});
+	const l = await look(true);
+	assert.ok(l.ok && l.part_point && l.part_body, `${l.error} ${l.method}`);
+	// The body is the cabinet's middle (to the right of the handle), not the arm's: the face looks LEFT.
+	assert.ok((l.part_body as Vec3)[1] < (l.part_point as Vec3)[1] - 0.05, `body ${l.part_body} part ${l.part_point}`);
+	assert.deepEqual(faceOut(l.part_point as Vec3, l.part_body), [0, 1, 0]);
+	// The block: read once a subgoal, the jaws go in RIGHT by roll_cw (pitch_down from jaws-down points them BACKWARD).
+	const down: Mat3 = [
+		[1, 0, 0],
+		[0, -1, 0],
+		[0, 0, -1],
+	];
+	const s = newState({
+		subgoal: `take ${words} from the side and close on it`,
+		criterion: "held",
+		target: words,
+		planBoxes: {},
+	});
+	s.located = {
+		words,
+		point: [0.55, -0.01, TABLE_Z + 0.12],
+		method: l.method,
+		error_mm: 15,
+		error_class: "",
+		on_face: true,
+		body: l.part_body,
+		cameras: ["scene", "side"],
+	};
+	const f = { ...frameAt({ position_m: [0.44, 0, TABLE_Z + 0.26], rotation: down }), table_z_m: TABLE_Z };
+	const first = sideTakeBlock(s, f, CAPS);
+	assert.equal(first.cannot, undefined);
+	assert.match(first.text, /face looks LEFT; the jaws go in RIGHT/);
+	assert.match(first.text, /rotate "roll_cw" 90 so the jaws point right/);
+	assert.match(first.text, /Standoff point \[550, 80, 109\]/);
+	assert.equal(sideTurn([0, 1, 0], [0, 0, -1], CAPS), "roll_cw");
+	assert.equal(sideTurn([1, 0, 0], [0, 0, -1], CAPS), "pitch_down", "a face looking forward: the jaws point backward");
+	assert.equal(sideTurn([-1, 0, 0], [0, 0, -1], CAPS), undefined, "pitch_up reaches only 53.6 deg");
+	// Later looks move the body (another read, a re-look): the face stays as first read.
+	s.located.body = [0.7, -0.02, TABLE_Z + 0.15];
+	assert.match(sideTakeBlock(s, f, CAPS).text, /face looks LEFT/);
+	// Once turned, the block says so instead of another turn.
+	const level: Mat3 = [
+		[1, 0, 0],
+		[0, 0, -1],
+		[0, 1, 0],
+	];
+	assert.deepEqual(approach({ position_m: [0, 0, 0], rotation: level }).axis, [0, -1, 0]);
+	assert.match(
+		sideTakeBlock(s, { ...f, pose: { ...f.pose, rotation: level } }, CAPS).text,
+		/the jaws already point right/,
+	);
+	// No body outlined: which way the face faces is not known (the original's CANNOT), not "away from the tool".
+	const s2 = newState({
+		subgoal: `take ${words} from the side and close on it`,
+		criterion: "held",
+		target: words,
+		planBoxes: {},
+	});
+	s2.located = { ...s.located, body: undefined };
+	assert.match(sideTakeBlock(s2, f, CAPS).cannot ?? "", /which way its face faces is not known/);
 });

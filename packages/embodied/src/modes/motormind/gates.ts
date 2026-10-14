@@ -407,6 +407,8 @@ export type SubgoalState = {
 	lastFirstMove?: Delta;
 	lastReleaseWidthMm?: number;
 	releasedInCode?: { width_mm: number };
+	/** A side take's face, read once a subgoal: the level direction word it looks out along, and the turn that points the jaws into it. */
+	sideFace?: { out?: Vec3; turn?: string };
 };
 
 export function newState(o: {
@@ -1153,6 +1155,41 @@ export function whereTheTargetIs(s: SubgoalState, f: Frame, caps: Caps, topZ: nu
 	return lines.join("\n");
 }
 
+const LEVEL_WORDS: [string, Vec3][] = [
+	["forward", [1, 0, 0]],
+	["backward", [-1, 0, 0]],
+	["left", [0, 1, 0]],
+	["right", [0, -1, 0]],
+];
+/** The level direction word a horizontal vector points along most. */
+const levelWord = (v: Vec3) => LEVEL_WORDS.reduce((b, w) => (dot(w[1], v) > dot(b[1], v) ? w : b))[0];
+/**
+ * Which way the upright face a part stands out of faces: of the four level direction words, the one
+ * pointing most from the middle of the thing it belongs to toward the part; undefined with no body, or
+ * a part at the body's middle.
+ */
+export function faceOut(part: Vec3, body: Vec3 | undefined): Vec3 | undefined {
+	if (!body) return undefined;
+	const away: Vec3 = [part[0] - body[0], part[1] - body[1], 0];
+	if (norm(away) < 1e-6) return undefined;
+	const word = levelWord(unit(away));
+	return (LEVEL_WORDS.find((w) => w[0] === word) as [string, Vec3])[1];
+}
+/**
+ * The tilt this arm makes in full (its limit at least the tilt reach) that points the jaws most squarely
+ * into a face looking `out`, from approach axis `a`; undefined when none points them within 45 degrees.
+ */
+export function sideTurn(out: Vec3, a: Vec3, caps: Caps): string | undefined {
+	const reach = caps.tilt_reach_deg || TILT_REACHES_DEG;
+	let best: [number, string] | undefined;
+	for (const [word, limit] of Object.entries(caps.tilt_limits_deg)) {
+		if (!(limit >= reach) || !ROTATION[word]) continue;
+		const d = dot(out, apply(rotationAbout(ROTATION[word], Math.PI / 2), a));
+		if (!best || d < best[0]) best = [d, word];
+	}
+	return best && best[0] < -0.7 ? best[1] : undefined;
+}
+
 /** Block 6: the side-take notes, when they apply. */
 export function sideTakeBlock(s: SubgoalState, f: Frame, caps: Caps): { text: string; cannot?: string } {
 	const horizontal = isHorizontal(f.pose, caps);
@@ -1172,35 +1209,36 @@ export function sideTakeBlock(s: SubgoalState, f: Frame, caps: Caps): { text: st
 		if (!s.located || !s.located.on_face) return { text: "SIDE TAKE: the face to approach is not located yet." };
 		const a = approach(f.pose).axis;
 		const face = s.located.point;
-		// The face points out from the body's middle toward the part; with no body outlined, away from the tool.
-		const from = s.located.body ?? f.pose.position_m;
-		const toFace: Vec3 = [face[0] - from[0], face[1] - from[1], 0];
-		const dist = norm(toFace);
-		if (dist < 1e-6)
-			return { text: "", cannot: "the tool is right over the face: a side take has no direction to come from" };
-		// `dir` is the way the jaws move: into the face, against its outward normal.
-		const dir = s.located.body ? scale(unit(toFace), -1) : unit(toFace);
-		const standoff = scale(dir, -SLIDE_STANDOFF_MM / 1000);
-		const stop: Vec3 = add(face, standoff);
+		// The face, read once a subgoal (spec-executor §10.6 side take): the level direction word pointing most from
+		// the middle of what the part stands out of toward the part, and the turn of this arm that points the jaws
+		// into it. Smoke 6 (goal t0 s1): read every cycle and from the tool when no body was outlined, the face
+		// went FORWARD, LEFT, BACKWARD in one attempt, and "pitch 90 deg" turned the jaws backward.
+		if (!s.sideFace) {
+			const out = faceOut(face, s.located.body);
+			s.sideFace = out ? { out, ...(sideTurn(out, a, caps) ? { turn: sideTurn(out, a, caps) } : {}) } : {};
+		}
+		const out = s.sideFace.out;
 		const floor = caps.tilted_floor_m * 1000;
 		const height = f.table_z_m !== null ? (face[2] - f.table_z_m) * 1000 : undefined;
 		// The jaws close up-down: a part up to a pad inside the half gap below the tilted floor is still between them.
 		const lowest = floor - jawHalfGapMm(caps) + padMm(caps);
-		if (height !== undefined && height < lowest)
-			return {
-				text: "",
-				cannot: `the face is ${r0(height)} mm over the table, and tilted this arm's tool point gets no lower than ${r0(floor)} mm (a part down to ${r0(lowest)} mm is still between the jaws)`,
-			};
+		const turned = out !== undefined && dot(out, a) < -0.7;
+		const cannot = !out
+			? "no two views outlined the thing it stands out of, so which way its face faces is not known"
+			: height !== undefined && height < lowest
+				? `the face is ${r0(height)} mm over the table, and tilted this arm's tool point gets no lower than ${r0(floor)} mm (a part down to ${r0(lowest)} mm is still between the jaws)`
+				: !s.sideFace.turn && !turned
+					? "no turn this arm makes in full points the jaws into it"
+					: undefined;
+		if (cannot || !out) return { text: "", cannot: cannot ?? "" };
+		const stop: Vec3 = add(face, scale(out, SLIDE_STANDOFF_MM / 1000));
 		if (f.table_z_m !== null) stop[2] = Math.max(stop[2], f.table_z_m + floor / 1000);
-		const word = ["forward", "backward", "left", "right"].reduce((b, w) =>
-			dot({ forward: [1, 0, 0], backward: [-1, 0, 0], left: [0, 1, 0], right: [0, -1, 0] }[w] as Vec3, dir) >
-			dot({ forward: [1, 0, 0], backward: [-1, 0, 0], left: [0, 1, 0], right: [0, -1, 0] }[b] as Vec3, dir)
-				? w
-				: b,
-		);
-		const turn = Math.abs(a[2]) > 0.5 ? "pitch 90 deg" : "no tilt";
+		const into = levelWord(scale(out, -1));
+		const turn = turned
+			? `the jaws already point ${into}`
+			: `rotate "${s.sideFace.turn}" 90 so the jaws point ${into}`;
 		return {
-			text: `SIDE TAKE: face it toward ${word.toUpperCase()}. Standoff point [${stop.map((v) => r0(v * 1000)).join(", ")}] mm (${r0(SLIDE_STANDOFF_MM)} mm off the face). Needed: ${turn} so the jaws point ${word}; then move ${word} with stop_on_contact for ${r0(SLIDE_STANDOFF_MM + 2 * padMm(caps))} mm (the standoff plus two pads) and close in the same reply.`,
+			text: `SIDE TAKE: the face looks ${levelWord(out).toUpperCase()}; the jaws go in ${into.toUpperCase()}. Standoff point [${stop.map((v) => r0(v * 1000)).join(", ")}] mm (${r0(SLIDE_STANDOFF_MM)} mm off the face). Needed: ${turn}; then move ${into} with stop_on_contact for ${r0(SLIDE_STANDOFF_MM + 2 * padMm(caps))} mm (the standoff plus two pads) and close in the same reply.`,
 		};
 	}
 	return { text: "" };

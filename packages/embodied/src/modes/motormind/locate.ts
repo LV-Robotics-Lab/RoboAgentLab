@@ -531,16 +531,25 @@ export async function locate(o: LocateInput): Promise<Located> {
 		const middlesAgree = middles !== undefined && middles.skew_m * 1000 <= MAX_SKEW_MM;
 		if (out.part && middlesAgree && middles) {
 			out.part_point = middles.point;
+			// What the part stands out of: the biggest box round the part's middle (a cabinet, not the drawer
+			// front round the handle), a margin of half the part's box allowed (a handle stands proud of its
+			// body's outline), never the robot, and one sharing a word with the words first (smoke 6, goal t0 s1:
+			// the side view's handle sat 6 px past the cabinet's box, inside the robot arm's).
+			const want = contentWords(o.words);
 			const holder = (r: Reading): Box | undefined => {
 				const m = middle(r);
 				const mn = toNormalised([m[0], m[1], m[0], m[1]], r.cam);
-				let best: Box | undefined;
+				const margin = TOUCHES_SHARE * Math.max(r.boxNorm[2] - r.boxNorm[0], r.boxNorm[3] - r.boxNorm[1]);
+				let best: { box: Box; shares: boolean } | undefined;
 				for (const e of r.inventory) {
-					if (e.box === r.boxNorm) continue;
-					if (mn[0] < e.box[0] || mn[0] > e.box[2] || mn[1] < e.box[1] || mn[1] > e.box[3]) continue;
-					if (!best || boxArea(e.box) > boxArea(best)) best = e.box;
+					if (e.box === r.boxNorm || ROBOT_LABEL.test(e.label)) continue;
+					const [x1, y1, x2, y2] = e.box;
+					if (mn[0] < x1 - margin || mn[0] > x2 + margin || mn[1] < y1 - margin || mn[1] > y2 + margin) continue;
+					const shares = [...contentWords(e.label)].some((w) => want.has(w));
+					if (!best || (shares && !best.shares) || (shares === best.shares && boxArea(e.box) > boxArea(best.box)))
+						best = { box: e.box, shares };
 				}
-				return best;
+				return best?.box;
 			};
 			const ha = holder(a);
 			const hb = holder(b);
@@ -745,6 +754,8 @@ function baseOutOfSight(out: Located, chosen: Reading, tableZ: number) {
 const eye3 = (c: Cam): Vec3 => [c.cam2base[0][3], c.cam2base[1][3], c.cam2base[2][3]];
 
 const contentWords = (s: string) => new Set(tokens(s).filter((w) => !IGNORED.has(w)));
+/** A label naming the robot itself, never what a part stands out of. */
+const ROBOT_LABEL = /\b(?:robot|arm|gripper|jaws?|franka|manipulator|end effector)\b/i;
 
 /** Other labels sharing a word with the target, not one thing with it, read within the bar (spec-locate §5.7). */
 function lookAlikes(o: LocateInput, out: Located, chosen: Reading, tableZ: number) {
