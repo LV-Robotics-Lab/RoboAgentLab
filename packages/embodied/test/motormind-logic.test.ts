@@ -13,7 +13,14 @@ import { test } from "node:test";
 import type { AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { alignAnswers, codeEvent, emptyClauses, fold, measuredMiss } from "../src/modes/motormind/clauses.ts";
+import {
+	alignAnswers,
+	codeEvent,
+	contentWords,
+	emptyClauses,
+	fold,
+	measuredMiss,
+} from "../src/modes/motormind/clauses.ts";
 import {
 	type Ask,
 	type Cycle,
@@ -39,12 +46,13 @@ import {
 } from "../src/modes/motormind/contract.ts";
 import { EvidenceLog, renderLine } from "../src/modes/motormind/evidence.ts";
 import { type Caps, MOTORMIND_EVENT, type MotorMindHandle, type Observation } from "../src/modes/motormind/index.ts";
-import { runMission } from "../src/modes/motormind/mission.ts";
+import { freshSteps, runMission } from "../src/modes/motormind/mission.ts";
 import { faithfulPayload, MAX_TOKENS, makeAsk, parseRoleJson, roleModels } from "../src/modes/motormind/models.ts";
 import {
-	boxFault,
-	complaints,
 	acts,
+	boxFault,
+	type ClauseAnswer,
+	complaints,
 	envelope,
 	gaveUp,
 	gripperOnly,
@@ -1792,7 +1800,14 @@ test("mission: step 4 defect 3 — a cycle's own error (no acceptable proposal, 
 				? { ending: "ERROR", error: cycleError, error_source: "cycle" }
 				: { ending: n === 1 ? "HELD" : "MODEL_DONE", held: n === 1 ? { gap_mm: 63 } : undefined },
 	}));
-	const NOT = { status: "not_done", because: "the jaws hold nothing", evidence: "", identity: "", replan: false, clauses: [] };
+	const NOT = {
+		status: "not_done",
+		because: "the jaws hold nothing",
+		evidence: "",
+		identity: "",
+		replan: false,
+		clauses: [],
+	};
 	const { ask, calls: roleCalls } = scriptedAsk({ planner: [PLAN], verify: [NOT, DONE, DONE, TASK_DONE] });
 	const entries: { entry: string; data: Json }[] = [];
 	const cache: FrameCache = { stale: true };
@@ -1822,7 +1837,16 @@ test("mission: step 4 defect 3 — a cycle's own error (no acceptable proposal, 
 			body: {},
 		};
 	});
-	assert.equal(end.status, "task_done", JSON.stringify({ end, verdicts: entries.filter((e) => e.entry === "motormind_verdict").map((e) => [e.data.subgoal, e.data.status, e.data.gate, e.data.because]) }));
+	assert.equal(
+		end.status,
+		"task_done",
+		JSON.stringify({
+			end,
+			verdicts: entries
+				.filter((e) => e.entry === "motormind_verdict")
+				.map((e) => [e.data.subgoal, e.data.status, e.data.gate, e.data.because]),
+		}),
+	);
 	const s = mission.state();
 	assert.deepEqual(
 		s.subgoals.map((a) => [a.name, a.attempt, a.ending, a.verdict?.status]),
@@ -1870,31 +1894,37 @@ test("planner: step 4 defect 5 — the prompts carry the step vocabulary; a six-
 		{
 			name: "over_bowl",
 			subgoal: `open the jaws, move the gripper over the ${bowl} and lower it until it hovers about a palm's height above the bowl, jaws still open`,
-			criterion: "The akita black bowl sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
+			criterion:
+				"The akita black bowl sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
 			max_cycles: 5,
 		},
 		{
 			name: "take_bowl",
-			subgoal: "descend the rest of the way until the jaws are level with the rim of the akita black bowl, with it between them, and close",
+			subgoal:
+				"descend the rest of the way until the jaws are level with the rim of the akita black bowl, with it between them, and close",
 			criterion: "The robot reports that it is HOLDING the akita black bowl.",
 			max_cycles: 8,
 		},
 		{
 			name: "lift_bowl",
 			subgoal: "raise the gripper straight up by about 15 cm without letting go of the akita black bowl",
-			criterion: "The tool has risen at least 120 mm since this step began and the robot still reports holding the akita black bowl.",
+			criterion:
+				"The tool has risen at least 120 mm since this step began and the robot still reports holding the akita black bowl.",
 			max_cycles: 5,
 		},
 		{
 			name: "carry_bowl",
-			subgoal: "move the gripper sideways at this height until the akita black bowl is over the plate, still holding it",
+			subgoal:
+				"move the gripper sideways at this height until the akita black bowl is over the plate, still holding it",
 			criterion: "The akita black bowl is over the plate and the robot still reports holding it.",
 			max_cycles: 10,
 		},
 		{
 			name: "put_bowl",
-			subgoal: "lower the gripper until the akita black bowl is just above the plate, then open the jaws to let it go",
-			criterion: "The jaws are open and the akita black bowl rests on the plate, its middle over the middle of the plate.",
+			subgoal:
+				"lower the gripper until the akita black bowl is just above the plate, then open the jaws to let it go",
+			criterion:
+				"The jaws are open and the akita black bowl rests on the plate, its middle over the middle of the plate.",
 			max_cycles: 6,
 		},
 		{
@@ -1903,9 +1933,20 @@ test("planner: step 4 defect 5 — the prompts carry the step vocabulary; a six-
 			criterion: "The tool has risen at least 120 mm since this step began.",
 			max_cycles: 5,
 		},
-	].map((s, i) => ({ ...s, target: i === 5 ? "" : bowl, target_boxes: i === 5 ? {} : boxes, clause: i === 5 ? -1 : 0 }));
+	].map((s, i) => ({
+		...s,
+		target: i === 5 ? "" : bowl,
+		target_boxes: i === 5 ? {} : boxes,
+		clause: i === 5 ? -1 : 0,
+	}));
 	const { ask, calls } = scriptedAsk({
-		planner: [{ clauses: ["the akita black bowl is on the plate"], rationale: "two black bowls; the one between the plate and the ramekin", subgoals: six }],
+		planner: [
+			{
+				clauses: ["the akita black bowl is on the plate"],
+				rationale: "two black bowls; the one between the plate and the ramekin",
+				subgoals: six,
+			},
+		],
 	});
 	const out = await plan(ask, {
 		task: "pick up the black bowl between the plate and the ramekin and place it on the plate",
@@ -1965,4 +2006,115 @@ test("planner: step 4 defect 5 — the prompts carry the step vocabulary; a six-
 	);
 	assert.doesNotMatch(calls[0].prompt.text, /\{[a-z_]+\}/);
 	assert.doesNotMatch(calls[0].prompt.system, /\{[a-z_]+\}/);
+});
+
+// ---------------------------------------------------------------------------
+// the step 4 round 2 defects (docs/motormind/step4-diagnosis-2.md), on arm B2's recorded traces
+// (fixtures/motormind/step4-diag2.json: bjb2 .local/runs/mm-step4/base-B2, main @ce9928415)
+
+const D2 = JSON.parse(readFileSync(new URL("./fixtures/motormind/step4-diag2.json", import.meta.url), "utf8"));
+/** The share of `text`'s content words that `line` has (the diagnosis scripts' measure of "restates"). */
+const contentShare = (line: string, text: string) => {
+	const w = contentWords(text);
+	const l = contentWords(line);
+	let hit = 0;
+	for (const x of w) if (l.has(x)) hit++;
+	return w.size ? hit / w.size : 0;
+};
+
+test("clauses: round 2 defect 1 — a verdict line that restates the step criterion is not an answer about a task clause; the ledger stays empty at the hover step and the replan keeps take and lift", () => {
+	for (const key of ["spatial_t2_s0", "object_t9_s0"] as const) {
+		const cell = D2[key];
+		const hover = cell.hover.verdict.clauses as ClauseAnswer[];
+		// The recorded defect: by content words alone the hover line "the bowl sits directly under the gripper" lands
+		// on a task clause ("picked up" / "placed on the plate") and marks it met with the gripper 100+ mm away.
+		assert.ok(
+			alignAnswers(cell.clauses, hover).some((i) => i !== undefined),
+			`${key}: the old alignment matched`,
+		);
+		assert.ok(hover.every((c) => c.met));
+		// With the step criterion known, those lines are dropped: nothing is met after the hover verdict.
+		assert.deepEqual(
+			alignAnswers(cell.clauses, hover, cell.hover.criterion),
+			hover.map(() => undefined),
+		);
+		const ledger = emptyClauses(cell.clauses);
+		fold(ledger, hover, false, cell.hover.criterion);
+		assert.deepEqual([...ledger.met], [], `${key}: the hover step marked a clause met`);
+		// A line that restates a task clause still counts, at a step whose criterion names the same object.
+		const take = cell.take.verdict.clauses as ClauseAnswer[];
+		const at = alignAnswers(cell.clauses, take, cell.take.criterion);
+		for (const [k, c] of take.entries()) {
+			const restatesClause = cell.clauses.some((t: string) => contentShare(c.what, t) >= 0.8);
+			assert.equal(at[k] !== undefined, restatesClause, `${key}: ${c.what}`);
+		}
+		fold(ledger, take, false, cell.take.criterion);
+		assert.deepEqual([...ledger.met], key === "spatial_t2_s0" ? [0] : [], `${key}: after the take verdict`);
+		// The replan's new steps: with the ledger right, the take and lift steps survive; with the hover step's
+		// false "met" they were deleted and the executor was sent to carry with nothing in the jaws.
+		const names = (steps: Subgoal[]) => steps.map((s) => s.name);
+		const keep = cell.replan.keep as number;
+		const replanSteps = cell.replan.subgoals as Subgoal[];
+		if (key === "object_t9_s0") {
+			assert.deepEqual(names(freshSteps(replanSteps, keep, ledger.met)), names(replanSteps.slice(keep)));
+			assert.deepEqual(names(freshSteps(replanSteps, keep, new Set([0]))), [
+				"carry_orange_juice_retry",
+				"put_orange_juice_retry",
+				"retreat_retry",
+			]);
+		} else {
+			// spatial t2 s0: clause 0 is truly met (held with a width); the carry and put steps serve clause 1, which
+			// the hover step no longer marks, so the replan keeps them instead of truncating to nothing.
+			assert.deepEqual(names(freshSteps(replanSteps, keep, ledger.met)), [
+				"carry_akita_bowl_retry",
+				"put_akita_bowl_retry",
+				"retreat_akita_bowl_retry",
+			]);
+			assert.deepEqual(names(freshSteps(replanSteps, keep, new Set([0, 1]))), ["retreat_akita_bowl_retry"]);
+		}
+	}
+	// A numbered line answers the clause it names; an out-of-range number falls back to the words; two dropped lines
+	// do not fall back to position.
+	const clauses = [
+		"the orange juice carton is picked up from the table",
+		"the orange juice carton is placed inside the basket",
+	];
+	assert.deepEqual(
+		alignAnswers(clauses, [
+			{ index: 1, what: "the carton is in the basket", met: false, evidence: "" },
+			{ index: 0, what: "the carton is picked up", met: true, evidence: "" },
+		]),
+		[1, 0],
+	);
+	assert.deepEqual(
+		alignAnswers(clauses, [
+			{ index: 7, what: "the orange juice carton is placed inside the basket", met: false, evidence: "" },
+		]),
+		[1],
+	);
+	const criterion = "the orange juice carton sits directly under the gripper and the jaws are open";
+	assert.deepEqual(
+		alignAnswers(
+			clauses,
+			[
+				{ what: "the orange juice carton sits directly under the gripper", met: true, evidence: "" },
+				{ what: "the jaws are open", met: true, evidence: "" },
+			],
+			criterion,
+		),
+		[undefined, undefined],
+	);
+	// parseVerdict reads the number, also as a string, and ignores a bad one.
+	const v = parseVerdict({
+		status: "done",
+		clauses: [
+			{ index: 1, what: "a", met: true },
+			{ index: "0", what: "b", met: false },
+			{ index: "x", what: "c", met: false },
+		],
+	});
+	assert.deepEqual(
+		v?.clauses.map((c) => c.index),
+		[1, 0, undefined],
+	);
 });

@@ -33,7 +33,8 @@ export const MAX_BOX_SHARE = 0.4;
 /** Caps the planner describes: default budget per subgoal, and the soft target it is told to aim for. */
 export const DEFAULT_BUDGET = 10;
 
-export type ClauseAnswer = { what: string; met: boolean; evidence: string };
+/** One verdict line about a task clause; `index` is the clause's number when the verifier gave it. */
+export type ClauseAnswer = { what: string; met: boolean; evidence: string; index?: number };
 export type Plan = {
 	subgoals: Subgoal[];
 	rationale: string;

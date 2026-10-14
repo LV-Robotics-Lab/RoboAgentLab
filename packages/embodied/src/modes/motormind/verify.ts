@@ -104,11 +104,15 @@ export function parseVerdict(json: unknown): Omit<Verdict, "gate" | "calls"> | u
 		.toLowerCase();
 	if (!["done", "not_done", "task_done", "abort"].includes(status)) return undefined;
 	const clauses = Array.isArray(json.clauses)
-		? json.clauses.filter(isObj).map((c) => ({
-				what: String(c.what ?? c.clause ?? "").trim(),
-				met: c.met === true || String(c.met).toLowerCase() === "true",
-				evidence: String(c.evidence ?? "").trim(),
-			}))
+		? json.clauses.filter(isObj).map((c) => {
+				const index = c.index === undefined || c.index === null || c.index === "" ? Number.NaN : Number(c.index);
+				return {
+					what: String(c.what ?? c.clause ?? "").trim(),
+					met: c.met === true || String(c.met).toLowerCase() === "true",
+					evidence: String(c.evidence ?? "").trim(),
+					...(Number.isInteger(index) && index >= 0 ? { index } : {}),
+				};
+			})
 		: [];
 	return {
 		status: status as VerdictStatus,

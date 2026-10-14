@@ -55,10 +55,28 @@ export function contentWords(s: string): Set<string> {
 	);
 }
 
-/** The clause each verdict line answers (index into `clauses`), by content-word share, else by position when the counts match. */
-export function alignAnswers(clauses: readonly string[], answers: readonly ClauseAnswer[]): (number | undefined)[] {
+/**
+ * The clause each verdict line answers (index into `clauses`): by the line's own `index` when the
+ * verifier gave one; else by content-word share (threshold `SAME_CLAUSE_SHARE`), else by position
+ * when the counts match. A line without an index whose words restate this step's `criterion` more
+ * than the clause it would land on is not an answer about the task and is dropped (step 4 round 2
+ * defect 1: "the bowl sits directly under the gripper" marked "the bowl is placed on the plate" met at
+ * the hover step in 32 of 40 cells, and the replan then deleted the take and lift steps).
+ */
+export function alignAnswers(
+	clauses: readonly string[],
+	answers: readonly ClauseAnswer[],
+	criterion?: string,
+): (number | undefined)[] {
 	const words = clauses.map(contentWords);
+	const crit = criterion ? contentWords(criterion) : undefined;
+	let dropped = false;
+	let indexed = false;
 	const matched = answers.map((a) => {
+		if (a.index !== undefined && Number.isInteger(a.index) && a.index >= 0 && a.index < clauses.length) {
+			indexed = true;
+			return a.index;
+		}
 		const line = contentWords(`${a.what} ${a.evidence}`);
 		let best: { i: number; share: number } | undefined;
 		words.forEach((w, i) => {
@@ -68,10 +86,28 @@ export function alignAnswers(clauses: readonly string[], answers: readonly Claus
 			const share = hit / w.size;
 			if (share >= SAME_CLAUSE_SHARE && (!best || share > best.share)) best = { i, share };
 		});
+		if (best && crit && echoesCriterion(a, words[best.i], crit)) {
+			dropped = true;
+			return undefined;
+		}
 		return best?.i;
 	});
-	if (matched.every((m) => m === undefined) && answers.length === clauses.length) return answers.map((_, i) => i);
+	if (!dropped && !indexed && matched.every((m) => m === undefined) && answers.length === clauses.length)
+		return answers.map((_, i) => i);
 	return matched;
+}
+
+/** The line's own words (its `what`, else its evidence) sit more in the step criterion than in the clause. */
+function echoesCriterion(a: ClauseAnswer, clause: Set<string>, criterion: Set<string>): boolean {
+	const line = contentWords(a.what || a.evidence);
+	if (!line.size) return false;
+	let inClause = 0;
+	let inCriterion = 0;
+	for (const w of line) {
+		if (clause.has(w)) inClause++;
+		if (criterion.has(w)) inCriterion++;
+	}
+	return inCriterion > inClause;
 }
 
 export type ClauseState = {
@@ -99,10 +135,16 @@ export const emptyClauses = (clauses: string[] = []): ClauseState => ({
 /**
  * Fold a verdict's clause answers into the ledger (spec-planner §3.7 `_fold`). `allowWithdraw` is
  * true for the sources that may unmark: a step judged task_done, a step's whole-task question, the
- * final check.
+ * final check. `criterion` is the step's, for a step verdict: lines that restate it are not answers
+ * about the task (see `alignAnswers`).
  */
-export function fold(state: ClauseState, answers: readonly ClauseAnswer[], allowWithdraw: boolean): void {
-	const at = alignAnswers(state.clauses, answers);
+export function fold(
+	state: ClauseState,
+	answers: readonly ClauseAnswer[],
+	allowWithdraw: boolean,
+	criterion?: string,
+): void {
+	const at = alignAnswers(state.clauses, answers, criterion);
 	answers.forEach((a, k) => {
 		const i = at[k];
 		if (i === undefined) return;

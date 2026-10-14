@@ -309,7 +309,7 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			const v = a.verdict;
 			// 4. fold the verdict
 			noteSettled(subgoal, a.run);
-			fold(ledger, v.clauses, v.status === "task_done");
+			fold(ledger, v.clauses, v.status === "task_done", subgoal.criterion);
 			if (v.asked) fold(ledger, v.asked.clauses, true);
 			state.clauses = clausesResult(ledger);
 			let status = v.status;
@@ -850,7 +850,7 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			logPlan("replan", r, trigger);
 			if (!r.plan)
 				return { outcome: end("error", "replan_failed", r.error ?? "the replan failed"), plan: p, index: keep };
-			const fresh = r.plan.subgoals.slice(keep).filter((s) => !(s.clause >= 0 && ledger.met.has(s.clause)));
+			const fresh = freshSteps(r.plan.subgoals, keep, ledger.met);
 			if (!fresh.some((s) => acts(s))) {
 				state.no_new_steps++;
 				if (state.no_new_steps >= 2)
@@ -1058,6 +1058,13 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 
 /** Whether the jaws of a frame point down (for callers that need it without the whole contract). */
 export const framesJawsDown = (f: Frame) => jawsDown(f.pose);
+/**
+ * A replan's new steps (spec-planner §3.5 rule 1): the returned steps from `keep` on, less any that
+ * serves a clause the ledger holds met. The ledger must therefore hold only the task's own clauses as
+ * met: a step criterion echoed into `clauses` (round 2 defect 1) deleted the take and lift steps here.
+ */
+export const freshSteps = (subgoals: readonly Subgoal[], keep: number, met: ReadonlySet<number>): Subgoal[] =>
+	subgoals.slice(keep).filter((s) => !(s.clause >= 0 && met.has(s.clause)));
 /** The attempt records' summary for the result's `subgoals`. */
 export const subgoalSummary = (s: AttemptRecord[]) =>
 	s.map((a) => ({ ...a, verdict: a.verdict ?? null, obs_id: a.obs_id ?? null }));

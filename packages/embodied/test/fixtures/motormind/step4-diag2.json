@@ -1,0 +1,206 @@
+{
+ "_source": "bjb2 .local/runs/mm-step4/base-B2 (main @ce9928415), the session JSONL's custom entries (motormind_plan / motormind_verdict / motormind_cycle); the analyses are in .local/runs/mm-step4/diag2/ (step4-diagnosis-2.md)",
+ "spatial_t2_s0": {
+  "task": "pick up the black bowl from table center and place it on the plate",
+  "clauses": [
+   "The akita black bowl is picked from the table center.",
+   "The akita black bowl is placed on the plate."
+  ],
+  "hover": {
+   "name": "hover_akita_bowl",
+   "criterion": "The akita black bowl sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
+   "target": "akita black bowl",
+   "verdict": {
+    "status": "done",
+    "gate": "",
+    "because": "The gripper is positioned directly above the akita black bowl at a height of 103 mm (approx. a palm's height) with jaws fully open.",
+    "clauses": [
+     {
+      "what": "The akita black bowl sits directly under the gripper in the wrist view",
+      "met": true,
+      "evidence": "The wrist camera shows the bowl centered in the field of view, directly below the gripper jaws."
+     },
+     {
+      "what": "the gripper is a palm's height or less above it",
+      "met": true,
+      "evidence": "The measured height is 103 mm, which is approximately a palm's height (100 mm)."
+     },
+     {
+      "what": "the jaws are open",
+      "met": true,
+      "evidence": "The gripper status is reported as FULLY OPEN with an opening of 80.0 mm."
+     }
+    ]
+   }
+  },
+  "take": {
+   "name": "take_akita_bowl",
+   "criterion": "The robot reports that it is HOLDING the akita black bowl.",
+   "verdict": {
+    "status": "done",
+    "gate": "held_width",
+    "because": "The robot reports holding an object, and the wrist view confirms the jaws are grasping the rim of the patterned bowl.",
+    "clauses": [
+     {
+      "what": "The akita black bowl is picked from the table center.",
+      "met": true,
+      "evidence": "The gripper is holding the patterned bowl, lifting it from the table surface."
+     }
+    ]
+   }
+  },
+  "replan": {
+   "trigger": "carry_akita_bowl (attempt 1) was judged not_done: the camera located \"plate\", which shares no word with the target \"akita black bowl\"",
+   "keep": 3,
+   "subgoals": [
+    {
+     "name": "hover_akita_bowl",
+     "clause": 0,
+     "subgoal": "Open the jaws, move the gripper over the akita black bowl in the center of the table (the patterned bowl near the stove), and lower it until it hovers about a palm's height above the bowl, jaws still open.",
+     "criterion": "The akita black bowl sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
+     "target": "akita black bowl"
+    },
+    {
+     "name": "take_akita_bowl",
+     "clause": 0,
+     "subgoal": "Descend the rest of the way until the jaws are level with the rim of the akita black bowl, with the rim between them, and close.",
+     "criterion": "The robot reports that it is HOLDING the akita black bowl.",
+     "target": "akita black bowl"
+    },
+    {
+     "name": "lift_akita_bowl",
+     "clause": 0,
+     "subgoal": "Raise the gripper straight up by about 15 cm without letting go of the akita black bowl.",
+     "criterion": "The tool has risen at least 120 mm since this step began and the robot still reports holding the akita black bowl.",
+     "target": "akita black bowl"
+    },
+    {
+     "name": "carry_akita_bowl_retry",
+     "clause": 1,
+     "subgoal": "Move the gripper sideways at this height until the akita black bowl is over the plate (the white dish with red rings), still holding it.",
+     "criterion": "The akita black bowl is over the plate and the robot still reports holding it.",
+     "target": "akita black bowl"
+    },
+    {
+     "name": "put_akita_bowl_retry",
+     "clause": 1,
+     "subgoal": "Lower the gripper until the akita black bowl is just above the plate, then open the jaws to let it go.",
+     "criterion": "The jaws are open and the akita black bowl rests on the plate, its middle over the middle of the plate.",
+     "target": "akita black bowl"
+    },
+    {
+     "name": "retreat_akita_bowl_retry",
+     "clause": -1,
+     "subgoal": "Raise the gripper straight up by about 15 cm.",
+     "criterion": "The tool has risen at least 120 mm since this step began.",
+     "target": "akita black bowl"
+    }
+   ]
+  }
+ },
+ "object_t9_s0": {
+  "task": "pick up the orange juice and place it in the basket",
+  "clauses": [
+   "The orange juice carton is picked up from the table.",
+   "The orange juice carton is placed inside the basket."
+  ],
+  "hover": {
+   "name": "hover_orange_juice",
+   "criterion": "The orange juice carton sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
+   "target": "the orange juice carton",
+   "verdict": {
+    "status": "done",
+    "gate": "",
+    "because": "The gripper is positioned directly above the orange juice carton with jaws open, meeting the hover criterion.",
+    "clauses": [
+     {
+      "what": "The orange juice carton sits directly under the gripper in the wrist view",
+      "met": true,
+      "evidence": "The wrist camera shows the orange juice carton centered in the frame, directly beneath the gripper."
+     },
+     {
+      "what": "the gripper is a palm's height or less above it",
+      "met": true,
+      "evidence": "The side view shows the gripper hovering just above the carton, consistent with the reported 100mm clearance."
+     },
+     {
+      "what": "the jaws are open",
+      "met": true,
+      "evidence": "The wrist view and robot state confirm the jaws are fully open (80.0 mm)."
+     }
+    ]
+   }
+  },
+  "take": {
+   "name": "take_orange_juice",
+   "criterion": "The robot reports that it is HOLDING the orange juice carton.",
+   "verdict": {
+    "status": "not_done",
+    "gate": "",
+    "because": "The gripper is fully open and has not closed around the orange juice carton, so it is not holding it.",
+    "clauses": [
+     {
+      "what": "The robot reports that it is HOLDING the orange juice carton.",
+      "met": false,
+      "evidence": "The gripper is fully open (80.0 mm) and the holding status is UNKNOWN, indicating no grasp has been made."
+     }
+    ]
+   }
+  },
+  "replan": {
+   "trigger": "take_orange_juice (attempt 2) was judged not_done: The gripper is fully open and not holding the orange juice carton. Earlier failures on the same object: take_orange_juice (attempt 1): The gripper is fully open and has not closed around the orange juice carton, so it is not holding it.",
+   "keep": 1,
+   "subgoals": [
+    {
+     "name": "hover_orange_juice",
+     "clause": 0,
+     "subgoal": "Open the jaws, move the gripper over the orange juice carton (the rectangular carton with the orange label and orange slice graphic) and lower it until it hovers about a palm's height above the carton, jaws still open.",
+     "criterion": "The orange juice carton sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
+     "target": "the orange juice carton"
+    },
+    {
+     "name": "hover_orange_juice_retry",
+     "clause": 0,
+     "subgoal": "Open the jaws, move the gripper over the orange juice carton (the rectangular carton with the orange label and orange slice graphic) and lower it until it hovers about a palm's height above the carton, jaws still open.",
+     "criterion": "The orange juice carton sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
+     "target": "the orange juice carton"
+    },
+    {
+     "name": "take_orange_juice_retry",
+     "clause": 0,
+     "subgoal": "Descend the rest of the way until the jaws are level with the middle of the orange juice carton, with it between them, and close.",
+     "criterion": "The robot reports that it is HOLDING the orange juice carton.",
+     "target": "the orange juice carton"
+    },
+    {
+     "name": "lift_orange_juice_retry",
+     "clause": 0,
+     "subgoal": "Raise the gripper straight up by about 15 cm without letting go of the orange juice carton.",
+     "criterion": "The tool has risen at least 120 mm since this step began and the robot still reports holding the orange juice carton.",
+     "target": "the orange juice carton"
+    },
+    {
+     "name": "carry_orange_juice_retry",
+     "clause": 1,
+     "subgoal": "Move the gripper sideways at this height until the orange juice carton is over the basket, still holding it.",
+     "criterion": "The orange juice carton is over the basket and the robot still reports holding it.",
+     "target": "the orange juice carton"
+    },
+    {
+     "name": "put_orange_juice_retry",
+     "clause": 1,
+     "subgoal": "Lower the gripper until the orange juice carton is just above the basket, then open the jaws to let it go.",
+     "criterion": "The jaws are open and the orange juice carton rests in the basket, its middle over the middle of the basket.",
+     "target": "the orange juice carton"
+    },
+    {
+     "name": "retreat_retry",
+     "clause": -1,
+     "subgoal": "Raise the gripper straight up by about 15 cm.",
+     "criterion": "The tool has risen at least 120 mm since this step began.",
+     "target": "the basket"
+    }
+   ]
+  }
+ }
+}
