@@ -68,6 +68,7 @@ import {
 	wantsHolding,
 	wantsRelease,
 	whereTheTargetIs,
+	whereTheToolIs,
 	widerThanJaws,
 } from "../src/modes/motormind/gates.ts";
 import { boxOnPlane, planeErrorMm, project, toPixels, triangulate } from "../src/modes/motormind/geometry.ts";
@@ -2630,4 +2631,35 @@ test("executor: smoke 9 (goal t0 s1) — a side take's contact push that stops o
 	);
 	noteBlocked(s, met, push.axis as Vec3);
 	assert.equal(closeDepthGate([closeDelta], ctx), undefined);
+});
+
+test("executor: smoke 10 (goal t7 s0) — holding what a turn step turns, the tool block asks for no close and no depth", () => {
+	const down: Mat3 = [
+		[1, 0, 0],
+		[0, -1, 0],
+		[0, 0, -1],
+	];
+	const s = newState({
+		subgoal: "Turn the black stove knob about the vertical axis by about 90 degrees without letting go.",
+		criterion: "The black stove knob's pointer or marking aims somewhere new in the picture.",
+		target: "the black stove knob on the silver stove",
+		planBoxes: {},
+	});
+	const read = { clearance_mm: 30, seen: true } as never;
+	const held = {
+		...frameAt(
+			{ position_m: [0.23, 0.2, TABLE_Z + 0.027], rotation: down },
+			{ holding: true, opening: 26, commanded: "close" },
+		),
+		table_z_m: TABLE_Z,
+	};
+	const said = whereTheToolIs(s, held, CAPS, 41, TABLE_Z + 0.041, "the wrist's median of the faces it saw", read);
+	assert.match(said, /already hold what this step turns/);
+	assert.doesNotMatch(said, /below the top face/);
+	// Not yet holding (the take before it), the depth is said as before.
+	const open = { ...frameAt({ position_m: [0.23, 0.2, TABLE_Z + 0.06], rotation: down }), table_z_m: TABLE_Z };
+	assert.match(
+		whereTheToolIs(s, open, CAPS, 41, TABLE_Z + 0.041, "the wrist's median of the faces it saw", read),
+		/below the top face/,
+	);
 });

@@ -1117,6 +1117,11 @@ export function whereTheToolIs(
 	heightFrom: string,
 	read: ClearanceRead,
 ): string {
+	// A turn step with the jaws full: what they hold is what turns, and a close-depth sentence reads as an order
+	// to grasp again (smoke 10, goal t7 s0: holding the knob 26 mm wide, the turn step proposed a deeper re-close
+	// six times, each refused by the depth gate, two ERROR endings, and the knob never turned).
+	if (f.grasp.holding === true && isTurnStep(s.subgoal, s.criterion))
+		return "WHERE THE TOOL IS: the jaws already hold what this step turns, so no close and no depth are wanted here: turn it, without opening or closing the jaws.";
 	if (f.table_z_m === null)
 		return "WHERE THE TOOL IS: no table height is known, so no depth can be judged; every close will be refused until the object is descended onto and blocked.";
 	if (heightMm === undefined || topZ === undefined) {
