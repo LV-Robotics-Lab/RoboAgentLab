@@ -1199,6 +1199,9 @@ test("mission: plan, two subgoals, the whole-task check; one robot call per yiel
 			"motormind_verdict",
 		],
 	);
+	// Every cycle entry carries its refused replies (none here), so an ERROR attempt can be read back.
+	for (const e of entries.filter((x) => x.entry === "motormind_cycle"))
+		for (const c of e.data.cycles as Json[]) assert.deepEqual(c.refused, []);
 	// The carry flows from one attempt to the next; the second attempt got no preface.
 	assert.deepEqual(
 		ex.inputs.map((i) => i.carry),

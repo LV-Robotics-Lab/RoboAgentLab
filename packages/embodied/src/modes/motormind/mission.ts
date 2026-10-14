@@ -522,6 +522,7 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 						turned_deg: s.turned_deg,
 					})),
 					located: c.reach?.located ?? null,
+					refused: c.refused ?? [],
 					batch: c.batch ?? null,
 					release: c.release ?? null,
 					stopped_by: c.stopped_by ?? null,

@@ -338,6 +338,10 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			},
 		});
 		cycleCalls.push(...proposed.records);
+		const refused = proposed.tries.flatMap((t) =>
+			t.refused ? [{ ...(t.text ? { text: t.text } : {}), refused: t.refused }] : [],
+		);
+		if (refused.length) cycle.refused = refused;
 		if (proposed.proposal) {
 			cycle.proposal = proposed.proposal;
 			onEvent({ type: "proposed", cycle: cycle.index, proposal: proposed.proposal });
@@ -881,7 +885,12 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		});
 		const reach: Reach = { target: words, from_plan_boxes: useBoxes && located.from_boxes.length > 0 };
 		if (!located.ok || !located.point) {
-			reach.located = { doubtful: located.doubtful, error: located.error ?? "not found" };
+			reach.located = {
+				doubtful: located.doubtful,
+				error: located.error ?? "not found",
+				...(located.method ? { method: located.method } : {}),
+				...(located.part ? { part: located.part } : {}),
+			};
 			return { reach, records: located.records };
 		}
 		s.fromPlanBoxes = reach.from_plan_boxes;
@@ -894,7 +903,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 				disagreement = undefined;
 				onFace = true;
 			} else if (s.located?.on_face) {
-				reach.located = { doubtful: true, error: "no two views met on its face" };
+				reach.located = { doubtful: true, error: "no two views met on its face", method: located.method };
 				return { reach, records: located.records };
 			}
 		}
@@ -959,6 +968,8 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 			error_mm: s.located?.error_mm ?? located.error_mm ?? 20,
 			doubtful: s.located?.doubtful ?? located.doubtful,
 			...(jumped !== undefined ? { error: undefined } : {}),
+			method,
+			...(located.part ? { part: located.part } : {}),
 		};
 		return { reach, records: located.records };
 	}

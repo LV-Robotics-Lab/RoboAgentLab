@@ -1260,6 +1260,7 @@ test("executor: C19, one robot call per yield, the observe call points of spec-e
 	// The first look came from the planner's boxes without a model call; the executor was asked twice.
 	assert.equal(run.cycles[0].reach?.from_plan_boxes, true);
 	assert.ok(run.cycles[0].reach?.located?.point_mm);
+	assert.match(run.cycles[0].reach?.located?.method ?? "", /\w/, "the session keeps how the point was read");
 	assert.deepEqual(
 		m.calls.map((c) => c.role),
 		["executor", "executor"],
@@ -1426,6 +1427,13 @@ test("executor: a close after a blocked descent that reports holding ends the su
 	assert.equal(run2.cycles.length, 2);
 	assert.equal(run2.cycles[0].steps[1].grasp?.holding, false);
 	assert.match(run2.cycles[1].error ?? "", /closed on nothing/);
+	// The session keeps the refused replies and why (round 3 data gap: an ERROR attempt's last cycle had no proposal).
+	assert.equal(run2.cycles[1].refused?.length, 3);
+	for (const r of run2.cycles[1].refused ?? []) {
+		assert.match(r.refused, /closed on nothing/);
+		assert.match(r.text ?? "", /"gripper"/);
+	}
+	assert.equal(run2.cycles[0].refused, undefined);
 	assert.equal((run2.carry as Json).same.emptyCloses.length, 1);
 	assert.match(m2.calls.at(-1)?.text ?? "", /The previous answer was refused: .*closed on nothing/s);
 });

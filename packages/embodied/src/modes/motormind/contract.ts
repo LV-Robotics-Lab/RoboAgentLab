@@ -404,6 +404,10 @@ export type Located = {
 	error_mm?: number;
 	doubtful: boolean;
 	error?: string;
+	/** How the point was read (the locate's `method` text, the sticky rule's note included). */
+	method?: string;
+	/** The part the look was for, when it was one ("handle", "top"). */
+	part?: string;
 };
 export type Reach = { target: string; from_plan_boxes: boolean; residual_mm?: number; located?: Located };
 export type Supervision = { decision: "continue" | "stop"; finding: string; because: string };
@@ -432,6 +436,8 @@ export type Cycle = {
 	finding?: string;
 	release?: Release;
 	error?: string;
+	/** The proposals of this cycle that were refused, in order: the reply's text and why. */
+	refused?: { text?: string; refused: string }[];
 	timing: Timing;
 };
 
