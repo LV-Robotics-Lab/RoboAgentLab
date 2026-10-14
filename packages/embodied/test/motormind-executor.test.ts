@@ -55,6 +55,8 @@ import {
 	receiverWords,
 	residualOf,
 	shoved,
+	sidePartWords,
+	sideTakeBlock,
 	stoppedAlongTheJaws,
 	takesOver,
 	wantsHolding,
@@ -2244,4 +2246,74 @@ test("executor: round 3 defect 4 — a turn step holding the knob seeks no recei
 	// "in the picture" is a camera, not a destination.
 	assert.equal(receiverWords("the knob's pointer aims somewhere new in the picture", "", "the knob"), "");
 	assert.equal(receiverWords("the bowl is in the wrist view over the plate", "", "the bowl"), "plate");
+});
+
+test("executor: round 3 defect 3 (side take) — the part phrase is asked for, a table point is not a face, the face's height is judged against floor - half gap + pad, and the feed goes into the face", () => {
+	const t = D3.side_take;
+	const b = t.B3_t0_s0;
+	// The words: the part phrase with its modifiers, not "it" (what "approach it from the side" gave).
+	assert.equal(sidePartWords(b.subgoal, b.target), "the middle drawer handle of the dark cabinet");
+	const a = t.A_t0_s1;
+	assert.equal(sidePartWords(a.subgoal, a.target), "the handle of the middle drawer of the cabinet");
+	assert.equal(sidePartWords("come at the top drawer from the side and close", "the top drawer"), "the top drawer");
+	assert.equal(sidePartWords("approach it from the side", "the cabinet"), "the cabinet");
+	const down: Mat3 = [
+		[1, 0, 0],
+		[0, -1, 0],
+		[0, 0, -1],
+	];
+	const mm = (p: number[]): Vec3 => [p[0] / 1000, p[1] / 1000, p[2] / 1000];
+	const frame = (tool: number[], tableZ: number) => ({
+		...frameAt({ position_m: mm(tool), rotation: down }),
+		table_z_m: tableZ,
+	});
+	// B3's first cycle: the planner's box read onto the table, not on the face. No CANNOT: the face is not located yet.
+	const s = newState({ subgoal: b.subgoal, criterion: b.criterion, target: b.target, planBoxes: b.plan_boxes });
+	assert.equal(s.sideStep, true);
+	s.located = {
+		words: "it",
+		point: mm(b.located_mm),
+		method: "scene's box on the table",
+		error_mm: 20,
+		error_class: "",
+		on_face: false,
+		doubtful: true,
+		cameras: ["scene", "side"],
+	};
+	const f = frame(b.tool_mm, b.table_z_mm / 1000);
+	const block = sideTakeBlock(s, f, CAPS);
+	assert.equal(block.cannot, undefined, b.old_cannot);
+	assert.match(block.text, /not located yet/);
+	// Arm A's part point on the face, with the cabinet's middle as the body: the face points LEFT (+y), the jaws move RIGHT.
+	const s2 = newState({ subgoal: a.subgoal, criterion: a.criterion, target: a.target, planBoxes: {} });
+	s2.located = {
+		words: sidePartWords(a.subgoal, a.target),
+		point: mm(a.part_point_mm),
+		method: "scene and side met on the part",
+		error_mm: 15,
+		error_class: "",
+		on_face: true,
+		body: mm(a.body_mm),
+		cameras: ["scene", "side"],
+	};
+	const f2 = frame(a.tool_mm, a.table_z_mm / 1000);
+	const side = sideTakeBlock(s2, f2, CAPS);
+	assert.equal(side.cannot, undefined);
+	assert.match(side.text, /face it toward RIGHT/);
+	assert.match(side.text, /Standoff point \[69[34], -42, 123\]/);
+	assert.match(side.text, /pitch 90 deg/);
+	assert.match(side.text, /move right with stop_on_contact for 124 mm/);
+	// Without a body the feed comes from where the tool is (forward of it here).
+	s2.located.body = undefined;
+	assert.match(sideTakeBlock(s2, f2, CAPS).text, /face it toward FORWARD/);
+	// The height threshold: floor - half gap + pad = 77.6 mm, not the 100 mm floor; the standoff never goes below the floor.
+	const th = t.threshold_mm;
+	assert.equal(Math.round((th.tilted_floor - th.jaw_half_gap + th.pad) * 10) / 10, th.lowest_face);
+	s2.located.body = mm(a.body_mm);
+	s2.located.point = [a.part_point_mm[0] / 1000, a.part_point_mm[1] / 1000, a.table_z_mm / 1000 + 0.08];
+	const low = sideTakeBlock(s2, f2, CAPS);
+	assert.equal(low.cannot, undefined, "80 mm over the table is taken");
+	assert.match(low.text, /Standoff point \[69[34], -42, 89\]/);
+	s2.located.point = [a.part_point_mm[0] / 1000, a.part_point_mm[1] / 1000, a.table_z_mm / 1000 + 0.07];
+	assert.match(sideTakeBlock(s2, f2, CAPS).cannot ?? "", /70 mm over the table/);
 });

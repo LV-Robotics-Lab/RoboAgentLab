@@ -841,8 +841,15 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 		)
 			why = "the tool moved further than a close can take since the last look";
 		if (!why) return undefined;
+		// The planner's boxes serve the first look only, and never a side take's: a box round the whole cabinet
+		// read onto the table is not the handle's face (round 3 defect 3; the original asks the cameras).
 		const useBoxes =
-			!o.wristOnly && !s.located && !fine && Object.keys(s.planBoxes).length > 0 && why === "not located yet";
+			!o.wristOnly &&
+			!s.located &&
+			!fine &&
+			!s.sideStep &&
+			Object.keys(s.planBoxes).length > 0 &&
+			why === "not located yet";
 		const views: typeof frame.cameras = { ...frame.cameras };
 		if (s.sideStep || !jawsDown(frame.pose)) delete views.wrist;
 		const wrist = frame.cameras.wrist;

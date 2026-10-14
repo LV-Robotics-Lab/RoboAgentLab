@@ -216,5 +216,69 @@
 			"target": "the silver patterned bowl",
 			"want": "top of the dark brown drawer unit"
 		}
+	},
+	"side_take": {
+		"_note": "round 3 defect 3 (the side-take chain): B3 goal t0_s0 take_middle_handle#1 located 'it' from the planner's box read onto the table ([537,-176,-11], doubtful) and ended CANNOT_FROM_THE_SIDE ('the face is 0 mm over the table') with no move; the planner then wrote top-down grasps of the handle for three plans. Arm A (base-nomon-nomem t0_s1) asked the cameras for the part, got [693,-132,123] on the face, was told the standoff and 'right 124 mm with stop_on_contact', and succeeded (HELD 16 mm, pull left 150)",
+		"B3_t0_s0": {
+			"subgoal": "Move the gripper to the middle drawer handle of the dark cabinet, approach it from the side so the jaws are parallel to the handle, and close the jaws to grasp it.",
+			"criterion": "The robot reports that it is HOLDING the handle of the middle drawer.",
+			"target": "the middle drawer handle of the dark cabinet",
+			"plan_boxes": {
+				"scene": [
+					270,
+					540,
+					330,
+					580
+				],
+				"side": [
+					200,
+					300,
+					260,
+					330
+				]
+			},
+			"old_words": "it",
+			"located_mm": [
+				537,
+				-176,
+				-11
+			],
+			"table_z_mm": -11,
+			"tool_mm": [
+				443,
+				-7,
+				250
+			],
+			"old_ending": "CANNOT_FROM_THE_SIDE",
+			"old_cannot": "the face is 0 mm over the table, below the 100 mm the tilted tool can reach"
+		},
+		"A_t0_s1": {
+			"subgoal": "take the handle of the middle drawer of the cabinet from the side and close on it",
+			"criterion": "The robot reports HOLDING the handle of the middle drawer of the cabinet.",
+			"target": "the middle drawer of the cabinet, the dark brown drawer unit with three horizontal silver handles, positioned between the top and bottom drawers",
+			"part_point_mm": [
+				693,
+				-132,
+				123
+			],
+			"body_mm": [
+				692,
+				-231,
+				-16
+			],
+			"table_z_mm": -11,
+			"tool_mm": [
+				443,
+				-7,
+				250
+			],
+			"then": "forward 134 / left 179 / down 103 / roll_cw; then right 124 stop_on_contact + close -> HELD 16 mm"
+		},
+		"threshold_mm": {
+			"tilted_floor": 100,
+			"jaw_half_gap": 39.4,
+			"pad": 17,
+			"lowest_face": 77.6
+		}
 	}
 }

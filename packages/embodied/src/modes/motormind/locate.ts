@@ -796,6 +796,7 @@ function asAPart(o: LocateInput, out: Located, chosen: Reading, tableZ: number) 
 	const bodyPx = toPixels(body.box, chosen.cam);
 	const anchor = boxOnPlane(chosen.cam, bodyPx, tableZ, o.top_z_m);
 	if (!anchor || !out.point) return unresolved("the body's point could not be read");
+	out.part_body = anchor;
 	const bodyHeight = body.box[3] - body.box[1];
 	const onTop = TOP_EDGE_PARTS.includes(part) || partBox[3] <= body.box[1] + ON_TOP_SHARE * bodyHeight;
 	const middle: [number, number] = [(chosen.box[0] + chosen.box[2]) / 2, (chosen.box[1] + chosen.box[3]) / 2];

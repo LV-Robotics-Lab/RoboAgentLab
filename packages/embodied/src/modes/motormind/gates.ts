@@ -257,9 +257,46 @@ export function receiverWords(criterion: string, subgoal: string, target: string
 	return "";
 }
 /** The part phrase before "from the side". */
+/**
+ * The part phrase a side-take step names, the words a camera can box it by: "the <part> of <what it is
+ * part of>" up to the clause's end (a comma, "and", "then", "from the side"), with the modifiers before
+ * the part word back to its article ("the middle drawer handle of the dark cabinet"); else the words
+ * before "from the side" when they are not a pronoun; else the target. Round 3 defect 3: "approach it
+ * from the side" gave "it", and the first look read the planner's box of the whole cabinet onto the
+ * table instead of asking for the handle.
+ */
 export function sidePartWords(subgoal: string, target: string): string {
-	const m = /((?:the\s+)?[a-z][a-z ]*?)\s+from the side/i.exec(subgoal);
-	return m?.[1]?.replace(/^(grasp|grab|take|hold|approach)\s+/i, "").trim() || target;
+	const text = subgoal.replace(/\s+/g, " ").trim();
+	const phraseRe = /\b([a-z]+) of (.+?)(?=[,;.]| and\b| then\b| from the side\b|$)/gi;
+	for (const m of text.matchAll(phraseRe)) {
+		const part =
+			aPartWord(m[1]) ?? (EDGE_PART_WORDS.includes(stem(m[1].toLowerCase())) ? stem(m[1].toLowerCase()) : undefined);
+		if (!part) continue;
+		// Back from the part word over up to three modifiers to its article.
+		const before = text.slice(0, m.index).split(/\s+/).filter(Boolean);
+		const mods: string[] = [];
+		for (let i = before.length - 1; i >= 0 && mods.length <= 3; i--) {
+			const w = before[i].toLowerCase();
+			if (PART_ARTICLES.has(w)) {
+				mods.unshift(before[i]);
+				break;
+			}
+			if (
+				!/^[a-z-]+$/i.test(before[i]) ||
+				/^(to|the|over|at|on|with|gripper|jaws|tool|move|take|grasp|hold)$/i.test(w)
+			)
+				break;
+			mods.unshift(before[i]);
+		}
+		const lead = mods.length && PART_ARTICLES.has(mods[0].toLowerCase()) ? mods : ["the", ...mods];
+		return `${lead.join(" ")} ${m[1]} of ${m[2].trim()}`.replace(/\s+/g, " ");
+	}
+	// The noun phrase from its last article before "from the side"; a pronoun names nothing to look for.
+	const m =
+		/.*\b((?:the|a|an|its)\s+[a-z][a-z ]*?)\s+from the side/i.exec(text) ??
+		/((?:the\s+)?[a-z][a-z ]*?)\s+from the side/i.exec(text);
+	const words = m?.[1]?.replace(/^(grasp|grab|take|hold|approach)\s+/i, "").trim() ?? "";
+	return words && !/^(it|them|this|that|one)$/i.test(words) ? words : target;
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,22 +1154,32 @@ export function sideTakeBlock(s: SubgoalState, f: Frame, caps: Caps): { text: st
 			text: `SIDE TAKE: the jaws are tilted but this step is not a side take. ${horizontal ? "Back off along the approach first, then" : "Then"} ${turnBackDown(f.pose)} to face down again.`,
 		};
 	if (s.sideStep) {
-		if (!s.located) return { text: "SIDE TAKE: the face to approach is not located yet." };
+		// A point that is not on the part's face (one view's table read, a planner box) says where the thing
+		// stands, not how high its face is: nothing is judged from it, and the next cycle asks the cameras
+		// again (round 3 defect 3: a 0 mm table point ended the step CANNOT before a move was made).
+		if (!s.located || !s.located.on_face) return { text: "SIDE TAKE: the face to approach is not located yet." };
 		const a = approach(f.pose).axis;
 		const face = s.located.point;
-		const toFace: Vec3 = [face[0] - f.pose.position_m[0], face[1] - f.pose.position_m[1], 0];
+		// The face points out from the body's middle toward the part; with no body outlined, away from the tool.
+		const from = s.located.body ?? f.pose.position_m;
+		const toFace: Vec3 = [face[0] - from[0], face[1] - from[1], 0];
 		const dist = norm(toFace);
 		if (dist < 1e-6)
 			return { text: "", cannot: "the tool is right over the face: a side take has no direction to come from" };
-		const dir = unit(toFace);
+		// `dir` is the way the jaws move: into the face, against its outward normal.
+		const dir = s.located.body ? scale(unit(toFace), -1) : unit(toFace);
 		const standoff = scale(dir, -SLIDE_STANDOFF_MM / 1000);
 		const stop: Vec3 = add(face, standoff);
-		const height = f.table_z_m !== null ? (stop[2] - f.table_z_m) * 1000 : undefined;
-		if (height !== undefined && height < caps.tilted_floor_m * 1000)
+		const floor = caps.tilted_floor_m * 1000;
+		const height = f.table_z_m !== null ? (face[2] - f.table_z_m) * 1000 : undefined;
+		// The jaws close up-down: a part up to a pad inside the half gap below the tilted floor is still between them.
+		const lowest = floor - jawHalfGapMm(caps) + padMm(caps);
+		if (height !== undefined && height < lowest)
 			return {
 				text: "",
-				cannot: `the face is ${r0(height)} mm over the table, below the ${r0(caps.tilted_floor_m * 1000)} mm the tilted tool can reach`,
+				cannot: `the face is ${r0(height)} mm over the table, and tilted this arm's tool point gets no lower than ${r0(floor)} mm (a part down to ${r0(lowest)} mm is still between the jaws)`,
 			};
+		if (f.table_z_m !== null) stop[2] = Math.max(stop[2], f.table_z_m + floor / 1000);
 		const word = ["forward", "backward", "left", "right"].reduce((b, w) =>
 			dot({ forward: [1, 0, 0], backward: [-1, 0, 0], left: [0, 1, 0], right: [0, -1, 0] }[w] as Vec3, dir) >
 			dot({ forward: [1, 0, 0], backward: [-1, 0, 0], left: [0, 1, 0], right: [0, -1, 0] }[b] as Vec3, dir)
