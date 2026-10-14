@@ -137,7 +137,7 @@ function claimText(c: Claim): string {
 	];
 	if (c.reached)
 		lines.push(
-			`Camera located ${c.reached.target}${c.reached.label ? ` (labelled "${c.reached.label}")` : ""} ${r0(c.reached.residual_mm)} mm from the tool${c.reached.from_mark_mm !== undefined ? `, ${r0(c.reached.from_mark_mm)} mm from the planner's mark` : ""}.`,
+			`Camera located ${c.reached.target}${c.reached.label ? ` (labelled "${c.reached.label}")` : ""}${c.reached.from_mark_mm !== undefined ? `, ${r0(c.reached.from_mark_mm)} mm from the planner's mark` : ""}; after the last move the tool — or what it carries — was ${r0(c.reached.residual_mm)} mm from it horizontally.`,
 		);
 	lines.push(
 		`Net turn since the last grasp or drop: ${r0(c.turn_net_deg)} deg of ${r0(c.turn_total_deg)} deg total; net move: ${r0(c.move_net_mm)} mm of ${r0(c.move_total_mm)} mm total (a net far below the total means it went and came back)${c.turn_stop ? `; the turn met a stop turning ${c.turn_stop}` : ""}.`,
@@ -319,7 +319,7 @@ export async function verify(ask: Ask, p: VerifyInput, signal?: AbortSignal): Pr
 		p.claim.reached &&
 		p.claim.reached.residual_mm <= REACHED_MM &&
 		p.claim.located_label &&
-		sameObject(p.claim.located_label, s.target)
+		sameObject(p.claim.located_label, p.claim.reached.target)
 	) {
 		const again = await say(
 			[
@@ -368,13 +368,20 @@ export async function verify(ask: Ask, p: VerifyInput, signal?: AbortSignal): Pr
 	return out;
 }
 
-/** 7. the located-identity gate: a holding or lift step done, but the camera's label shares no noun with the target. */
+/**
+ * 7. the located-identity gate: a holding or lift step done, but the camera's label shares no noun
+ * with the target. Only when that look was for this step's target (spec-planner §5.4 rule 7): a carry
+ * or lift step while holding looks for the receiver, or senses the landmark the thing stood on, and
+ * "plate" sharing no word with "akita black bowl" says nothing about what is in the jaws (round 2
+ * defect 2c: 13 of 15 such verdicts had the thing over its receiver).
+ */
 function locatedIdentity(v: Verdict, p: VerifyInput): Verdict {
 	const s = p.subgoal;
 	if (p.wholeTask || v.status !== "done") return v;
 	if (!(wantsHolding(s.criterion) || LIFT.test(s.criterion))) return v;
 	const label = p.claim.located_label;
 	if (!label || !s.target) return v;
+	if (!p.claim.reached || !sameObject(p.claim.reached.target, s.target)) return v;
 	const a = nouns(label);
 	let shared = false;
 	for (const w of nouns(s.target)) if (a.has(w)) shared = true;

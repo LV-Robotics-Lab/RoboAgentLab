@@ -45,8 +45,9 @@ import {
 	type SubgoalRun,
 } from "../src/modes/motormind/contract.ts";
 import { EvidenceLog, renderLine } from "../src/modes/motormind/evidence.ts";
+import { newState, receiverWords, residualOf } from "../src/modes/motormind/gates.ts";
 import { type Caps, MOTORMIND_EVENT, type MotorMindHandle, type Observation } from "../src/modes/motormind/index.ts";
-import { freshSteps, runMission } from "../src/modes/motormind/mission.ts";
+import { freshSteps, latestResidual, runMission } from "../src/modes/motormind/mission.ts";
 import { faithfulPayload, MAX_TOKENS, makeAsk, parseRoleJson, roleModels } from "../src/modes/motormind/models.ts";
 import {
 	acts,
@@ -850,8 +851,15 @@ test("verifier: the gripper gate decides before the model; a grasp with a width 
 		[v4.status, v4.gate, v4.identity, v4.overrode?.status],
 		["done", "held_width", "two bowls look alike", "not_done"],
 	);
-	// The located-identity gate: the camera's label shares no word with the target.
-	const other = { ...held, claim: { ...held.claim, located_label: "red mug" } };
+	// The located-identity gate: a look for this step's target gave a label sharing no word with it.
+	const other = {
+		...held,
+		claim: {
+			...held.claim,
+			located_label: "red mug",
+			reached: { label: "red mug", residual_mm: 5, target: "the black bowl" },
+		},
+	};
 	const v5 = await verify(
 		scriptedAsk({
 			verify: [{ status: "done", because: "held", evidence: "", identity: "", replan: false, clauses: [] }],
@@ -2013,6 +2021,18 @@ test("planner: step 4 defect 5 — the prompts carry the step vocabulary; a six-
 // (fixtures/motormind/step4-diag2.json: bjb2 .local/runs/mm-step4/base-B2, main @ce9928415)
 
 const D2 = JSON.parse(readFileSync(new URL("./fixtures/motormind/step4-diag2.json", import.meta.url), "utf8"));
+/** A recorded step verdict's step (the gated cases). */
+type D2Step = {
+	cell: string;
+	step: string;
+	attempt: number;
+	target: string;
+	subgoal: string;
+	criterion: string;
+	located_label?: string | null;
+	overrode?: { status: string; because: string } | null;
+};
+type D2Cycle = { index: number; located: NonNullable<Cycle["reach"]>["located"] | null; batch: Cycle["batch"] | null };
 /** The share of `text`'s content words that `line` has (the diagnosis scripts' measure of "restates"). */
 const contentShare = (line: string, text: string) => {
 	const w = contentWords(text);
@@ -2117,4 +2137,124 @@ test("clauses: round 2 defect 1 — a verdict line that restates the step criter
 		v?.clauses.map((c) => c.index),
 		[1, 0, undefined],
 	);
+});
+
+test("verifier: round 2 defect 2 — the claim's residual is the last measured one, the identity gate needs a look for this step's target, and a carry over its receiver is judged done", async () => {
+	// (b) spatial t2 s1 carry_bowl#1: the plate was located 250 mm away before the 223 mm move; the batch residuals after
+	// each cycle's moves were 41 and 32 mm; the verifier was told 250 mm and said "250 mm away, contradicting the executor".
+	const carry = D2.spatial_t2_s1_carry;
+	const cycles: Cycle[] = (carry.cycles as D2Cycle[]).map((c) => ({
+		index: c.index,
+		steps: [],
+		...(c.located
+			? { reach: { target: "plate", from_plan_boxes: false, residual_mm: 250, located: c.located } }
+			: {}),
+		...(c.batch ? { batch: c.batch } : {}),
+		timing: { wall_s: 0, motion_s: 0, calls: [] },
+	}));
+	assert.equal(Math.round(latestResidual(cycles)!), 32);
+	assert.equal(latestResidual(cycles.slice(0, 1).map((c) => ({ ...c, batch: undefined }))), 250);
+	assert.equal(latestResidual([]), undefined);
+	// The claim text says so, and the located-identity gate does not fire: the look was for the plate, not the bowl.
+	const now = frame(GOAL.C6.blocked, { holding: true, commanded: "close" });
+	const base = {
+		task: "pick up the black bowl from table center and place it on the plate",
+		now,
+		before: now,
+		note: "",
+		planText: "",
+		robotText: "R",
+		clauses: [
+			"The akita black bowl is picked from the table center.",
+			"The akita black bowl is placed on the plate.",
+		],
+		holding: true,
+	};
+	const claim = {
+		done: true,
+		assessment: "",
+		cycles: 3,
+		stopped_by: "",
+		ending: "",
+		turn_net_deg: 0,
+		turn_total_deg: 0,
+		move_net_mm: 223,
+		move_total_mm: 223,
+		reached: { label: "plate", residual_mm: 32, target: "plate" },
+		located_label: "plate",
+	};
+	const done = {
+		status: "done",
+		because: "the bowl hangs over the plate",
+		evidence: "",
+		identity: "",
+		replan: false,
+		clauses: [],
+	};
+	const step = subgoal({
+		name: "carry_bowl",
+		subgoal: carry.subgoal,
+		criterion: carry.criterion,
+		target: carry.target,
+		clause: 1,
+	});
+	const m1 = scriptedAsk({ verify: [done, done] });
+	const v1 = await verify(m1.ask, { ...base, subgoal: step, claim });
+	assert.deepEqual([v1.status, v1.gate], ["done", ""]);
+	assert.match(m1.calls[0].prompt.text, /after the last move the tool — or what it carries — was 32 mm from it/);
+	assert.doesNotMatch(m1.calls[0].prompt.text, /250 mm/);
+	assert.match(m1.calls[0].prompt.system, /held over its destination looks off-centre in every picture/);
+	// The same label on a look that WAS for this step's target still gates.
+	const v2 = await verify(scriptedAsk({ verify: [done, done] }).ask, {
+		...base,
+		subgoal: step,
+		claim: { ...claim, reached: { ...claim.reached, target: carry.target } },
+	});
+	assert.deepEqual([v2.status, v2.gate, v2.replan], ["not_done", "located_identity", true]);
+	// (c) every carry B2 gated located_identity with the thing over its receiver (the lift that located the landmark the
+	// thing stood on keeps the gate: that look was for the step's own target, as the spec has it).
+	const cases = D2.located_identity_gated.cases as D2Step[];
+	assert.ok(cases.length >= 9);
+	for (const c of cases) {
+		if (
+			receiverWords(c.criterion, c.subgoal, c.target) !== c.located_label &&
+			!/basket|plate/.test(c.located_label ?? "")
+		)
+			continue;
+		const words = receiverWords(c.criterion, c.subgoal, c.target);
+		if (/sitting on|on the stove/.test(c.target)) continue; // the place-phrase targets: defect 3's test
+		const answer = { ...done, because: c.overrode?.because ?? "" };
+		const v = await verify(scriptedAsk({ verify: [answer, answer] }).ask, {
+			...base,
+			subgoal: subgoal({ name: c.step, subgoal: c.subgoal, criterion: c.criterion, target: c.target, clause: 1 }),
+			claim: {
+				...claim,
+				reached: { label: c.located_label ?? "", residual_mm: 6, target: words },
+				located_label: c.located_label ?? "",
+			},
+		});
+		if (c.step.startsWith("lift")) assert.deepEqual([c.cell, v.gate], [c.cell, "located_identity"]);
+		else assert.deepEqual([c.cell, c.step, v.status, v.gate], [c.cell, c.step, "done", ""]);
+	}
+	// The residual while placing is measured from the centre of what the jaws hold, as the target block states it.
+	const st = newState({ subgoal: step.subgoal, criterion: step.criterion, target: step.target, planBoxes: {} });
+	const pose = now.pose;
+	const plate: [number, number, number] = [
+		pose.position_m[0] + 0.03,
+		pose.position_m[1] - 0.004,
+		pose.position_m[2] - 0.1,
+	];
+	st.located = {
+		words: "plate",
+		point: plate,
+		method: "",
+		error_mm: 10,
+		error_class: "",
+		on_face: false,
+		cameras: ["scene"],
+	};
+	assert.equal(Math.round(residualOf(st, pose, CAPS)!), 30);
+	st.payload = { edge: true, bumped: false, tracking: true, width_mm: 138, offset: [0.03, 0, 0] };
+	st.receiver = { center: plate, radius_mm: 100, error_mm: 10, words: "plate" };
+	assert.equal(Math.round(residualOf(st, pose, CAPS)!), 4);
 });

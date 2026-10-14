@@ -393,10 +393,18 @@ export function edgePoint(s: SubgoalState, pose: Pose, caps: Caps): Vec3 | undef
 /** Where the tool has to get to: the edge point of a thing wider than the jaws, else the located point (a side take's stand-off is the side block's). */
 export const aimPoint = (s: SubgoalState, pose: Pose, caps: Caps): Vec3 | undefined =>
 	s.located ? (s.sideStep ? s.located.point : (edgePoint(s, pose, caps) ?? s.located.point)) : undefined;
-/** The horizontal offset of the aim point from the tool (m), or undefined. */
+/**
+ * The horizontal offset of the aim point from the tool (m), or undefined. While placing, from the
+ * centre of what the jaws hold (the tool plus the payload offset), as the target block says it: the
+ * residual is then "the tool — or what it carries — from the receiver" (round 2 defect 2b: the
+ * claim read 32 mm from the tool with the bowl's centre 3 mm from the plate's).
+ */
 export const miss = (s: SubgoalState, pose: Pose, caps: Caps): Vec3 | undefined => {
 	const aim = aimPoint(s, pose, caps);
-	return aim ? [aim[0] - pose.position_m[0], aim[1] - pose.position_m[1], 0] : undefined;
+	if (!aim) return undefined;
+	const from =
+		s.payload.tracking && s.receiver && s.payload.offset ? add(pose.position_m, s.payload.offset) : pose.position_m;
+	return [aim[0] - from[0], aim[1] - from[1], 0];
 };
 export const residualOf = (s: SubgoalState, pose: Pose, caps: Caps) => {
 	const m = miss(s, pose, caps);
@@ -817,17 +825,25 @@ export function jawsChanged(deltas: Delta[], before: Frame): boolean {
  * original does: a 100 mm lift split into a 17 mm test and the rest is one asked distance, not a
  * segment that "made 14 of 100 mm".
  */
-export function noMotion(steps: SegmentReport[], deltas: Delta[], gripperChanged: boolean): { frozen: boolean; why: string } {
+export function noMotion(
+	steps: SegmentReport[],
+	deltas: Delta[],
+	gripperChanged: boolean,
+): { frozen: boolean; why: string } {
 	if (gripperChanged) return { frozen: false, why: "" };
 	const moved = steps.reduce((s, st) => s + (st.kind === "translate" ? Math.abs(st.moved_mm) : 0), 0);
 	const turned = steps.reduce((s, st) => s + Math.abs(st.turned_deg), 0);
 	if (turned >= NO_TURN_DEG) return { frozen: false, why: "" };
 	if (moved < NO_MOTION_MM) return { frozen: true, why: `the tool moved ${r1(moved)} mm in all` };
-	if (steps.some((st) => st.abort_reason === "blocked")) return { frozen: true, why: "a move stopped early: a segment was blocked" };
+	if (steps.some((st) => st.abort_reason === "blocked"))
+		return { frozen: true, why: "a move stopped early: a segment was blocked" };
 	const asked = deltas.reduce((s, d) => s + (d.kind === "translate" ? d.magnitude * 1000 : 0), 0);
 	const got = steps.reduce((s, st) => s + Math.abs(st.along_axis_mm), 0);
 	if (asked > MIN_USEFUL_DESCENT_MM && got < BLOCKED_SHARE * asked)
-		return { frozen: true, why: `a move stopped early: the batch made ${r1(got)} of the ${r1(asked)} mm it asked for` };
+		return {
+			frozen: true,
+			why: `a move stopped early: the batch made ${r1(got)} of the ${r1(asked)} mm it asked for`,
+		};
 	return { frozen: false, why: "" };
 }
 

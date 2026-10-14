@@ -916,6 +916,7 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			const cycles = run.cycles;
 			const lastProposal = [...cycles].reverse().find((c) => c.proposal)?.proposal;
 			const reach = [...cycles].reverse().find((c) => c.reach?.located?.point_mm)?.reach;
+			const residual = latestResidual(cycles);
 			const mark = marks.get(s.target);
 			const located = reach?.located;
 			const fromMark =
@@ -931,11 +932,11 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 				stopped_by:
 					run.ending === "FROZEN" || run.ending === "WALL" ? run.ending : (cycles.at(-1)?.stopped_by ?? ""),
 				ending: howItEnded(run, neverMoved),
-				...(reach && located && !located.doubtful && reach.residual_mm !== undefined
+				...(reach && located && !located.doubtful && residual !== undefined
 					? {
 							reached: {
 								label: located.label ?? "",
-								residual_mm: reach.residual_mm,
+								residual_mm: residual,
 								target: reach.target,
 								...(fromMark !== undefined ? { from_mark_mm: fromMark } : {}),
 							},
@@ -1063,6 +1064,19 @@ export const framesJawsDown = (f: Frame) => jawsDown(f.pose);
  * serves a clause the ledger holds met. The ledger must therefore hold only the task's own clauses as
  * met: a step criterion echoed into `clauses` (round 2 defect 1) deleted the take and lift steps here.
  */
+/**
+ * The residual the claim reports (spec-planner §2.8 "at the last look the tool — or what it carries —
+ * was N mm from it"): the latest measured one, a batch's (after its moves) before a look's. The look's
+ * own residual is the distance before the step's moves: a carry located its plate 250 mm away, moved,
+ * and the verifier was told 250 mm with the bowl over the plate (round 2 defect 2b).
+ */
+export function latestResidual(cycles: readonly Cycle[]): number | undefined {
+	for (const c of [...cycles].reverse()) {
+		if (c.batch?.residual_mm !== undefined) return c.batch.residual_mm;
+		if (c.reach?.residual_mm !== undefined) return c.reach.residual_mm;
+	}
+	return undefined;
+}
 export const freshSteps = (subgoals: readonly Subgoal[], keep: number, met: ReadonlySet<number>): Subgoal[] =>
 	subgoals.slice(keep).filter((s) => !(s.clause >= 0 && met.has(s.clause)));
 /** The attempt records' summary for the result's `subgoals`. */

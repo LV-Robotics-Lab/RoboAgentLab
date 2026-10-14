@@ -202,5 +202,209 @@
     }
    ]
   }
+ },
+ "spatial_t2_s1_carry": {
+  "_note": "carry_bowl attempt 1: the plate was located in cycle 0 before the 223 mm move (the verifier was told 250 mm: its verdict text); the batch residuals after each cycle's moves are the recorded ones; truth at the verdict: bowl centre 8 mm from the plate centre, 123 mm up (vtruthB2.txt)",
+  "target": "the akita black bowl in the center of the table",
+  "subgoal": "Move the gripper sideways at this height until the akita black bowl is over the plate, still holding it.",
+  "criterion": "The akita black bowl is over the plate and the robot still reports holding it.",
+  "cycles": [
+   {
+    "index": 0,
+    "located": {
+     "label": "plate",
+     "point_mm": [
+      739.5979728729693,
+      185.56527398091646,
+      -58.22328876679911
+     ],
+     "error_mm": 10,
+     "doubtful": false
+    },
+    "batch": {
+     "actions": 7,
+     "ran": 7,
+     "motion_s": 21.133,
+     "residual_mm": 40.77727958788052
+    },
+    "stopped_by": null,
+    "assessment": "The robot is holding the akita black bowl. The target block states the plate is 109 mm FORWARD and 195 mm LEFT of the held object. The subgoal is to move the gripper sideways (and forward) to position the bowl over the plate. The total distance is sqrt(109^2 + 195^2) ≈ 223 mm, which is within the 400 mm limit for a single command. The tool is currently holding the bowl."
+   },
+   {
+    "index": 1,
+    "located": null,
+    "batch": {
+     "actions": 2,
+     "ran": 2,
+     "motion_s": 1.422,
+     "residual_mm": 31.986852162887804
+    },
+    "stopped_by": null,
+    "assessment": "The gripper is holding the akita black bowl. The target block states the plate is 10 mm FORWARD and 10 mm LEFT of the centre of what the jaws hold. The subgoal is to move the bowl over the plate. The offset is small (14 mm total), but the criterion requires the bowl to be over the plate. I will perform the move to align them."
+   },
+   {
+    "index": 2,
+    "located": null,
+    "batch": null,
+    "stopped_by": "the model says the subgoal is achieved",
+    "assessment": "The robot is holding the akita black bowl. The target block states the plate is 3 mm FORWARD and 2 mm LEFT of the centre of what the jaws hold. This offset is within the 6 mm tolerance threshold, meaning the tool is already positioned over the plate. The gripper reports holding the object."
+   }
+  ],
+  "ending": "MODEL_DONE",
+  "verdict": {
+   "status": "not_done",
+   "gate": "",
+   "because": "The bowl is not positioned over the plate; the camera-located plate is 250 mm away from the tool, contradicting the executor's claim of being over it.",
+   "evidence": "The scene view shows the gripper holding a bowl far to the right of the red-rimmed plate, and the measured distance from the tool to the plate is 250 mm."
+  },
+  "truth": {
+   "obj_recv_xy_mm": 8,
+   "dz_mm": 123
+  }
+ },
+ "located_identity_gated": {
+  "_note": "every verdict B2 gated located_identity (vtruthB2.txt): the located label is the receiver (or, at a lift, the landmark the thing stood on); truth at 13 of 15 was the thing over its receiver; `overrode` is the model's own answer",
+  "cases": [
+   {
+    "cell": "object_t2_s1",
+    "step": "carry_salad_dressing",
+    "attempt": 1,
+    "target": "the salad dressing bottle with the green cap",
+    "subgoal": "Move the gripper sideways at this height until the salad dressing bottle is over the basket, still holding it.",
+    "criterion": "The salad dressing bottle is over the basket and the robot still reports holding it.",
+    "located_label": "basket",
+    "because": "the camera located \"basket\", which shares no word with the target \"the salad dressing bottle with the green cap\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the salad dressing bottle and has moved it directly over the basket."
+    }
+   },
+   {
+    "cell": "object_t2_s1",
+    "step": "carry_salad_dressing_retry",
+    "attempt": 1,
+    "target": "the salad dressing bottle",
+    "subgoal": "Move the gripper sideways at this height until the salad dressing bottle is over the basket, still holding it.",
+    "criterion": "The salad dressing bottle is over the basket and the robot still reports holding it.",
+    "located_label": "basket",
+    "because": "the camera located \"basket\", which shares no word with the target \"the salad dressing bottle\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the salad dressing bottle and has moved it directly over the basket."
+    }
+   },
+   {
+    "cell": "object_t3_s1",
+    "step": "carry_bbq_sauce",
+    "attempt": 1,
+    "target": "the brown BBQ sauce bottle with the red cap",
+    "subgoal": "Move the gripper sideways at this height until the brown BBQ sauce bottle with the red cap is over the white woven basket, still holding it.",
+    "criterion": "The brown BBQ sauce bottle with the red cap is over the white woven basket and the robot still reports holding it.",
+    "located_label": "white woven basket",
+    "because": "the camera located \"white woven basket\", which shares no word with the target \"the brown BBQ sauce bottle with the red cap\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the BBQ sauce bottle directly over the white woven basket."
+    }
+   },
+   {
+    "cell": "object_t3_s1",
+    "step": "carry_bbq_sauce_retry",
+    "attempt": 1,
+    "target": "the BBQ sauce bottle",
+    "subgoal": "Move the gripper sideways at this height until the BBQ sauce bottle is over the white woven basket, still holding it.",
+    "criterion": "The BBQ sauce bottle is over the white woven basket and the robot still reports holding it.",
+    "located_label": "white woven basket",
+    "because": "the camera located \"white woven basket\", which shares no word with the target \"the BBQ sauce bottle\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the BBQ sauce bottle and has moved it to a position directly over the white woven basket."
+    }
+   },
+   {
+    "cell": "object_t8_s0",
+    "step": "lift_pudding",
+    "attempt": 1,
+    "target": "the chocolate pudding box",
+    "subgoal": "raise the gripper straight up by about 15 cm without letting go of the chocolate pudding box.",
+    "criterion": "The tool has risen at least 120 mm since this step began and the robot still reports holding the chocolate pudding box.",
+    "located_label": "orange juice carton",
+    "because": "the camera located \"orange juice carton\", which shares no word with the target \"the chocolate pudding box\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot has lifted the chocolate pudding box 140 mm, exceeding the 120 mm requirement, and is still holding it."
+    }
+   },
+   {
+    "cell": "object_t8_s0",
+    "step": "carry_pudding_retry",
+    "attempt": 1,
+    "target": "the chocolate pudding box",
+    "subgoal": "move the gripper sideways at this height until the chocolate pudding box is over the basket, still holding it",
+    "criterion": "the chocolate pudding box is over the basket and the robot still reports holding it",
+    "located_label": "basket",
+    "because": "the camera located \"basket\", which shares no word with the target \"the chocolate pudding box\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the chocolate pudding box and has moved it to a position directly over the basket."
+    }
+   },
+   {
+    "cell": "spatial_t2_s0",
+    "step": "carry_akita_bowl",
+    "attempt": 1,
+    "target": "akita black bowl",
+    "subgoal": "move the gripper sideways at this height until the akita black bowl is over the plate, still holding it",
+    "criterion": "the akita black bowl is over the plate and the robot still reports holding it",
+    "located_label": null,
+    "because": "the camera located \"plate\", which shares no word with the target \"akita black bowl\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the patterned bowl and has moved it to a position directly over the white plate with red rings."
+    }
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_bowl",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the red box",
+    "subgoal": "Move the gripper sideways at this height until the patterned bowl is over the white plate with red rings, still holding it.",
+    "criterion": "The patterned bowl is over the white plate with red rings and the robot still reports holding it.",
+    "located_label": "white plate",
+    "because": "the camera located \"white plate\", which shares no word with the target \"the patterned bowl sitting on the red box\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the patterned bowl and has moved it to a position directly over the white plate with red rings."
+    }
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_bowl_retry",
+    "attempt": 1,
+    "target": "the black and white patterned bowl",
+    "subgoal": "move the gripper sideways at this height until the black and white patterned bowl is over the plate, still holding it",
+    "criterion": "the black and white patterned bowl is over the plate and the robot still reports holding it",
+    "located_label": "plate",
+    "because": "the camera located \"plate\", which shares no word with the target \"the black and white patterned bowl\"",
+    "overrode": {
+     "status": "done",
+     "because": "the gripper reading settles holding; the model's not_done contradicted it twice"
+    }
+   },
+   {
+    "cell": "spatial_t7_s1",
+    "step": "carry_bowl",
+    "attempt": 1,
+    "target": "the patterned bowl on the stove",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl is over the white plate with red rings, still holding it.",
+    "criterion": "the patterned bowl is over the white plate with red rings and the robot still reports holding it.",
+    "located_label": "white plate",
+    "because": "the camera located \"white plate\", which shares no word with the target \"the patterned bowl on the stove\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the patterned bowl and has moved it to a position directly over the white plate with red rings."
+    }
+   }
+  ]
  }
 }
