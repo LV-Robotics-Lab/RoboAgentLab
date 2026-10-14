@@ -847,7 +847,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 						frame.pose.rotation[2][2],
 					])
 				: undefined;
-		const acts = actsOnWhatItNames(sg.subgoal, sg.criterion);
+		const acts = actsOnWhatItNames(sg.subgoal, sg.criterion, sg.target);
 		const located: Located = await locate({
 			views,
 			words,
@@ -884,7 +884,7 @@ export async function* runSubgoal(input: SubgoalInput): Executor {
 				return { reach, records: located.records };
 			}
 		}
-	// The sticky rule (spec-locate §8.3): the point kept under these words, a carried one included (the
+		// The sticky rule (spec-locate §8.3): the point kept under these words, a carried one included (the
 		// original keys it on the words, so a retry on the same object cannot be sent to a look-alike by
 		// one wide-barred answer: spatial t0 s0 drove 160 mm to the other bowl twice).
 		const old = s.located && s.located.words === words ? s.located : undefined;

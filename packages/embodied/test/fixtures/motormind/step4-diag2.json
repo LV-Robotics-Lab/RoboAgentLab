@@ -406,5 +406,135 @@
     }
    }
   ]
+ },
+ "still_holding_gated": {
+  "_note": "every take / lift / carry verdict B2 gated 'still holding' (vtruthB2.txt; 12 of the 13, the 13th being a true put step): the criterion names the held thing with where it stood, 'sitting on the grey ramekin' / 'sitting on the red box', which RELEASE_WORDS read as a release",
+  "cases": [
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_bowl_to_plate",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the red box",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the red box is over the plate, still holding it",
+    "criterion": "the patterned bowl sitting on the red box is over the plate and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_bowl_to_plate",
+    "attempt": 2,
+    "target": "the patterned bowl sitting on the red box",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the red box is over the plate, still holding it",
+    "criterion": "the patterned bowl sitting on the red box is over the plate and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_patterned_bowl_retry",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the red box",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the red box is over the plate, still holding it",
+    "criterion": "the patterned bowl sitting on the red box is over the plate and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_bowl_to_plate_retry2",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the red box",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the red box is over the red-rimmed plate, still holding it",
+    "criterion": "the patterned bowl sitting on the red box is over the red-rimmed plate and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_bowl_to_plate_retry2",
+    "attempt": 2,
+    "target": "the patterned bowl sitting on the red box",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the red box is over the red-rimmed plate, still holding it",
+    "criterion": "the patterned bowl sitting on the red box is over the red-rimmed plate and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "take_bowl",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "descend the rest of the way until the jaws are level with the rim of the patterned bowl sitting on the grey ramekin, with it between them, and close.",
+    "criterion": "The robot reports that it is HOLDING the patterned bowl sitting on the grey ramekin."
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "lift_bowl",
+    "attempt": 2,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "raise the gripper straight up by about 15 cm without letting go of the patterned bowl sitting on the grey ramekin.",
+    "criterion": "The tool has risen at least 120 mm since this step began and the robot still reports holding the patterned bowl sitting on the grey ramekin."
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "carry_bowl_retry",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the grey ramekin is over the white plate with red rings, still holding it",
+    "criterion": "the patterned bowl sitting on the grey ramekin is over the white plate with red rings and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "carry_bowl_retry",
+    "attempt": 2,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the grey ramekin is over the white plate with red rings, still holding it",
+    "criterion": "the patterned bowl sitting on the grey ramekin is over the white plate with red rings and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "carry_bowl_retry2",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the grey ramekin is over the white plate with red rings, still holding it",
+    "criterion": "the patterned bowl sitting on the grey ramekin is over the white plate with red rings and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "carry_bowl_to_plate",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the grey ramekin is over the white plate with red rings, still holding it",
+    "criterion": "the patterned bowl sitting on the grey ramekin is over the white plate with red rings and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "carry_bowl_to_plate_retry",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the grey ramekin is over the white plate with red rings, still holding it",
+    "criterion": "the patterned bowl sitting on the grey ramekin is over the white plate with red rings and the robot still reports holding it"
+   }
+  ]
+ },
+ "receiver_mislabelled": {
+  "_note": "carry / put locates whose label was a landmark instead of the receiver (carrylocB2.txt): the receiver words came from the first preposition of a criterion whose subject carries a place phrase",
+  "cases": [
+   {
+    "cell": "spatial_t5_s1",
+    "criterion": "the black bowl on the ramekin is placed on the plate, its middle over the middle of the plate",
+    "subgoal": "lower the gripper until the black bowl on the ramekin is just above the plate, then open the jaws to let it go",
+    "target": "the black bowl on the ramekin",
+    "located_label": "ramekin",
+    "want": "plate"
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "criterion": "the patterned bowl sitting on the red box is over the plate and the robot still reports holding it",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the red box is over the plate, still holding it",
+    "target": "the patterned bowl sitting on the red box",
+    "located_label": "red box is over the plate",
+    "want": "plate"
+   },
+   {
+    "cell": "spatial_t7_s1",
+    "criterion": "the patterned bowl on the stove is over the white plate with red rings and the robot still reports holding it",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl on the stove is over the white plate with red rings, still holding it",
+    "target": "the patterned bowl on the stove",
+    "located_label": "stove is over the white plate",
+    "want": "white plate"
+   }
+  ]
  }
 }

@@ -24,6 +24,7 @@ import {
 	type Subgoal,
 } from "./contract.ts";
 import { fill, type PromptName, promptFile } from "./prompts.ts";
+import { objectHead, stripPlace } from "./words.ts";
 
 export const MAX_SUBGOALS = 24;
 export const PLAN_ATTEMPTS = 3;
@@ -78,8 +79,12 @@ const PART_WORDS =
 const IRRECOVERABLE =
 	/\b(out of reach|unreachable|cannot reach|can't reach|dropped|on the floor|fell|fallen|outside the workspace|out of the workspace|broken|shattered|spilled|spilt|cannot be grasped|can't be grasped|ungraspable|permanent|irreversibl)\w*\b/i;
 
-export const wantsHolding = (criterion: string) => HOLD_WORDS.test(criterion) && !RELEASE_WORDS.test(criterion);
-export const wantsRelease = (criterion: string) => RELEASE_WORDS.test(criterion);
+/** The criterion wants the thing held; the target's own place phrases ("sitting on the ramekin") are not release words (round 2 defect 3). */
+export const wantsHolding = (criterion: string, target = "") => {
+	const t = stripPlace(criterion, target);
+	return HOLD_WORDS.test(t) && !RELEASE_WORDS.test(t);
+};
+export const wantsRelease = (criterion: string, target = "") => RELEASE_WORDS.test(stripPlace(criterion, target));
 /** The step moves a hand (spec-planner §4.3 `act`, §3.5 `acts`): it names an action on an object, not only a look. */
 export const acts = (s: Pick<Subgoal, "subgoal" | "criterion">) =>
 	ACT_WORDS.test(s.subgoal) && !/^\s*(look|observe|inspect|check|view|see)\b/i.test(s.subgoal);
@@ -114,11 +119,14 @@ export const nouns = (s: string) =>
 			.split(/[^a-z0-9]+/)
 			.filter((w) => w.length >= 3 && !STOP.has(w)),
 	);
-/** Two target phrases name the same object: they share a content word (spec-planner §3.3, §4.5 `same_object`). */
+/**
+ * Two target phrases name the same object: their heads share a content word (spec-planner §3.3, §4.5
+ * `same_object`). The heads, so that "the patterned bowl sitting on the red box" is not the red box.
+ */
 export function sameObject(a: string, b: string): boolean {
 	if (!a.trim() || !b.trim()) return false;
-	const x = nouns(a);
-	for (const w of nouns(b)) if (x.has(w)) return true;
+	const x = nouns(objectHead(a));
+	for (const w of nouns(objectHead(b))) if (x.has(w)) return true;
 	return false;
 }
 

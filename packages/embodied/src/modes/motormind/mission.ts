@@ -371,8 +371,8 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 			MmReply
 		> {
 			const t0 = Date.now();
-			const holdStep = wantsHolding(subgoal.criterion);
-			const releaseStep = wantsRelease(subgoal.criterion);
+			const holdStep = wantsHolding(subgoal.criterion, subgoal.target);
+			const releaseStep = wantsRelease(subgoal.criterion, subgoal.target);
 			let before: Frame | undefined = !m.cache.stale ? m.cache.latest : undefined;
 			let holdingAtStart: boolean | undefined;
 			let lostGrasp = false;
@@ -1028,9 +1028,13 @@ export function runMission(m: MissionInput): Mission & { state: () => MissionSta
 		function graspStepFor(p: Plan, failedIndex: number): number | undefined {
 			const object = p.subgoals[failedIndex].target;
 			let i = failedIndex;
-			while (i - 1 >= 0 && wantsHolding(p.subgoals[i - 1].criterion) && sameObject(p.subgoals[i - 1].target, object))
+			while (
+				i - 1 >= 0 &&
+				wantsHolding(p.subgoals[i - 1].criterion, p.subgoals[i - 1].target) &&
+				sameObject(p.subgoals[i - 1].target, object)
+			)
 				i--;
-			return wantsHolding(p.subgoals[i].criterion) ? i : undefined;
+			return wantsHolding(p.subgoals[i].criterion, p.subgoals[i].target) ? i : undefined;
 		}
 
 		/** A release was measured (spec-planner §3.8): opening > payload width + resolution, and the reading is not holding. */

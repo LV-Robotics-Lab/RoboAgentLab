@@ -13,6 +13,7 @@
 import { type Ask, type Frame, images, type RoleCallRecord, recordOf, type Subgoal } from "./contract.ts";
 import { type ClauseAnswer, nouns, sameObject, wantsHolding, wantsRelease } from "./planner.ts";
 import { fill, promptFile } from "./prompts.ts";
+import { objectHead } from "./words.ts";
 
 export const VERIFY_ATTEMPTS = 3;
 /** A closed point this near the planned mark counts as "reached" (spec-planner §5.4 `_REACHED_MM`). */
@@ -215,8 +216,8 @@ export async function askTask(ask: Ask, p: VerifyInput, signal?: AbortSignal): P
 export async function verify(ask: Ask, p: VerifyInput, signal?: AbortSignal): Promise<Verdict> {
 	const calls: RoleCallRecord[] = [];
 	const s = p.subgoal;
-	const holdStep = wantsHolding(s.criterion);
-	const releaseStep = wantsRelease(s.criterion);
+	const holdStep = wantsHolding(s.criterion, s.target);
+	const releaseStep = wantsRelease(s.criterion, s.target);
 	const withTask = async (v: Verdict): Promise<Verdict> => {
 		const asked = await askTask(ask, p, signal);
 		if (asked) {
@@ -378,13 +379,13 @@ export async function verify(ask: Ask, p: VerifyInput, signal?: AbortSignal): Pr
 function locatedIdentity(v: Verdict, p: VerifyInput): Verdict {
 	const s = p.subgoal;
 	if (p.wholeTask || v.status !== "done") return v;
-	if (!(wantsHolding(s.criterion) || LIFT.test(s.criterion))) return v;
+	if (!(wantsHolding(s.criterion, s.target) || LIFT.test(s.criterion))) return v;
 	const label = p.claim.located_label;
 	if (!label || !s.target) return v;
 	if (!p.claim.reached || !sameObject(p.claim.reached.target, s.target)) return v;
-	const a = nouns(label);
+	const a = nouns(objectHead(label));
 	let shared = false;
-	for (const w of nouns(s.target)) if (a.has(w)) shared = true;
+	for (const w of nouns(objectHead(s.target))) if (a.has(w)) shared = true;
 	if (shared) return v;
 	return {
 		...v,

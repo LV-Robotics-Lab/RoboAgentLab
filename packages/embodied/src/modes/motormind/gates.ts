@@ -16,6 +16,7 @@ import { add, apply, dot, matmul, norm, ROTATION, rotationAbout, sayOffset, scal
 import { apartXy, longestAcross } from "./geometry.ts";
 import type { ClearanceRead } from "./observe.ts";
 import type { Caps, Delta, Pose, Vec3 } from "./types.ts";
+import { stripPlace } from "./words.ts";
 
 // constants (spec-executor §18)
 export const DOWN_WITHIN_DEG = 45;
@@ -137,11 +138,17 @@ const phrase = (s: string, words: readonly string[]) => {
 	const t = ` ${tokens(s).join(" ")} `;
 	return words.some((w) => t.includes(` ${w} `));
 };
-/** The criterion wants the thing held (holding words, no release words). */
-export const wantsHolding = (criterion: string) =>
-	phrase(criterion, HOLDING_WORDS) && !phrase(criterion, RELEASE_WORDS);
+/**
+ * The criterion wants the thing held (holding words, no release words). The place phrases that
+ * describe the target's own position ("the bowl sitting on the grey ramekin") are not release words
+ * (round 2 defect 3): classified on the text with them taken out.
+ */
+export const wantsHolding = (criterion: string, target = "") => {
+	const t = stripPlace(criterion, target);
+	return phrase(t, HOLDING_WORDS) && !phrase(t, RELEASE_WORDS);
+};
 /** The criterion wants the thing let go. */
-export const wantsRelease = (criterion: string) => phrase(criterion, RELEASE_WORDS);
+export const wantsRelease = (criterion: string, target = "") => phrase(stripPlace(criterion, target), RELEASE_WORDS);
 /** Placing INTO (true) or ONTO (false) by the earliest in/on phrase, ignoring "in the wrist view". */
 export function placingIn(text: string): boolean | undefined {
 	const t = tokens(text.replace(/in the (wrist|scene|side) (view|camera|picture)/g, " "));
@@ -162,8 +169,8 @@ export function aboutLettingGo(s: string): boolean {
 	return hasAny(s, ["open", "opens", "opened"]) && hasAny(s, ["jaw", "jaws", "gripper", "finger", "fingers", "grip"]);
 }
 /** The step acts on what it names (a part is sought): it wants to hold, or has turn / twist / rotate / press. */
-export const actsOnWhatItNames = (subgoal: string, criterion: string) =>
-	wantsHolding(criterion) || phrase(subgoal, TURN_WORDS) || phrase(criterion, TURN_WORDS);
+export const actsOnWhatItNames = (subgoal: string, criterion: string, target = "") =>
+	wantsHolding(criterion, target) || phrase(subgoal, TURN_WORDS) || phrase(criterion, TURN_WORDS);
 /** The part named as "X of <target>" in the subgoal sentence. */
 export function partOf(subgoal: string, target: string): string | undefined {
 	const m = /\b(the\s+)?([a-z]+(?:\s+[a-z]+)?)\s+of\s+(?:the\s+)?([a-z][a-z ]*)/i.exec(subgoal);
@@ -172,14 +179,22 @@ export function partOf(subgoal: string, target: string): string | undefined {
 	if (!target || head.includes(target.toLowerCase().split(/\s+/)[0] ?? "")) return m[2].toLowerCase();
 	return undefined;
 }
-/** The receiver's words while placing: what follows on / in / into / onto / over / above / toward (the vocabulary's carry criterion says "over"), else the target. */
+/**
+ * The receiver's words while placing (spec-executor §9): what follows on / in / into / onto / over /
+ * above / toward (the vocabulary's carry criterion says "over") in the criterion, then the subgoal,
+ * else the target. The held thing's own place phrases are taken out first, and a phrase the sentence
+ * goes on from with "is / are" is part of the subject's name, not the receiver ("the black bowl on the
+ * ramekin is placed on the plate" → plate; round 2 defect 3 sent bowls back to the ramekin).
+ */
 export function receiverWords(criterion: string, subgoal: string, target: string): string {
-	for (const s of [criterion, subgoal]) {
-		const m =
-			/\b(?:on|onto|in|into|inside|within|atop|upon|over|above|toward|towards)\s+(?:the\s+)?([a-z][a-z0-9 _-]*?)(?:\s+(?:with|while|and|so|until|then|,)|[.,;]|$)/i.exec(
-				s.replace(/in the (wrist|scene|side) (view|camera|picture)/gi, " "),
-			);
-		if (m?.[1]) return m[1].trim();
+	const re =
+		/\b(?:on|onto|in|into|inside|within|atop|upon|over|above|toward|towards)\s+(?:the\s+)?([a-z][a-z0-9 _-]*?)(\s+(?:is|are|was|were|with|while|and|so|until|then|,)|[.,;]|$)/gi;
+	for (const text of [criterion, subgoal]) {
+		const t = stripPlace(text, target).replace(/in the (wrist|scene|side) (view|camera|picture)/gi, " ");
+		for (const m of t.matchAll(re)) {
+			if (/^\s+(is|are|was|were)$/i.test(m[2])) continue;
+			if (m[1]?.trim()) return m[1].trim();
+		}
 	}
 	return target;
 }
@@ -312,8 +327,8 @@ export function newState(o: {
 		subgoal: o.subgoal,
 		criterion: o.criterion,
 		target: o.target,
-		wantsHolding: wantsHolding(o.criterion),
-		wantsRelease: wantsRelease(o.criterion) || wantsRelease(o.subgoal),
+		wantsHolding: wantsHolding(o.criterion, o.target),
+		wantsRelease: wantsRelease(o.criterion, o.target) || wantsRelease(o.subgoal, o.target),
 		sideStep: isSideStep(o.subgoal),
 		planBoxes: boxes,
 		spent: 0,

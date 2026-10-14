@@ -45,7 +45,12 @@ import {
 	type SubgoalRun,
 } from "../src/modes/motormind/contract.ts";
 import { EvidenceLog, renderLine } from "../src/modes/motormind/evidence.ts";
-import { newState, receiverWords, residualOf } from "../src/modes/motormind/gates.ts";
+import {
+	wantsRelease as gatesWantsRelease,
+	newState,
+	receiverWords,
+	residualOf,
+} from "../src/modes/motormind/gates.ts";
 import { type Caps, MOTORMIND_EVENT, type MotorMindHandle, type Observation } from "../src/modes/motormind/index.ts";
 import { freshSteps, latestResidual, runMission } from "../src/modes/motormind/mission.ts";
 import { faithfulPayload, MAX_TOKENS, makeAsk, parseRoleJson, roleModels } from "../src/modes/motormind/models.ts";
@@ -75,6 +80,7 @@ import {
 	TURN_ENTRY,
 } from "../src/modes/motormind/provider.ts";
 import { parseVerdict, verify } from "../src/modes/motormind/verify.ts";
+import { objectHead, placeTail, stripPlace } from "../src/modes/motormind/words.ts";
 import { plannerOf } from "../src/planner/kind.ts";
 
 type Json = Record<string, unknown>;
@@ -2032,6 +2038,14 @@ type D2Step = {
 	located_label?: string | null;
 	overrode?: { status: string; because: string } | null;
 };
+type D2Receiver = {
+	cell: string;
+	criterion: string;
+	subgoal: string;
+	target: string;
+	located_label: string;
+	want: string;
+};
 type D2Cycle = { index: number; located: NonNullable<Cycle["reach"]>["located"] | null; batch: Cycle["batch"] | null };
 /** The share of `text`'s content words that `line` has (the diagnosis scripts' measure of "restates"). */
 const contentShare = (line: string, text: string) => {
@@ -2257,4 +2271,137 @@ test("verifier: round 2 defect 2 — the claim's residual is the last measured o
 	st.payload = { edge: true, bumped: false, tracking: true, width_mm: 138, offset: [0.03, 0, 0] };
 	st.receiver = { center: plate, radius_mm: 100, error_mm: 10, words: "plate" };
 	assert.equal(Math.round(residualOf(st, pose, CAPS)!), 4);
+});
+
+test("words: round 2 defect 3 — an object's place phrase is not a release word nor the receiver; the executor keys on the head", async () => {
+	// Heads and tails of the planner's names.
+	assert.equal(objectHead("the patterned bowl sitting on the grey ramekin"), "the patterned bowl");
+	assert.equal(placeTail("the patterned bowl sitting on the grey ramekin"), "sitting on the grey ramekin");
+	assert.equal(objectHead("the akita black bowl next to the ramekin"), "the akita black bowl");
+	assert.equal(objectHead("the black bowl between the plate and the ramekin"), "the black bowl");
+	assert.equal(
+		objectHead("the brown BBQ sauce bottle with the red cap"),
+		"the brown BBQ sauce bottle with the red cap",
+	);
+	assert.equal(objectHead("the chocolate pudding box"), "the chocolate pudding box");
+	assert.equal(objectHead("on the plate"), "on the plate");
+	// The three recorded sentences.
+	assert.equal(stripPlace("the bowl sitting on the grey ramekin is over the plate"), "the bowl is over the plate");
+	assert.equal(
+		stripPlace("the black bowl on the ramekin is placed on the plate, its middle over the middle of the plate"),
+		"the black bowl is placed on the plate, its middle over the middle of the plate",
+	);
+	assert.equal(
+		stripPlace("the patterned bowl sitting on the red box is over the plate and the robot still reports holding it"),
+		"the patterned bowl is over the plate and the robot still reports holding it",
+	);
+	assert.equal(
+		stripPlace("the black bowl between the plate and the ramekin is over the plate"),
+		"the black bowl is over the plate",
+	);
+	// A state a put step asks for stays: the finite "rests on", the progressive "is sitting on".
+	assert.equal(
+		stripPlace("the jaws are open and the bowl rests on the plate"),
+		"the jaws are open and the bowl rests on the plate",
+	);
+	assert.equal(
+		stripPlace("the bowl is sitting on the plate, jaws open"),
+		"the bowl is sitting on the plate, jaws open",
+	);
+	// The target's own tail goes wherever it appears, even at the end of the sentence.
+	assert.equal(
+		stripPlace(
+			"The robot reports that it is HOLDING the patterned bowl sitting on the grey ramekin.",
+			"the patterned bowl sitting on the grey ramekin",
+		),
+		"The robot reports that it is HOLDING the patterned bowl.",
+	);
+	// Classification: "the bowl sitting on the grey ramekin is over the plate" is a holding step whose receiver is the plate.
+	const c1 = "the bowl sitting on the grey ramekin is over the plate and the robot still reports holding it";
+	assert.equal(wantsRelease(c1), false);
+	assert.equal(gatesWantsRelease(c1), false);
+	assert.equal(wantsHolding(c1), true);
+	assert.equal(receiverWords(c1, "", "the bowl sitting on the grey ramekin"), "plate");
+	for (const c of D2.receiver_mislabelled.cases as D2Receiver[])
+		assert.equal(receiverWords(c.criterion, c.subgoal, c.target), c.want, `${c.cell}: was "${c.located_label}"`);
+	// The 12 recorded "still holding" verdicts on take / lift / carry steps: none is a release step now; a put step still is.
+	const gated = D2.still_holding_gated.cases as D2Step[];
+	assert.equal(gated.length, 12);
+	for (const c of gated) {
+		assert.equal(wantsRelease(c.criterion, c.target), false, `${c.cell} ${c.step}: ${c.criterion}`);
+		assert.equal(gatesWantsRelease(c.criterion, c.target), false, `${c.cell} ${c.step}`);
+		assert.equal(wantsHolding(c.criterion, c.target), true, `${c.cell} ${c.step}`);
+		assert.equal(
+			newState({ subgoal: c.subgoal, criterion: c.criterion, target: c.target, planBoxes: {} }).wantsRelease,
+			false,
+		);
+	}
+	assert.equal(
+		wantsRelease(
+			"The jaws are open and the patterned bowl sitting on the grey ramekin rests on the plate.",
+			"the patterned bowl sitting on the grey ramekin",
+		),
+		true,
+	);
+	// sameObject by heads: the bowl on the red box is not the red box; a located "plate" is not the bowl.
+	assert.equal(sameObject("the patterned bowl sitting on the red box", "the red box"), false);
+	assert.equal(sameObject("the patterned bowl sitting on the red box", "the black and white patterned bowl"), true);
+	assert.equal(sameObject("plate", "the patterned bowl on the stove"), false);
+	// spatial t5 s0 take_bowl#1: held with a width, the criterion names the ramekin the bowl stood on — judged by identity, not "still holding".
+	const take = gated.find((c) => c.step === "take_bowl")!;
+	const now = frame(GOAL.C6.blocked, { holding: true, commanded: "close" });
+	const base = {
+		task: "pick up the black bowl on the ramekin and place it on the plate",
+		now,
+		before: now,
+		note: "",
+		planText: "",
+		robotText: "R",
+		clauses: ["The black bowl on the ramekin is picked up.", "The black bowl is placed on the plate."],
+		holding: true,
+		claim: {
+			done: true,
+			assessment: "",
+			cycles: 2,
+			stopped_by: "",
+			ending: "",
+			turn_net_deg: 0,
+			turn_total_deg: 0,
+			move_net_mm: 30,
+			move_total_mm: 30,
+			held: { gap_mm: 8, target_mm: 138 },
+		},
+	};
+	const yes = {
+		status: "done",
+		because: "the jaws hold the patterned bowl's rim",
+		evidence: "",
+		identity: "",
+		replan: false,
+		clauses: [],
+	};
+	const v = await verify(scriptedAsk({ verify: [yes, yes] }).ask, {
+		...base,
+		subgoal: subgoal({ name: take.step, subgoal: take.subgoal, criterion: take.criterion, target: take.target }),
+	});
+	assert.deepEqual([v.status, v.gate], ["done", "held_width"]);
+	// The two located_identity carries whose target carries a place phrase (spatial t3 s0, t7 s1): the look was for the plate.
+	for (const c of (D2.located_identity_gated.cases as D2Step[]).filter((c) =>
+		/sitting on|on the stove/.test(c.target),
+	)) {
+		const words = receiverWords(c.criterion, c.subgoal, c.target);
+		assert.match(words, /plate/);
+		const answer = { ...yes, because: c.overrode?.because ?? "" };
+		const r = await verify(scriptedAsk({ verify: [answer, answer] }).ask, {
+			...base,
+			subgoal: subgoal({ name: c.step, subgoal: c.subgoal, criterion: c.criterion, target: c.target, clause: 1 }),
+			claim: {
+				...base.claim,
+				held: undefined,
+				reached: { label: c.located_label ?? "", residual_mm: 6, target: words },
+				located_label: c.located_label ?? "",
+			},
+		});
+		assert.deepEqual([c.cell, r.status, r.gate], [c.cell, "done", ""]);
+	}
 });
