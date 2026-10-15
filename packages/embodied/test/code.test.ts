@@ -22,12 +22,15 @@ process.env.PI_EMBODIED_MANIFESTS = new URL("./fixtures/manifests/", import.meta
 
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
 import { deployFlags } from "./helpers/deployment.ts";
+import { fakePerception } from "./helpers/fake-perception.ts";
+
+const SAM3 = await fakePerception();
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi that runs handlers in registration order and records flags, tools and entries. */
 function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true, confirm = async () => true) {
-	flagValues = deployFlags(flagValues);
+	flagValues = deployFlags({ sam3: SAM3, ...flagValues });
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

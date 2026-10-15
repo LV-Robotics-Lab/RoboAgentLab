@@ -26,6 +26,9 @@ import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
 import dualFranka from "../src/robots/dual_franka/index.ts";
 import franka from "../src/robots/franka/index.ts";
 import { deployFlags } from "./helpers/deployment.ts";
+import { fakePerception } from "./helpers/fake-perception.ts";
+
+const SAM3 = await fakePerception();
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -36,7 +39,7 @@ function fakePi(
 	branch: any[] = [],
 	aborted = false,
 ) {
-	flagValues = deployFlags(flagValues);
+	flagValues = deployFlags({ sam3: SAM3, ...flagValues });
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
