@@ -21,13 +21,18 @@ servers live in [`services`](services/README.md).
 ## Quickstart: one LIBERO episode
 
 This path runs one LIBERO episode in units mode, which needs no VLA checkpoint. It needs Linux with
-an NVIDIA GPU and EGL driver, and about 25 GB of free disk (the venv is about 6.5 GB; uv's download
-cache can reach 16 GB, set `UV_CACHE_DIR` to put it elsewhere).
+an NVIDIA GPU and EGL driver, and about 25 GB of free disk (the venv is about 10 GB with the CUDA
+torch; uv's download cache 12-16 GB, set `UV_CACHE_DIR` to put it elsewhere).
 
 Prerequisites:
 
-- **Node.js 22.19 or newer on your `PATH`.** The preflight runs `node` directly. The pi.dev installer
-  can install a private Node for pi, but it does not add it to your shell's `PATH`.
+- **Node.js 22.19 or newer, with `npm`, on your `PATH`** (step 1 uses `npm`; the preflight runs
+  `node`). Without one: install Node 22 or later from [nodejs.org](https://nodejs.org/en/download)
+  or with [nvm](https://github.com/nvm-sh/nvm) (`nvm install 22`), or run the pi.dev installer
+  instead of step 1. That installer installs Node through apt or Homebrew where it can; otherwise it
+  puts its own Node in `~/.local/share/pi-node/current/bin` without adding it to your shell's
+  `PATH`, so add it (`export PATH="$HOME/.local/share/pi-node/current/bin:$PATH"`, also in your
+  shell profile).
 - **[uv](https://docs.astral.sh/uv/)** (or Python 3.11), for `services/setup.sh`.
 - **GitHub and Hugging Face reachable.** The services' extras install packages from GitHub (RLinf's
   openpi fork with submodules, LIBERO, SAM3), and the LIBERO scene assets come from Hugging Face. See
@@ -35,7 +40,7 @@ Prerequisites:
 - **A planner model with image input**, from a provider pi supports.
 
 ```bash
-# 1. pi (or the pi.dev installer: curl -fsSL https://pi.dev/install.sh | sh)
+# 1. pi (or the pi.dev installer, which also installs Node: curl -fsSL https://pi.dev/install.sh | sh)
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 # 2. this repository and the embodied package
@@ -92,14 +97,22 @@ GitHub, Hugging Face, PyPI and the PyTorch wheel index can be slow or unreachabl
 China. The install still works through mirrors or a proxy:
 
 - GitHub: the extras clone repositories with submodules during `uv pip install`; route git through
-  a proxy (`https_proxy`) if a clone stalls.
+  a proxy (`https_proxy`) if a clone stalls. Through a proxy, uv's `git fetch` of a pinned commit
+  (RLinf's openpi) can fail with HTTP 503, and uv does not retry it: rerun `setup.sh`.
 - Hugging Face: `HF_ENDPOINT=https://hf-mirror.com`. The mirror rate-limits (HTTP 429) downloads of
   datasets with many files, such as the LIBERO scene assets (`RLinf/LIBERO-PRO-assets`, 865 files) of
-  `setup.sh libero` and `libero-pro`; rerun `setup.sh` (it resumes, and links the assets only once
-  every file is there), or download from huggingface.co through a proxy. `pi-embodied.env` does not
-  set `HF_ENDPOINT`, so export it in the shell that runs pi as well.
+  `setup.sh libero`: from a mirror it fetches two files at a time and retries a 429 with backoff, and a
+  rerun resumes (it links the assets only once every file is there). If the mirror keeps answering
+  429, use huggingface.co through the proxy instead: `unset HF_ENDPOINT` (with `https_proxy` set) and
+  rerun `setup.sh libero`. `pi-embodied.env` does not set `HF_ENDPOINT`, so export it in the shell that
+  runs pi as well.
 - PyPI: `UV_INDEX_URL` / `PIP_INDEX_URL` pointing at a PyPI mirror.
 - PyTorch CUDA wheels: a mirror of `download.pytorch.org/whl/cu128`, used with `--find-links`.
+
+Two warnings at pi's start are harmless: pi downloads `fd` and `ripgrep` from GitHub when they are
+missing, which can time out or fail on the proxy's certificate (pi starts without them), and the
+robot's memory sync (`RLinf/RPent-memory`) can get HTTP 429 from hf-mirror, in which case it uses the
+memory already on disk.
 
 ## Documentation
 
@@ -140,8 +153,11 @@ services/test.sh             # the Python services' tests and ruff (needs uv)
 ./pi-test.sh                 # run this checkout's pi
 ```
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs the build, the checks and these tests
-with Node.js 24 on every push to `main` and every pull request. Tests use faux providers and fake
+Development needs the same Node.js 22.19 or newer as the quickstart; CI
+([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs the build, the checks and these tests
+with Node.js 24 on every push to `main` and every pull request. `npm ci` on Node 22 warns
+`EBADENGINE` for `@earendil-works/gondolin` (it asks for Node 23.6): only pi's gondolin example
+extension uses it. Tests use faux providers and fake
 servers: no model API, no GPU. `package-lock.json` is the dependency ground truth; the pre-commit hook
 refuses lockfile changes unless `PI_ALLOW_LOCKFILE_CHANGE=1` is set.
 

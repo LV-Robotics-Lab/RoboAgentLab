@@ -19,8 +19,10 @@ manifest therefore loads only the onboarding extension (`src/infra/setup`) and t
 
 Prerequisites:
 
-- Node.js 22.19 or newer on your `PATH`: the preflight runs `node`, and the pi.dev installer does
-  not put its own Node there.
+- Node.js 22.19 or newer on your `PATH`: the preflight runs `node`. Install it from
+  [nodejs.org](https://nodejs.org/en/download) or with [nvm](https://github.com/nvm-sh/nvm); the
+  pi.dev installer's own Node is in `~/.local/share/pi-node/current/bin`, which it does not add to
+  `PATH` ([prerequisites](../../README.md#quickstart-one-libero-episode)).
 - [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`) or Python
   3.11, for `services/setup.sh`.
 - GitHub and Hugging Face reachable: the extras install packages from GitHub, and assets and

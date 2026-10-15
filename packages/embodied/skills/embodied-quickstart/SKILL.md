@@ -43,7 +43,8 @@ Prerequisites; check them before the install and tell the user what is missing:
 
 - `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh`) or the Python the target wants (3.11 for
   most); without either, `setup.sh` stops.
-- `node` 22.19 or newer on the user's `PATH` for the preflight (pi's own Node may not be on it).
+- `node` 22.19 or newer on the user's `PATH` for the preflight (pi's own Node may not be on it: the
+  pi.dev installer's is in `~/.local/share/pi-node/current/bin`; otherwise nodejs.org or nvm).
 - GitHub reachable: the extras install packages from git (LIBERO's pulls RLinf's openpi fork with
   submodules, LIBERO and SAM3). A stalled `uv pip install` is usually a git clone; it needs a proxy
   (`https_proxy`).
@@ -68,7 +69,8 @@ Hugging Face cache, checks every file the Hub lists and links the package's `lib
 to them; libero-pro links the same directory to LIBERO-PRO's own verified download. It writes
 `<venv>/pi-embodied.env`; `source` it before pi, `serve.sh` and `eval.sh`; it holds absolute paths. Mirrors (for example from
 mainland China): `HF_ENDPOINT=https://hf-mirror.com` (it can answer HTTP 429 for datasets with many
-files; retry, or use huggingface.co through a proxy), `UV_INDEX_URL` / `PIP_INDEX_URL`, a PyTorch
+files; the LIBERO assets step then fetches two files at a time and retries with backoff, and if it
+still fails, `unset HF_ENDPOINT` and rerun with huggingface.co through a proxy), `UV_INDEX_URL` / `PIP_INDEX_URL`, a PyTorch
 wheel mirror with `--find-links`, and a proxy for GitHub; the env file does not carry them, so they
 must be set in the shell that runs pi too. Gated data (SAM3, HSSD) needs `HF_TOKEN` with the license
 accepted.
@@ -162,8 +164,10 @@ the same out dir is refused. `src/scripts/eval-parallel.sh [-j N --gpus LIST] [-
   cuRobo built against it (services/README.md).
 - LIBERO renders black or crashes: `MUJOCO_GL=egl` needs an NVIDIA EGL driver; pick the GPU with
   `MUJOCO_EGL_DEVICE_ID`. MuJoCo must stay `3.3.0`.
-- `LIBERO assets: incomplete download of RLinf/LIBERO-PRO-assets ...`: rerun `setup.sh libero` (it
-  resumes; nothing is linked until every file is there). `... holds files but not <scene>`: an old
+- `LIBERO assets: incomplete download of RLinf/LIBERO-PRO-assets ...` or `could not list ...`: rerun
+  `setup.sh libero` (it resumes; nothing is linked until every file is there); if a mirror keeps
+  answering 429, `unset HF_ENDPOINT` and rerun through a proxy to huggingface.co. `pi-embodied.env`
+  is written once the venv is installed, so it can be sourced even while the assets are missing. `... holds files but not <scene>`: an old
   `libero/libero/assets` directory is in the way; move it and rerun.
 - LIBERO-PRO assets "ready" but tasks missing files: rerun `setup.sh libero-pro`; its patched
   downloader verifies every file. `FileNotFoundError` under an old venv path: `~/.liberopro/config.yaml`
