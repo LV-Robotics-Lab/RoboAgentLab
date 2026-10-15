@@ -423,6 +423,24 @@ def test_v4l2_frames_are_dated_by_the_driver_timestamp(monkeypatch):
     cam2.close()
 
 
+def test_a_zero_driver_stamp_is_no_stamp_even_just_after_boot(monkeypatch):
+    from pi_embodied_services.components.cameras import webcam
+    from pi_embodied_services.components.cameras.webcam import WebcamRGB
+
+    cap = _FakeCap()
+    _fake_cv2(monkeypatch, cap)
+    monkeypatch.setattr(sys, "platform", "linux")
+    # A machine booted 30 s ago: "now - 0" on its monotonic clock is a plausible frame age.
+    clocks = {"monotonic": 30.0, "realtime": 1.79e9, "boottime": 30.0}
+    monkeypatch.setattr(webcam, "host_clocks", lambda: dict(clocks))
+    cap.pos_ms = lambda: (clocks["monotonic"] - 0.2) * 1000.0
+    cam = WebcamRGB("/dev/video0", drain_frames=0)
+    assert cam.read().time_source == "backend"
+    cap.pos_ms = 0.0
+    assert cam.read().time_source == "host"
+    cam.close()
+
+
 def test_v4l2_stamps_are_aged_on_the_clock_the_driver_uses(monkeypatch):
     from pi_embodied_services.components.cameras.webcam import (
         WebcamRGB,

@@ -272,7 +272,15 @@ class WebcamRGB(Camera):
         if stamp is not None and self._stamp_clock is None:
             self._stamp_clock = stamp_clock(stamp, now)
         clock = self._stamp_clock
-        if stamp is not None and clock is not None and clock in now:
+        # 0 is "no stamp" (before the first capture, or a backend without one); aged on a clock it
+        # would read as the host's uptime, a plausible age on a machine booted under a minute ago.
+        if (
+            stamp is not None
+            and math.isfinite(stamp)
+            and stamp > 0.0
+            and clock is not None
+            and clock in now
+        ):
             age = now[clock] - stamp
             if -0.05 <= age <= 60.0:
                 age = max(0.0, age)
