@@ -6,7 +6,7 @@ Runs the official [MCP conformance suite](https://github.com/modelcontextprotoco
 npm run test:mcp-conformance
 ```
 
-CI runs it in the `mcp-conformance` job of `.github/workflows/ci.yml`. Requires network access the first time, to fetch the pinned suite (`@modelcontextprotocol/conformance@0.2.0-alpha.11`) with `npx`. Install scripts are disabled. Needs a POSIX shell.
+CI runs it as the last step of the `node` job in `.github/workflows/ci.yml`. Requires network access the first time, to fetch the pinned suite (`@modelcontextprotocol/conformance@0.2.0-alpha.11`) with `npx`. Install scripts are disabled. Needs a POSIX shell.
 
 ## How it works
 
