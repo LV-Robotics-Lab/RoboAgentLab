@@ -9,6 +9,7 @@ import { test } from "node:test";
 import {
 	ENV_CALLS,
 	formatTable,
+	liberoAssets,
 	llmCheck,
 	parseFlags,
 	pathRows,
@@ -294,6 +295,59 @@ test(
 		assert.equal(missing.find((r) => r.check === "services.vla")?.status, "FAIL");
 	},
 );
+
+test("LIBERO's preflight fails on a package without its scene assets", { skip: !python }, async () => {
+	const site = mkdtempSync(join(tmpdir(), "check-site-"));
+	const pkg = (name: string, scene: boolean) => {
+		mkdirSync(join(site, name, name, "assets", "scenes"), { recursive: true });
+		writeFileSync(join(site, name, "__init__.py"), "");
+		writeFileSync(join(site, name, name, "__init__.py"), "");
+		if (scene)
+			writeFileSync(join(site, name, name, "assets/scenes/libero_living_room_tabletop_base_style.xml"), "<mujoco/>");
+	};
+	pkg("libero", false); // the [libero] install: no assets
+	pkg("liberopro", true);
+	useDeployment({ python: { default: python as string } });
+	const spec: RobotCheckSpec = {
+		python: { venv: "libero", env: [] },
+		imports: [],
+		gpu: false,
+		packageFiles: liberoAssets,
+	};
+	const old = process.env.PYTHONPATH;
+	process.env.PYTHONPATH = site;
+	try {
+		const rows = async (flags: Record<string, string>) =>
+			(await runChecks("libero", flags, { spec, dashboard: "skip", timeoutMs: 60_000 })).filter((r) =>
+				r.check.startsWith("files "),
+			);
+		// No --libero-type: every installed LIBERO package (liberoplus is not installed here: no row).
+		const all = await rows({});
+		assert.deepEqual(
+			all.map((r) => [r.check, r.status]),
+			[
+				["files libero.libero", "FAIL"],
+				["files liberopro.liberopro", "PASS"],
+			],
+		);
+		assert.match(
+			all[0].detail,
+			/libero_living_room_tabletop_base_style\.xml is missing .*run services\/setup\.sh libero\)/,
+		);
+		assert.deepEqual(
+			(await rows({ "libero-type": "pro" })).map((r) => r.status),
+			["PASS"],
+		);
+		// The type the run names must be installed.
+		const plus = await rows({ "libero-type": "plus" });
+		assert.equal(plus[0].status, "FAIL");
+		assert.match(plus[0].detail, /liberoplus\.liberoplus is not installed .*setup\.sh libero-plus/);
+		assert.equal(SPECS.libero.packageFiles, liberoAssets);
+	} finally {
+		if (old === undefined) delete process.env.PYTHONPATH;
+		else process.env.PYTHONPATH = old;
+	}
+});
 
 test("every robot extension has a preflight spec (setup.sh prints check.ts <robot>, /robot-check runs it)", () => {
 	const robots = readdirSync(new URL("../src/robots/", import.meta.url), { withFileTypes: true })

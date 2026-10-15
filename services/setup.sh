@@ -7,8 +7,10 @@
 #   services/setup.sh <target> [--venv DIR] [--weights] [--weights-dir DIR] [--no-assets] [--dry-run]
 #
 # Targets (the extra, the Python, and what else it fetches):
-#   libero          [libero] py3.11                      --weights: Pi0.5 LIBERO SFT, SAM3 (gated)
-#   libero-pro      [libero-pro] py3.11, LIBERO-PRO assets (patched downloader)   --weights: as libero
+#   libero          [libero] py3.11, LIBERO scene assets (RLinf/LIBERO-PRO-assets, ~414 MB, pinned and
+#                   checked file by file; robots/libero/assets.py)   --weights: Pi0.5 LIBERO SFT, SAM3 (gated)
+#   libero-pro      [libero-pro] py3.11, LIBERO-PRO assets (patched downloader), linked for standard LIBERO
+#                   too   --weights: as libero
 #   libero-plus     [libero-plus] py3.11, LIBERO-plus assets (~6.4 GB zip, 9.5 GB unpacked; needs system
 #                   ImageMagick, e.g. apt install libmagickwand-6.q16-6)   --weights: as libero
 #   robocasa        [robocasa] py3.10, kitchen assets (~10 GB, robocasa-download-assets)   --weights: RLDX-1-FT-RC365 + RLDX-1-VLM
@@ -39,7 +41,8 @@
 #                   cu128 torch into the venv first)   --weights: GSNet and graspnet-baseline checkpoints
 #
 # Defaults: --venv services/.venv-<target>, --weights-dir $PI_EMBODIED_WEIGHTS (default
-# ~/.cache/pi-embodied), assets under the same directory. Downloads honour HF_ENDPOINT (e.g.
+# ~/.cache/pi-embodied), assets under the same directory; relative paths are taken from the current
+# directory and written out absolute. Downloads honour HF_ENDPOINT (e.g.
 # https://hf-mirror.com) and HF_TOKEN, and pip/uv honour UV_INDEX_URL / PIP_INDEX_URL. --dry-run
 # prints the commands without running them. At the end the environment the robot reads is written
 # to <venv>/pi-embodied.env (source it before pi / serve.sh / eval.sh) and the preflight command
@@ -92,7 +95,16 @@ ur5e) extra=ur5e py=3.11 ;;
 robolab | robodojo | behavior | finetuned | llamafactory | humanclaw) extra="" py="" ;;
 *) die "unknown target '$target' (see --help)" ;;
 esac
-venv=${venv:-$SERVICES/.venv-$target}
+# pi-embodied.env is sourced from any directory: every path in it is absolute.
+abspath() {
+	case $1 in
+	/*) printf '%s' "$1" ;;
+	"~" | "~/"*) printf '%s%s' "$HOME" "${1#\~}" ;;
+	*) printf '%s/%s' "$PWD" "${1#./}" ;;
+	esac
+}
+venv=$(abspath "${venv:-$SERVICES/.venv-$target}")
+wdir=$(abspath "$wdir")
 PY=$venv/bin/python
 ENV_LINES=()
 
@@ -173,6 +185,16 @@ liberopro_assets() {
 		fi
 	fi
 	run "$venv/bin/liberopro-download-assets" --skip-existing
+	# Standard LIBERO (--libero-type standard) reads the same scenes from its own package directory.
+	run "$PY" -m pi_embodied_services.robots.libero.assets --from-package liberopro.liberopro
+}
+
+# Standard LIBERO reads every scene from its package's libero/libero/assets, which the [libero]
+# install does not ship: link it to RLinf/LIBERO-PRO-assets, pinned and checked against the Hub's file
+# list before it is linked (a cached partial snapshot is never trusted).
+libero_assets() {
+	$dry || "$PY" -c 'import huggingface_hub' 2>/dev/null || pip_install "huggingface_hub>=0.34"
+	run "$PY" -m pi_embodied_services.robots.libero.assets
 }
 
 # liberoplus-download-assets rejects the published assets.zip (its tree sits under a deep build path,
@@ -244,7 +266,8 @@ finetuned)
 	note "serve it: MODEL=$wdir/<base> LORA=<name>=$wdir/Show-Harness-VLMs/$adapter VLLM_VENV=<venv with vllm> bash $SERVICES/pi_embodied_services/finetuned/serve.sh"
 	;;
 llamafactory)
-	# The script's defaults are the AutoDL box's; outside it, keep its venv, caches and uv local.
+	# The script's defaults are under <checkout>/.local; here its venv sits beside the other venvs and the
+	# caches are the user's.
 	command -v uv >/dev/null || die "llamafactory needs uv"
 	run env LF_VENV="${LF_VENV:-$venv}" UV="${UV:-$(command -v uv)}" \
 		UV_CACHE_DIR="${UV_CACHE_DIR:-$HOME/.cache/uv}" UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$HOME/.local/share/uv/python}" \
@@ -259,8 +282,7 @@ llamafactory)
 	fi
 	pip_install -e "$SERVICES[$extra]" ${constraint[@]+"${constraint[@]}"}
 	case $target in
-	libero) if $weights; then libero_weights; fi ;;
-	libero-pro | libero-plus)
+	libero | libero-pro | libero-plus)
 		if $assets; then ${target//-/}_assets; fi
 		if $weights; then libero_weights; fi
 		;;

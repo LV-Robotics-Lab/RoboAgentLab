@@ -13,7 +13,8 @@
  * a dry-run act, so a VLA gets healthz only), the planner (a real 1-token completion: in pi through
  * its model registry, `llmCheck`; standalone to an OpenAI-compatible provider of ~/.pi/agent/models.json
  * whose key resolves, else `<baseUrl>/models`) and whether the dashboard port is free. Flags take the robot's own names and fall back to the same
- * environment variables and defaults as the robot. Model servers the robot only needs for its own
+ * environment variables and defaults as the robot. Files an installed package must hold (LIBERO's scene
+ * assets, which its install does not ship) are located in the services Python. Model servers the robot only needs for its own
  * tools (VLA, SAM3) are warnings with --units=true, whose `act` tool does not use them.
  *
  * Prints a PASS / WARN / FAIL / SKIP table; the exit code is 1 when any check FAILs.
@@ -49,6 +50,11 @@ type PathSpec = {
 	contains?: string;
 };
 /**
+ * A file an installed package must hold, located in the services Python (`module`'s package directory,
+ * found without importing it). `optional`: skipped when the package is not installed.
+ */
+export type PackageFile = { module: string; file: string; why: string; fix: string; optional?: boolean };
+/**
  * A server the robot attaches to: `flag` or the deployment's `services.<service>` names the endpoint. `calls`: read-only
  * methods sent after healthz, each a real request the robot makes too (an env server's `env.get_env_meta`).
  */
@@ -73,12 +79,42 @@ export type RobotCheckSpec = {
 	/** Environment the robot gives its env server. */
 	pyEnv?: Record<string, string>;
 	paths?: PathSpec[];
+	/** Files installed packages must hold, for these flags. */
+	packageFiles?: (flags: Flags) => PackageFile[];
 	endpoints?: EndpointSpec[];
 	/** Needs a GPU for rendering or models. */
 	gpu: boolean;
 };
 
 const PY = (venv: string, ...env: string[]) => ({ venv, env });
+
+/** The LIBERO package of each --libero-type, and the setup.sh target that links its scene assets. */
+const LIBERO_PACKAGES: Record<string, [module: string, target: string]> = {
+	standard: ["libero.libero", "libero"],
+	pro: ["liberopro.liberopro", "libero-pro"],
+	plus: ["liberoplus.liberoplus", "libero-plus"],
+};
+/**
+ * LIBERO's env code reads every scene from `<package>/assets` (the scene the first libero_10 task loads is
+ * probed): the one --libero-type names, else every LIBERO package installed, so a venv whose assets
+ * were never linked is not reported READY.
+ */
+export function liberoAssets(flags: Flags): PackageFile[] {
+	const type = typeof flags["libero-type"] === "string" ? flags["libero-type"] : undefined;
+	const types = type ? [type] : Object.keys(LIBERO_PACKAGES);
+	return types
+		.filter((t) => LIBERO_PACKAGES[t])
+		.map((t) => {
+			const [module, target] = LIBERO_PACKAGES[t];
+			return {
+				module,
+				file: "assets/scenes/libero_living_room_tabletop_base_style.xml",
+				why: `LIBERO scene assets (--libero-type ${t})`,
+				fix: `services/setup.sh ${target}`,
+				optional: !type,
+			};
+		});
+}
 const ENV_SERVER = (robot: string) => `pi_embodied_services.robots.${robot}.env_server`;
 
 export const SPECS: Record<string, RobotCheckSpec> = {
@@ -86,6 +122,7 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 		python: PY("libero"),
 		imports: [ENV_SERVER("libero"), "rlinf.envs.libero.libero_env", "mujoco"],
 		pyEnv: { MUJOCO_GL: "egl", ROBOT_PLATFORM: "LIBERO" },
+		packageFiles: liberoAssets,
 		paths: [
 			{ env: "PI05_CHECKPOINT_PATH", kind: "dir", required: false, why: "Pi0.5 VLA server (serve.sh)" },
 			{ env: "SAM3_CHECKPOINT_PATH", kind: "file", required: false, why: "SAM3 server (serve.sh)" },
@@ -258,9 +295,9 @@ const run = (cmd: string, args: string[], o: { env?: NodeJS.ProcessEnv; cwd?: st
 	);
 
 const IMPORT_CHECK = `
-import importlib, importlib.util, json, sys, time
-mods, finds = json.loads(sys.argv[1]), json.loads(sys.argv[2])
-out = {"python": sys.version.split()[0], "executable": sys.executable, "imports": {}, "find": {}}
+import importlib, importlib.util, json, os, sys, time
+mods, finds, files = json.loads(sys.argv[1]), json.loads(sys.argv[2]), json.loads(sys.argv[3])
+out = {"python": sys.version.split()[0], "executable": sys.executable, "imports": {}, "find": {}, "files": []}
 for m in mods:
     t = time.time()
     try:
@@ -274,6 +311,16 @@ for m in finds:
         out["find"][m] = [spec is not None, (spec.origin or "namespace") if spec else "not found"]
     except BaseException as e:
         out["find"][m] = [False, "%s: %s" % (type(e).__name__, e)]
+for m, f in files:
+    try:
+        spec = importlib.util.find_spec(m)
+    except BaseException:
+        spec = None
+    if spec is None or not spec.submodule_search_locations:
+        out["files"].append([m, None, "%s is not installed" % m])
+        continue
+    p = os.path.join(list(spec.submodule_search_locations)[0], f)
+    out["files"].append([m, os.path.isfile(p), p])
 print("\\n" + json.dumps(out))
 `;
 
@@ -282,6 +329,8 @@ type ImportReport = {
 	executable: string;
 	imports: Record<string, [boolean, string]>;
 	find: Record<string, [boolean, string]>;
+	/** Per packageFiles entry: the module, whether the file exists (null: the package is not installed), the path or why not. */
+	files?: [string, boolean | null, string][];
 };
 
 async function pythonRows(spec: RobotCheckSpec, flags: Flags, timeoutMs: number): Promise<Row[]> {
@@ -296,11 +345,18 @@ async function pythonRows(spec: RobotCheckSpec, flags: Flags, timeoutMs: number)
 		PYTHONPATH: [services, process.env.PYTHONPATH].filter(Boolean).join(":"),
 		...spec.pyEnv,
 	};
-	const r = await run(python, ["-c", IMPORT_CHECK, JSON.stringify(spec.imports), JSON.stringify(spec.find ?? [])], {
-		env,
-		cwd: services,
-		timeoutMs,
-	});
+	const files = spec.packageFiles?.(flags) ?? [];
+	const r = await run(
+		python,
+		[
+			"-c",
+			IMPORT_CHECK,
+			JSON.stringify(spec.imports),
+			JSON.stringify(spec.find ?? []),
+			JSON.stringify(files.map((f) => [f.module, f.file])),
+		],
+		{ env, cwd: services, timeoutMs },
+	);
 	let report: ImportReport | undefined;
 	try {
 		report = JSON.parse(r.stdout.trim().split("\n").pop() ?? "");
@@ -323,6 +379,19 @@ async function pythonRows(spec: RobotCheckSpec, flags: Flags, timeoutMs: number)
 		rows.push({ status: ok ? "PASS" : "FAIL", check: `import ${m}`, detail: clip(detail) });
 	for (const [m, [ok, detail]] of Object.entries(report.find))
 		rows.push({ status: ok ? "PASS" : "FAIL", check: `find ${m}`, detail: clip(detail) });
+	files.forEach((f, i) => {
+		const [, ok, where] = report.files?.[i] ?? [f.module, false, "not checked"];
+		if (ok === null && f.optional) return;
+		rows.push(
+			ok
+				? { status: "PASS", check: `files ${f.module}`, detail: where }
+				: {
+						status: "FAIL",
+						check: `files ${f.module}`,
+						detail: `${ok === null ? where : `${where} is missing`} (${f.why}; run ${f.fix})`,
+					},
+		);
+	});
 	return rows;
 }
 
