@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { flywheelSuite } from "../src/capabilities/flywheel.ts";
 import { NdArray } from "../src/infra/rpc.ts";
 import { finishMove } from "../src/modes/units/index.ts";
-import { latchSuccess, memoryTag } from "../src/robots/libero/index.ts";
+import { latchSuccess, liberoServerEnv, memoryTag } from "../src/robots/libero/index.ts";
 
 test("LIBERO success is latched at its first env step; later steps cannot undo it", () => {
 	assert.equal(latchSuccess(undefined, false, 10), undefined);
@@ -58,4 +61,19 @@ test("LIBERO-plus Flywheel episodes get their own suite key", () => {
 	assert.equal(flywheelSuite("libero_spatial", "pro"), "libero_spatial");
 	assert.equal(flywheelSuite("libero_spatial", "standard"), "libero_spatial");
 	assert.equal(flywheelSuite("libero_spatial", "plus"), "libero_spatial_plus");
+});
+
+test("--libero-config is the env server's only LIBERO_CONFIG_PATH, and only a dir holding config.yaml", () => {
+	const inherited = { PATH: "/bin", LIBERO_CONFIG_PATH: "/somewhere/else", LIBERO_TYPE: "plus" };
+	const none = liberoServerEnv("pro", "", inherited);
+	assert.equal(none.LIBERO_TYPE, "pro");
+	assert.equal(none.PATH, "/bin");
+	assert.ok(!("LIBERO_CONFIG_PATH" in none), "an inherited config path is not recorded, so it is dropped");
+	const dir = mkdtempSync(join(tmpdir(), "libero-config-"));
+	assert.throws(() => liberoServerEnv("standard", dir, inherited), /no config\.yaml/);
+	writeFileSync(join(dir, "config.yaml"), "bddl_files: /x\n");
+	const set = liberoServerEnv("standard", dir, inherited);
+	assert.equal(set.LIBERO_CONFIG_PATH, dir);
+	assert.equal(set.LIBERO_TYPE, "standard");
+	assert.equal(inherited.LIBERO_CONFIG_PATH, "/somewhere/else", "the caller's env is not touched");
 });

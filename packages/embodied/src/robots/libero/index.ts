@@ -298,6 +298,20 @@ export function latchSuccess(previous: number | undefined, terminated: boolean |
  */
 export const memoryTag = (suite: string, task: string, seed: string, liberoType: string) =>
 	`${suite.replace(/^libero_/, "")}${liberoType === "plus" ? "_plus" : ""}_t${task}_s${seed}`;
+/**
+ * The env server's LIBERO variables. `--libero-config <dir>` is the LIBERO config dir both libero and liberopro read
+ * (LIBERO_CONFIG_PATH: its config.yaml names the BDDL, init-state and asset roots), e.g. a pinned snapshot of another
+ * harness's task files; without the flag an inherited LIBERO_CONFIG_PATH is dropped, so the files a run used are
+ * always the flag's (recorded) or the packages' defaults (~/.libero, ~/.liberopro).
+ */
+export function liberoServerEnv(liberoType: string, config: string, base: NodeJS.ProcessEnv = process.env) {
+	const env: NodeJS.ProcessEnv = { ...base, LIBERO_TYPE: liberoType };
+	delete env.LIBERO_CONFIG_PATH;
+	if (!config) return env;
+	if (!existsSync(join(config, "config.yaml")))
+		throw new Error(`--libero-config ${config}: no config.yaml there (LIBERO would write a default one)`);
+	return { ...env, LIBERO_CONFIG_PATH: config };
+}
 const round = (v: number, d = 4) => Number(v.toFixed(d));
 /** The longest horizontal move one move_to (or an executor's first leg) makes (env_server MAX_XY_MOVE_M). */
 export const MAX_XY_MOVE_M = 0.3;
@@ -446,6 +460,12 @@ export default function libero(pi: ExtensionAPI) {
 	pi.registerFlag("task", { type: "string", default: "0", description: "Task index within the suite" });
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Initial-state seed" });
 	pi.registerFlag("libero-type", { type: "string", default: "pro", description: "standard | pro | plus" });
+	pi.registerFlag("libero-config", {
+		type: "string",
+		default: "",
+		description:
+			"LIBERO config dir for the env server (LIBERO_CONFIG_PATH: its config.yaml names the task files); empty = the packages' own",
+	});
 	pi.registerFlag("libero-prompt", {
 		type: "string",
 		default: "rpent",
@@ -1997,9 +2017,8 @@ export default function libero(pi: ExtensionAPI) {
 				],
 				cwd: services,
 				env: {
-					...process.env,
+					...liberoServerEnv(flag("libero-type", "pro"), flag("libero-config", "")),
 					PYTHONPATH: services,
-					LIBERO_TYPE: flag("libero-type", "pro"),
 					MUJOCO_GL: "egl",
 					ROBOT_PLATFORM: "LIBERO",
 				},
