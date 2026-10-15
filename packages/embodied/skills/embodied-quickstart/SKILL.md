@@ -36,6 +36,17 @@ sudo, anything touching real hardware, or a download the plan does not list.
 
 ## 2. Install
 
+Prerequisites; check them before the install and tell the user what is missing:
+
+- `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh`) or the Python the target wants (3.11 for
+  most); without either, `setup.sh` stops.
+- `node` 22.19 or newer on the user's `PATH` for the preflight (pi's own Node may not be on it).
+- GitHub reachable: the extras install packages from git (LIBERO's pulls RLinf's openpi fork with
+  submodules, LIBERO and SAM3). A stalled `uv pip install` is usually a git clone; it needs a proxy
+  (`https_proxy`).
+- Hugging Face reachable for assets and `--weights`, or `HF_ENDPOINT` set to a mirror.
+- Disk: a robot venv is several GB and uv's cache can reach 16 GB (`UV_CACHE_DIR` moves it).
+
 ```bash
 services/setup.sh <target> [--weights] [--venv DIR] [--weights-dir DIR] [--no-assets] [--dry-run]
 services/setup.sh --help        # targets and what each fetches
@@ -47,10 +58,14 @@ behavior, humanclaw, franka, franka-polymetis, dual-franka, piper, ur5e; others:
 llamafactory, flywheel (LeRobot export), graspnet1b. Most create `services/.venv-<target>` with the
 matching extra; robolab, robodojo, behavior (Isaac Sim 6.1) and humanclaw (Habitat-Sim) run their
 install scripts on a checkout under `$HOME` (or `<NAME>_ROOT`). Assets (`--no-assets` skips them) and
-`--weights` go to `$PI_EMBODIED_WEIGHTS` (default `~/.cache/pi-embodied`). It writes
-`<venv>/pi-embodied.env`; `source` it before pi, `serve.sh` and `eval.sh`. Mirrors:
-`HF_ENDPOINT=https://hf-mirror.com`, `UV_INDEX_URL` / `PIP_INDEX_URL`. Gated data (SAM3, HSSD) needs
-`HF_TOKEN` with the license accepted.
+`--weights` go to `$PI_EMBODIED_WEIGHTS` (default `~/.cache/pi-embodied`); libero and libero-pro both
+fetch the LIBERO scene assets (about 400 MB from Hugging Face). It writes
+`<venv>/pi-embodied.env`; `source` it before pi, `serve.sh` and `eval.sh`; it holds absolute paths. Mirrors (for example from
+mainland China): `HF_ENDPOINT=https://hf-mirror.com` (it can answer HTTP 429 for datasets with many
+files; retry, or use huggingface.co through a proxy), `UV_INDEX_URL` / `PIP_INDEX_URL`, a PyTorch
+wheel mirror with `--find-links`, and a proxy for GitHub; the env file does not carry them, so they
+must be set in the shell that runs pi too. Gated data (SAM3, HSSD) needs `HF_TOKEN` with the license
+accepted.
 
 Where things run is the deployment config, not flags: `deployments.<name>` in `~/.pi/agent/embodied.json`
 or `<cwd>/.pi/embodied.json` (`services.*` URLs, `python.<robot>`, `cuda_device`, `dirs.*`),
@@ -70,14 +85,22 @@ node packages/embodied/src/infra/check.ts <robot> [--deployment NAME] [--units] 
 ```
 
 `<robot>` is the extension's directory name (`dual_franka`; libero-pro / libero-plus are `libero`).
-Fix every FAIL before running. Inside a robot session the same check is `/robot-check`.
+Fix every FAIL before running (LIBERO: a missing scene asset is a FAIL; rerun `setup.sh`). Inside a robot session the same check is `/robot-check`.
 
 ## 4. One episode
 
 ```bash
-cd <experiment dir> && source <venv>/pi-embodied.env
-pi <task flags> [--units=true] --dashboard=true
+cd <experiment dir> && source <repo>/services/.venv-<target>/pi-embodied.env
+pi <task flags> [--units=true] --dashboard=true --max-turns 40 --time-limit 900 --thinking low
 ```
+
+Always give the user the command with a budget: every turn sends camera images, and without
+`--max-turns` / `--time-limit` (default no limit) an episode runs until the model calls `finish`,
+which against a paid API can cost a lot. `--thinking low` applies to models with a thinking level.
+After the start the robot waits for a prompt: the user types `Solve the task.` (or another
+instruction). For a first run without the terminal UI:
+`pi -a -p <task flags> [--units=true] --max-turns 40 --time-limit 900 --thinking low "Solve the task."`.
+On a machine with several GPUs add `CUDA_VISIBLE_DEVICES` and `MUJOCO_EGL_DEVICE_ID` (MuJoCo robots).
 
 The first pi in the experiment directory asks whether to trust the project: its `.pi/settings.json`
 loads the robot extension, so the user answers yes (`/trust` saves it); declined, pi starts without
@@ -103,7 +126,8 @@ does not see the skill list itself.
 ## 5. Evaluate
 
 ```bash
-packages/embodied/src/robots/<robot>/eval.sh <out-dir> <cells...> --model <provider/model> --thinking low
+packages/embodied/src/robots/<robot>/eval.sh <out-dir> <cells...> --model <provider/model> \
+  --max-turns 40 --time-limit 900 --thinking low
 ```
 
 Each robot's `eval.sh` header gives its cells (LIBERO: suite, tasks, seeds; most sims: tasks, seeds).
@@ -114,7 +138,8 @@ the same out dir is refused. `src/scripts/eval-parallel.sh [-j N --gpus LIST] [-
 
 ## Common failures
 
-- `[robot] unavailable: ...` at start: the env server did not come up; run the preflight.
+- `[robot] unavailable: ...` at start: the env server did not come up; the message names its log
+  (LIBERO: `/tmp/pi-embodied-env-<suite>-t<task>-s<seed>-<port>.log`). Read it, then run the preflight.
 - No robot (no `/robot-task`, the coding tools are back) in the experiment directory: project trust
   was declined, or `pi -p` ran without `-a`; start pi there again and accept, or `/trust`.
 - Import errors in the preflight: wrong venv (or the deployment's `python.<robot>` names another).

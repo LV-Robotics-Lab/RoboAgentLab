@@ -118,15 +118,15 @@ unless `PI_EMBODIED_E2E` names the robot and `nvidia-smi` answers. Add a `test(.
 with its task flags.
 
 `test/gpu-e2e.sh` runs it robot by robot, each with its environment file sourced (the venv's
-`pi-embodied.env` from `services/setup.sh`, or the box's own scripts), against this checkout's
-services. On the shared bjb2 box (GPU0 is vLLM; GPU1 is shared):
+`pi-embodied.env` from `services/setup.sh`, or a script of your own that also sets the CUDA / EGL
+variables), against this checkout's
+services. On a machine whose GPU other jobs share, with a lock file for that GPU:
 
 ```bash
-cd /root/autodl-tmp/pi-<name>/packages/embodied
-export PATH=/root/autodl-tmp/tools/node/bin:$PATH
-test/gpu-e2e.sh metaworld=/root/autodl-tmp/tools/metaworld-env.sh
-E2E_GPU=1 MIN_FREE=8000 PI_EMBODIED_GPU_LOCK=/root/autodl-tmp/locks/gpu1.lock \
-  test/gpu-e2e.sh libero=/root/autodl-tmp/tools/embodied-env.sh robosuite=<env> maniskill=/root/autodl-tmp/tools/maniskill-env.sh
+cd <repo>/packages/embodied
+test/gpu-e2e.sh metaworld=<repo>/services/.venv-metaworld/pi-embodied.env
+E2E_GPU=1 MIN_FREE=8000 PI_EMBODIED_GPU_LOCK=~/.cache/pi-embodied/gpu1.lock \
+  test/gpu-e2e.sh libero=<repo>/services/.venv-libero/pi-embodied.env robosuite=<env> maniskill=<repo>/services/.venv-maniskill/pi-embodied.env
 ```
 
 `E2E_GPU` makes a light simulator wait (without the lock) until that GPU has `MIN_FREE` MiB free.

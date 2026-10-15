@@ -17,18 +17,31 @@ manifest therefore loads only the onboarding extension (`src/infra/setup`) and t
 
 ## Install and quickstart
 
+Prerequisites:
+
+- Node.js 22.19 or newer on your `PATH`: the preflight runs `node`, and the pi.dev installer does
+  not put its own Node there.
+- [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`) or Python
+  3.11, for `services/setup.sh`.
+- GitHub and Hugging Face reachable: the extras install packages from GitHub, and assets and
+  checkpoints come from Hugging Face. Behind a restricted network see
+  [Mainland China network](../../README.md#mainland-china-network).
+- A planner model with image input: `/login` in pi, or a provider in `~/.pi/agent/models.json`.
+
 ```bash
-pi install ./packages/embodied            # from a checkout; or npm:@lv-robotics/pi-embodied once published
-pi                                        # first start in a project: a notice points to /embodied-setup
+git clone https://github.com/LV-Robotics-Lab/pi-embodied ~/pi-embodied
+cd ~/pi-embodied && pi install ./packages/embodied   # or npm:@lv-robotics/pi-embodied once published
+mkdir -p ~/robot-runs && cd ~/robot-runs && pi        # a notice points to /embodied-setup
 ```
 
 `/embodied-setup` asks for the robot or benchmark (and what it needs: GPU, Isaac Sim, real hardware
 and an operator), the mode (tools, units, fine-tuned, flash), where the services run (here, or a
-remote GPU box over ssh) and the planner model. After you confirm, it writes the experiment
-directory's `.pi/settings.json` and asks the agent to follow the `embodied-quickstart` skill: run
-`services/setup.sh <robot>` (venv, pyproject extra, assets, `--weights` for checkpoints), then the
-preflight (`node src/infra/check.ts <robot>`; `/robot-check` inside a robot session), and report the
-launch command. The agent runs each step with its bash tool, under your normal approvals.
+remote GPU box over ssh) and the planner model; it stops when pi has no model. After you confirm, it
+writes the experiment directory's `.pi/settings.json` and asks the agent to follow the
+`embodied-quickstart` skill: run `services/setup.sh <robot>` (venv, pyproject extra, assets,
+`--weights` for checkpoints), then the preflight (`node src/infra/check.ts <robot>`; `/robot-check`
+inside a robot session), and report the launch command. The agent runs each step with its bash
+tool, under your normal approvals.
 
 The experiment directory's settings load the robot through `extensions` and drop the onboarding
 extension with a delta entry for this package (pi's package filters only narrow what the manifest
@@ -43,8 +56,20 @@ declares, so they cannot add a robot):
 }
 ```
 
-Settings cannot carry extension flags, so the task and mode stay on the command line, e.g.
-`cd <experiment dir> && source services/.venv-libero-pro/pi-embodied.env && pi --suite libero_10 --task 0 --seed 0 --units=true --dashboard=true`.
+Settings cannot carry extension flags, so the task, the mode and the budget stay on the command
+line:
+
+```bash
+cd ~/robot-runs/embodied-libero && source ~/pi-embodied/services/.venv-libero/pi-embodied.env
+pi --libero-type standard --suite libero_10 --task 0 --seed 0 --units=true --dashboard=true \
+  --max-turns 40 --time-limit 900 --thinking low
+```
+
+The robot resets the scene and waits for a prompt: type `Solve the task.` to start the episode. In
+print mode the prompt goes on the command line:
+`pi -a -p <the same flags> "Solve the task."`. Every turn sends camera images to the planner, and
+without `--max-turns` / `--time-limit` (default 0, no limit) an episode runs until the model calls
+`finish`, so give every run against a paid API a budget.
 The first pi there asks to trust the project; `pi -p` cannot ask, so it runs without the robot unless
 trust was saved or `-a` (`--approve`) is given. Run the eval scripts outside that directory: they load
 the robot with `-e`, and loading it twice fails on duplicate tools.
@@ -250,7 +275,7 @@ Shared modules:
   `--serve-timeout` stops them all and the start fails closed. A port that already serves is refused
   (attach to it without `--serve-models`). `python.molmo` in the deployment (Molmo's own
   venv), `--serve-cuda-device`, and `--serve-lock <file>` (default `$PI_EMBODIED_GPU_LOCK`; on a
-  shared GPU box its gpu1.lock) holds flock(1) on the file while the models load and run, after
+  shared GPU box, a lock file per GPU) holds flock(1) on the file while the models load and run, after
   `--serve-min-free <MiB>` found that much free on the GPU without the lock (checked again under it;
   not with eval-parallel.sh's `LOCK` on the same file, which that run already holds). Logs go to
   `--serve-log-dir`. `serve.sh` stays the way to share one server across an eval batch.
@@ -283,19 +308,20 @@ What the planner's context carries between turns is four flags of the base, all 
 them N at a time instead of every turn, default 0), `--anchor-image` (the first frame too) and
 `--replay-thinking true|false|none|frames` (default `false`: a request carries only the latest
 turn's thinking; pi itself replays every earlier turn's, which an openai-completions endpoint such as
-NInfer / vLLM with Qwen's template counts as prompt tokens, ~36% of the planner's input on the fixed
+vLLM with Qwen's template counts as prompt tokens, ~36% of the planner's input on the fixed
 regression. `true` is pi's behaviour, `none` drops the latest turn's too, `frames` drops a turn's
 thinking together with the camera frames before it. Only the request changes, never the session; signed thinking,
 Anthropic's and OpenAI Responses' included, is never dropped; `src/planner/replay-thinking.ts`).
 Those defaults rewrite earlier turns every request (the previous answer's thinking, the oldest kept
-frame), so an endpoint's prefix cache reuses almost nothing (NInfer on LIBERO: 4.5% of the planner's
-prompt tokens). With `--replay-thinking=none --image-trim-every N` each request is a continuation of the
+frame), so an endpoint's prefix cache reuses almost nothing (a local vLLM-style server on LIBERO: 4.5%
+of the planner's prompt tokens). With `--replay-thinking=none --image-trim-every N` each request is a continuation of the
 previous one between cuts every N frames (`frames` instead of `none` also replays each answer as
 generated until its cut: a larger context, more compactions); `--cache-breakpoints=true` also asks
-NInfer to keep the task message and the newest message as cached prefixes
-(`src/planner/cache-breakpoints.ts`; Strata, the `selfhost` engine since 2026-10-13, ignores the marker and
-reuses the append-only context on its own checkpoints: 88-96% of each prompt after the second request of a
-replayed LIBERO episode against 40-56% with the registered defaults). On the `selfhost` provider these three are the
+a server that honours cache breakpoints to keep the task message and the newest message as cached prefixes
+(`src/planner/cache-breakpoints.ts`; a server with automatic prefix caching ignores the marker and
+reuses the append-only context on its own: 88-96% of each prompt after the second request of a
+replayed LIBERO episode against 40-56% with the registered defaults). On a provider named `selfhost`
+(a local OpenAI-compatible server, e.g. vLLM or llama.cpp) these three are the
 defaults: `--replay-thinking=none --image-trim-every 8 --cache-breakpoints=true`, read at session
 start from the session's model's provider unless the flag is given (`src/infra/params.ts`
 `PROVIDER_DEFAULTS`; A/B 2026-10-12, LIBERO libero_spatial 30 episodes per arm: success 23 vs 22 of 30, Fisher p = 1.0; cache hits 2.9% to
@@ -384,12 +410,12 @@ that changes results is switched on by a flag that says what, not where: `--dete
 records the deployment's name and a hash of it (`deployment`, `deployment_sha`), for provenance only.
 
 ```jsonc
-{ "deployments": { "bjb2": {
+{ "deployments": { "gpu-box": {
     "services": { "sam3": "http://127.0.0.1:18300", "ik": "http://127.0.0.1:18500" },
-    "python": { "default": "/root/autodl-tmp/pi-embodied/.local/venvs/rpent/bin/python",
-                "maniskill": "/root/autodl-tmp/pi-embodied/.local/venvs/maniskill/bin/python" },
-    "services_dir": "/root/autodl-tmp/pi-embodied/services",
-    "dirs": { "logs": "/root/autodl-tmp/pi-embodied/.local/logs" },
+    "python": { "default": "/home/me/pi-embodied/services/.venv-libero/bin/python",
+                "maniskill": "/home/me/pi-embodied/services/.venv-maniskill/bin/python" },
+    "services_dir": "/home/me/pi-embodied/services",
+    "dirs": { "logs": "/data/pi-embodied/logs" },
     "cuda_device": "1" } } }
 ```
 
@@ -511,19 +537,34 @@ them into both plugins and generates `codex/.mcp.json`; `test/integrations.test.
 ## LIBERO
 
 Needs the repository's Python services (`services/`, package `pi_embodied_services`) installed
-with the `[libero]` extra (`services/setup.sh libero`, or see services/README.md); the extension
-speaks their HTTP RPC directly.
+with the `[libero]` extra: `services/setup.sh libero` builds `services/.venv-libero` and installs
+the scene assets (standard LIBERO, `--libero-type standard`). `services/setup.sh libero-pro` and
+`libero-plus` install LIBERO-PRO (`--libero-type pro`, the flag's default, with suites such as
+`libero_10_task`) and LIBERO-Plus (`--libero-type plus`) in their own venvs; see services/README.md.
+The extension speaks the services' HTTP RPC directly.
 Robots spawn their env servers from `services_dir` of the deployment config (env
 `PI_EMBODIED_SERVICES`, default the repo's `services/`) with `PYTHONPATH` set to it; `serve.sh` and `eval.sh` default to the same directory.
 
-```bash
-export PI_EMBODIED_PYTHON=services/.venv-libero/bin/python
-PI05_CHECKPOINT_PATH=... SAM3_CHECKPOINT_PATH=... packages/embodied/src/robots/libero/serve.sh
+From the repository root (the env file holds absolute paths, so it stays valid after a `cd`):
 
-pi -e packages/embodied/src/robots/libero --suite libero_10_task --task 2 --seed 0             # interactive
-packages/embodied/src/robots/libero/eval.sh runs/l10 libero_10_task 0-9 0-2 --model <provider/model>
-pi -p -e packages/embodied/src/robots/libero --explore --suite libero_10_task --task 2 --seed 0 "/explore"
+```bash
+source services/.venv-libero/pi-embodied.env     # PI_EMBODIED_PYTHON, PI_EMBODIED_SERVICES
+services/setup.sh libero --weights                # Pi0.5 and SAM3 checkpoints, for tools mode
+source services/.venv-libero/pi-embodied.env     # now with PI05_CHECKPOINT_PATH, SAM3_CHECKPOINT_PATH
+packages/embodied/src/robots/libero/serve.sh      # Pi0.5 + SAM3 servers (tools mode; units mode needs none)
+
+pi -e packages/embodied/src/robots/libero --libero-type standard --suite libero_10 --task 2 --seed 0 \
+  --max-turns 40 --time-limit 900 --thinking low                                  # interactive: type "Solve the task."
+pi -p -e packages/embodied/src/robots/libero --libero-type standard --suite libero_10 --task 2 --seed 0 \
+  --max-turns 40 --time-limit 900 --thinking low "Solve the task."
+packages/embodied/src/robots/libero/eval.sh runs/l10 libero_10 0-9 0-2 --libero-type standard \
+  --model <provider/model> --max-turns 40 --time-limit 900 --thinking low
+pi -p -e packages/embodied/src/robots/libero --explore --libero-type standard --suite libero_10 --task 2 --seed 0 \
+  --time-limit 3600 --thinking low "/explore"                                     # several attempts: a longer limit
 ```
+
+The budget flags keep a run against a paid API bounded: every turn sends camera images, and
+`--max-turns` / `--time-limit` default to no limit (`eval.sh` defaults to `--time-limit 1800`).
 
 Each session ends with a `robot_result` entry (`terminated` is LIBERO's success flag,
 `claimed` is the agent's own status). `/robot-task <suite> <task> <seed>` starts a new episode

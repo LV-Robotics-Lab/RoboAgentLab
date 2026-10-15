@@ -52,13 +52,17 @@ manifest and refuses to start when its RPC methods and the manifest disagree
 
 Each robot extra pins its own VLA runtime (Torch/Transformers versions differ), so use one
 venv per robot family. `setup.sh <robot> [--weights] [--dry-run]` does the steps below for one
-robot (venv, extra, assets, checkpoints) and writes `<venv>/pi-embodied.env`; by hand, from the
-repository root:
+robot (venv, extra, assets, checkpoints) and writes `<venv>/pi-embodied.env`. It needs
+[uv](https://docs.astral.sh/uv/) (or the Python version the extra wants), and network access to
+GitHub (several extras install packages from git, some with submodules) and Hugging Face (assets
+and checkpoints); behind a restricted network see
+[Mainland China network](../README.md#mainland-china-network). By hand, from the repository root:
 
 ```bash
 # LIBERO (+ SAM3 + Pi0.5 via RLinf's openpi fork; mujoco==3.3.0)
 uv venv services/.venv-libero --python 3.11 && source services/.venv-libero/bin/activate
 uv pip install -e "services[libero]"          # or [libero-pro] / [libero-plus]
+# The scene assets are not in the package: services/setup.sh libero (or libero-pro) installs them.
 
 # RoboCasa (RLDX-1 needs Python 3.10; install a CUDA torch>=2.7/torchvision>=0.22 pair first)
 uv venv services/.venv-robocasa --python 3.10 && source services/.venv-robocasa/bin/activate
@@ -143,7 +147,7 @@ uv pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pyt
 uv pip install -e "services[openvla]"       # or [openvla-oft] (Python 3.10/3.11) / [gr00t] (Python 3.12)
 # Checkpoints are pinned by commit hash in each server (OPENVLA_CHECKPOINTS, OPENVLA_OFT_CHECKPOINTS,
 # GR00T_CHECKPOINTS) and fetched by huggingface_hub at that revision when --model-path is not a
-# directory: set HF_ENDPOINT=https://hf-mirror.com (never a gateway proxy) where huggingface.co is
+# directory: set HF_ENDPOINT=https://hf-mirror.com where huggingface.co is
 # unreachable, or snapshot_download them yourself and pass the directory.
 
 # XPolicyLab policies (pi's --xpolicy; packages/embodied/src/primitives/xpolicy.ts). The policy runs the
@@ -301,14 +305,14 @@ and `packages/embodied/src/robots/<robot>/serve.sh` starts the shared model serv
 
 Show-Harness's fine-tuned mode (`packages/embodied/src/modes/finetuned`: a small VLM + LoRA picks one
 action unit per step) uses the scripts in `pi_embodied_services/finetuned/`. Training needs
-LLaMA-Factory in its own venv; install it once on the box with
+LLaMA-Factory in its own venv; install it once with
 [`setup_llamafactory.sh`](pi_embodied_services/finetuned/setup_llamafactory.sh) (pinned
-LLaMA-Factory, torch 2.8.0+cu129, China mirrors; `LF_VENV` / `LF_ROOT` default to
-`/root/autodl-tmp/venvs/llamafactory` and `$LF_VENV/LlamaFactory`). `GIT_PROXY` routes its
-GitHub fetch of the pinned commit through a proxy:
+LLaMA-Factory, torch 2.8.0+cu129; packages come from the PyPI and PyTorch mirrors in `INDEX` and
+`TORCH_MIRROR`, and `LF_VENV` / `LF_ROOT` choose where it installs: the script's header gives the
+defaults). `GIT_PROXY` routes its GitHub fetch of the pinned commit through a proxy:
 
 ```bash
-GIT_PROXY=http://127.0.0.1:1056 bash services/pi_embodied_services/finetuned/setup_llamafactory.sh
+GIT_PROXY=http://<proxy host>:<port> bash services/pi_embodied_services/finetuned/setup_llamafactory.sh
 ```
 
 Then `train.sh` turns GUMI recordings (or `--from-lerobot` datasets, or `--from-rollouts`
