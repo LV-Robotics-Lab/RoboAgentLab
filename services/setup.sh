@@ -44,9 +44,10 @@
 # ~/.cache/pi-embodied), assets under the same directory; relative paths are taken from the current
 # directory and written out absolute. Downloads honour HF_ENDPOINT (e.g.
 # https://hf-mirror.com) and HF_TOKEN, and pip/uv honour UV_INDEX_URL / PIP_INDEX_URL. --dry-run
-# prints the commands without running them. At the end the environment the robot reads is written
-# to <venv>/pi-embodied.env (source it before pi / serve.sh / eval.sh) and the preflight command
-# is printed.
+# prints the commands without running them. The environment the robot reads is written to
+# <venv>/pi-embodied.env (source it before pi / serve.sh / eval.sh) as soon as the venv is installed,
+# and again at the end with what the later steps add; then the preflight command is printed. A failed
+# step leaves the venv's own pi-embodied.env; rerunning the same command resumes.
 set -euo pipefail
 
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
@@ -117,6 +118,23 @@ run() {
 }
 note() { echo "== $*"; }
 export_env() { ENV_LINES+=("export $1=$(printf '%q' "$2")"); }
+# env_lines: the steps' lines, then the venv's own.
+env_lines() {
+	[ ${#ENV_LINES[@]} -eq 0 ] || printf '%s\n' "${ENV_LINES[@]}"
+	case $target in finetuned | llamafactory | graspnet1b | flywheel) ;; *) printf 'export PI_EMBODIED_PYTHON=%q\n' "$PY" ;; esac
+	printf 'export PI_EMBODIED_SERVICES=%q\n' "$SERVICES"
+}
+venv_ready=false
+write_env() {
+	$dry || [ ! -d "$venv" ] || env_lines >"$venv/pi-embodied.env"
+}
+on_exit() {
+	local rc=$?
+	if [ $rc -ne 0 ] && $venv_ready; then
+		echo "setup.sh: $target stopped (exit $rc) after its venv was installed: $venv/pi-embodied.env holds the venv's environment but not the failed step's. Fix the cause above and rerun the same command to resume (the venv and finished downloads are kept)." >&2
+	fi
+}
+trap on_exit EXIT
 
 make_venv() {
 	if [ -x "$PY" ]; then
@@ -194,7 +212,8 @@ liberopro_assets() {
 # list before it is linked (a cached partial snapshot is never trusted).
 libero_assets() {
 	$dry || "$PY" -c 'import huggingface_hub' 2>/dev/null || pip_install "huggingface_hub>=0.34"
-	run "$PY" -m pi_embodied_services.robots.libero.assets
+	run "$PY" -m pi_embodied_services.robots.libero.assets ||
+		die "the LIBERO scene assets are not complete (above: why; where a mirror keeps answering 429, unset HF_ENDPOINT to fetch from huggingface.co, through a proxy if needed)"
 }
 
 # liberoplus-download-assets rejects the published assets.zip (its tree sits under a deep build path,
@@ -281,6 +300,12 @@ llamafactory)
 		constraint=(--constraint "$SERVICES/pi_embodied_services/robots/robocasa/eval/target50-constraints.txt")
 	fi
 	pip_install -e "$SERVICES[$extra]" ${constraint[@]+"${constraint[@]}"}
+	# Written now so that `source <venv>/pi-embodied.env` works even if an asset or weights step fails.
+	if ! $dry; then
+		write_env
+		venv_ready=true
+		note "wrote $venv/pi-embodied.env (the steps below add to it)"
+	fi
 	case $target in
 	libero | libero-pro | libero-plus)
 		if $assets; then ${target//-/}_assets; fi
@@ -339,12 +364,10 @@ assert v == "v3.0", f"lerobot writes {v}, the Flywheel export needs v3.0 (lerobo
 	;;
 esac
 
-case $target in finetuned | llamafactory | graspnet1b | flywheel) ;; *) export_env PI_EMBODIED_PYTHON "$PY" ;; esac
-export_env PI_EMBODIED_SERVICES "$SERVICES"
 note "environment for pi, serve.sh and eval.sh:"
-printf '%s\n' "${ENV_LINES[@]}"
+env_lines
 if ! $dry && [ -d "$venv" ]; then
-	printf '%s\n' "${ENV_LINES[@]}" >"$venv/pi-embodied.env"
+	write_env
 	note "wrote $venv/pi-embodied.env"
 fi
 case $target in

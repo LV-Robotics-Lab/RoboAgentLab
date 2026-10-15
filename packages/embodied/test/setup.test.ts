@@ -313,6 +313,53 @@ test("setup.sh writes absolute paths for a relative --venv and --weights-dir", (
 	assert.match(tilde, new RegExp(`^export PI_EMBODIED_PYTHON=${home}/v2/bin/python$`, "m"));
 });
 
+test("setup.sh writes pi-embodied.env once the venv is installed: a failed asset step leaves it and says how to resume", () => {
+	const script = join(PKG, "../../services/setup.sh");
+	const home = mkdtempSync(join(tmpdir(), "pi-embodied-home-"));
+	const venv = join(home, "v");
+	const bin = join(home, "bin");
+	mkdirSync(join(venv, "bin"), { recursive: true });
+	mkdirSync(bin);
+	// An installed venv whose asset step fails (a mirror answering 429), and a uv whose installs succeed.
+	const python = (assets: string) =>
+		writeFileSync(
+			join(venv, "bin/python"),
+			`#!/bin/sh\ncase "$*" in -V) echo Python 3.11.0 ;; *robots.libero.assets*) ${assets} ;; esac\n`,
+			{ mode: 0o755 },
+		);
+	python('echo "LIBERO assets: HTTP 429" >&2; exit 1');
+	writeFileSync(join(bin, "uv"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+	writeFileSync(join(venv, "bin/hf"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+	const setupSh = (...args: string[]) =>
+		spawnSync("bash", [script, "libero", "--venv", venv, ...args], {
+			env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, PI_EMBODIED_WEIGHTS: join(home, "w") },
+			encoding: "utf8",
+		});
+	const failed = setupSh("--weights");
+	assert.equal(failed.status, 1, failed.stderr);
+	const early = readFileSync(join(venv, "pi-embodied.env"), "utf8");
+	assert.match(early, new RegExp(`^export PI_EMBODIED_PYTHON=${venv}/bin/python$`, "m"));
+	assert.match(early, /^export PI_EMBODIED_SERVICES=\//m);
+	assert.doesNotMatch(early, /PI05_CHECKPOINT_PATH/);
+	assert.match(
+		failed.stderr,
+		/LIBERO scene assets are not complete .*unset HF_ENDPOINT to fetch from huggingface\.co/,
+	);
+	assert.match(
+		failed.stderr,
+		/stopped \(exit 1\) after its venv was installed: \S+\/pi-embodied\.env holds the venv's environment/,
+	);
+	assert.match(failed.stderr, /rerun the same command to resume/);
+	// The rerun gets past the assets: the file gains the later steps' lines and nothing asks to resume.
+	python("exit 0");
+	const ok = setupSh("--weights");
+	assert.equal(ok.status, 0, ok.stderr);
+	const full = readFileSync(join(venv, "pi-embodied.env"), "utf8");
+	assert.match(full, /^export PI05_CHECKPOINT_PATH=/m);
+	assert.equal(full.match(/^export PI_EMBODIED_PYTHON=/gm)?.length, 1);
+	assert.doesNotMatch(ok.stderr, /resume/);
+});
+
 test("every robot has a setup.sh target, a check.ts spec and a /embodied-setup entry", () => {
 	const script = join(PKG, "../../services/setup.sh");
 	const home = mkdtempSync(join(tmpdir(), "pi-embodied-home-"));
