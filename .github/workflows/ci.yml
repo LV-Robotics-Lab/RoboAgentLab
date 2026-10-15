@@ -23,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-node
+      - run: python3 -m pip install --user -q uv==0.12.17 # setup.sh's dry runs need uv
       # Regenerates the model catalog from the providers' live listings, so a new model type shows up here first.
       - run: npm run build
       - run: npm run check
