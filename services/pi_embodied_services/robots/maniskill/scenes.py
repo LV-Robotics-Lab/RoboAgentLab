@@ -50,8 +50,11 @@ from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
 
+from pi_embodied_services.utils.config import get_local_dir
+
+# fetch_real2sim.sh's default destination: <checkout>/.local/assets/RLinf-real2sim.
 RLINF_ROOT = os.environ.get(
-    "RLINF_ROOT", "/root/autodl-tmp/pi-embodied/.local/assets/RLinf-real2sim"
+    "RLINF_ROOT", str(get_local_dir() / "assets" / "RLinf-real2sim")
 )
 
 # Wrist camera placement, relative to the gripper: the D415 rig's ORIENTATION

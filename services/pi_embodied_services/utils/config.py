@@ -40,6 +40,21 @@ def get_repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def get_local_dir() -> Path:
+    """Machine-local files (venvs, checkpoints, assets, data, locks): ``<checkout>/.local``.
+
+    The checkout holding the services root (``get_repo_root``); ``.local/`` is gitignored. The
+    scripts under ``finetuned/`` and ``robots/maniskill/`` default to the same directory.
+    """
+    return get_repo_root().parent / ".local"
+
+
+def get_weights_dir() -> Path:
+    """Model checkpoints: ``PI_EMBODIED_WEIGHTS`` (setup.sh's --weights-dir), else ``<checkout>/.local/checkpoints``."""
+    env = os.environ.get("PI_EMBODIED_WEIGHTS")
+    return Path(env).expanduser() if env else get_local_dir() / "checkpoints"
+
+
 # ============================================================================
 # Paths derived from the repo root  (callable so tests can override)
 # ============================================================================

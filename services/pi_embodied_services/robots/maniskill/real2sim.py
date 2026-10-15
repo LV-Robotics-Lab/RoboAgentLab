@@ -20,7 +20,7 @@
 """Real2sim training data: a privileged oracle that plays each episode in action units.
 
     python -m pi_embodied_services.robots.maniskill.real2sim --env-id BlockPAP-v1 \\
-        --episodes 20 --seed0 30000 --out /root/autodl-tmp/data/real2sim/blockpap_oracle
+        --episodes 20 --seed0 30000 --out runs/real2sim/blockpap_oracle
 
 Every episode resets like the deployment env server (``scenes.reset``: the training
 episodes' reset, ``layout: wide``), then a state machine reads the object poses and walks

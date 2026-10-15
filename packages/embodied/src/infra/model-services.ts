@@ -9,7 +9,7 @@
  *
  * `--serve-lock <file>` (default $PI_EMBODIED_GPU_LOCK) holds an exclusive flock(1) on that file from
  * before the first model loads until the services stop, the convention of a shared GPU box
- * (`/root/autodl-tmp/locks/gpu1.lock`): a heavy job queues for it instead of loading next to another.
+ * (e.g. `<checkout>/.local/locks/gpu1.lock`): a heavy job queues for it instead of loading next to another.
  * `--serve-min-free <MiB>` first polls the GPU's free memory without the lock and checks it again
  * once the lock is held (the box's `gpu1_take`). Never combine --serve-lock with eval-parallel.sh's
  * LOCK on the same file: that run already holds it, and the flock would wait out --serve-timeout.

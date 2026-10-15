@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch the RLinf real2sim rigs (BlockPAP-v1 / BlockStack-v1) that ./scenes.py registers.
 #
-#   bash fetch_real2sim.sh [dest]          # default /root/autodl-tmp/pi-embodied/.local/assets/RLinf-real2sim
+#   bash fetch_real2sim.sh [dest]          # default <checkout>/.local/assets/RLinf-real2sim (scenes.py's default)
 #   HTTPS_PROXY=http://127.0.0.1:1056 bash fetch_real2sim.sh   # when github.com is flaky (code only)
 #
 # 1. Code: real_franka/ of github.com/AaronCaoZJ/RLinf (Apache-2.0, a fork of RLinf/RLinf by a
@@ -12,13 +12,18 @@
 # 3. BlockStack's panda_v2_extended.urdf (only in RLinf's own ManiSkill build), rebuilt from its
 #    spec into the ManiSkill venv's assets by scenes.write_extended_urdf (PYTHON= that venv).
 # Then point the env server at it: RLINF_ROOT=<dest> (scenes.py's default is the same path).
+# <checkout> is the checkout of $PI_EMBODIED_SERVICES when it is set, else this one; PYTHON= defaults to
+# setup.sh maniskill's services/.venv-maniskill when it exists, else <checkout>/.local/venvs/maniskill.
 set -euo pipefail
 
-DEST="${1:-/root/autodl-tmp/pi-embodied/.local/assets/RLinf-real2sim}"
+SERVICES="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+LOCAL="$(cd "${PI_EMBODIED_SERVICES:-$SERVICES}/.." && pwd)/.local"
+DEST="${1:-$LOCAL/assets/RLinf-real2sim}"
 REPO=https://github.com/AaronCaoZJ/RLinf.git
 REV=fd52554870dc9c0dbd4243c052f5ec32c56f1340
-PYTHON="${PYTHON:-/root/autodl-tmp/pi-embodied/.local/venvs/maniskill/bin/python}"
-SERVICES="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+PY_DEFAULT="${PI_EMBODIED_SERVICES:-$SERVICES}/.venv-maniskill/bin/python"
+[ -x "$PY_DEFAULT" ] || PY_DEFAULT="$LOCAL/venvs/maniskill/bin/python"
+PYTHON="${PYTHON:-$PY_DEFAULT}"
 HF="${HF_ENDPOINT:-https://hf-mirror.com}/datasets/RLinf/maniskill_assets/resolve/c23fc1880ed7861686d4f995360101eaee4d18a0"
 
 if [ ! -d "$DEST/.git" ]; then

@@ -2,23 +2,25 @@
 # episode.sh <robot> <out dir> [pi args...]: serve a fine-tuned adapter (serve.sh), run one pi episode
 # per seed with `--model finetuned/local --ft-model $ADAPTER`, then stop the server. The whole run holds the GPU1 lock.
 #
-#   SEEDS="0 1" bash episode.sh maniskill /root/autodl-tmp/pi-embodied/.local/runs/finetuned/pickcube --env-id PickCube-v1
+#   SEEDS="0 1" bash episode.sh maniskill runs/finetuned/pickcube --env-id PickCube-v1
 #
 #   ADAPTER=qwen3_5_2b_showharness_sim   the served adapter name (serve.sh's LORA name; MODEL/LORA/FAMILY pass through)
 #   SEEDS="0"  SEED_FLAG=--seed           one episode per seed, sessions in <out dir>/s<seed>
-#   PORT=8010  LOCK=/root/autodl-tmp/pi-embodied/.local/locks/gpu1.lock (LOCK= to skip)  PI=<pi checkout>  ENV_SH=<file to source>
+#   PORT=8010  LOCK=<checkout>/.local/locks/gpu1.lock (LOCK= to skip)  PI=<pi checkout>  ENV_SH=<file to source>
 #   DASHBOARD_PORT=8778 (empty: no dashboard)  PROMPT="Solve the task."
+# Machine-local files (venvs, checkpoints, locks, caches) default to <checkout>/.local (gitignored): the
+# checkout of $PI_EMBODIED_SERVICES when it is set, else the one this script is in.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI="${PI:-$(cd "$HERE/../../.." && pwd)}"
-robot=$1 out=$2; shift 2
+robot=$1 out=$(mkdir -p "$2" && cd "$2" && pwd); shift 2
 ADAPTER="${ADAPTER:-qwen3_5_2b_showharness_sim}"
 PORT="${PORT:-8010}"
-LOCK="${LOCK-/root/autodl-tmp/pi-embodied/.local/locks/gpu1.lock}"
 DASHBOARD_PORT="${DASHBOARD_PORT-8778}"
-mkdir -p "$out"
 [ -n "${ENV_SH:-}" ] && . "$ENV_SH"
-export PATH=/root/autodl-tmp/pi-embodied/.local/tools/node/bin:$PATH
+LOCAL="$(cd "${PI_EMBODIED_SERVICES:-$HERE/../..}/.." && pwd)/.local"
+LOCK="${LOCK-$LOCAL/locks/gpu1.lock}"
+[ -d "$LOCAL/tools/node/bin" ] && export PATH="$LOCAL/tools/node/bin:$PATH"
 
 run() {
   PORT=$PORT setsid bash "$HERE/serve.sh" > "$out/vllm.log" 2>&1 < /dev/null &
@@ -48,6 +50,7 @@ run() {
 }
 
 if [ -n "$LOCK" ]; then
+  mkdir -p "$(dirname "$LOCK")"
   exec 9> "$LOCK"
   echo "$(date +%T) waiting for $LOCK"
   flock 9

@@ -2,7 +2,7 @@
  * GUMI recordings -> Show-Harness rollouts that train/data_preparation/rollouts_to_alpaca.py reads.
  *
  *   node --experimental-strip-types packages/embodied/src/modes/finetuned/prepare.ts \
- *     --out /root/autodl-tmp/data/finetuned/mydata/rollouts [--prompt v5-libero] [--include-failures] <gumi record dir>...
+ *     --out data/finetuned/mydata/rollouts [--prompt v5-libero] [--include-failures] <gumi record dir>...
  *
  * Only runs saved as successful are converted (`success: true` in summary.json, which GUMI writes
  * when the operator saves with "success"); failed, stopped and unfinished runs (a session that ended

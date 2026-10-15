@@ -44,7 +44,7 @@
 # Env servers need no port setting: each pi starts its own on a free port (robot.ts serve()). Shared
 # services (VLA, SAM3, RLDX, vLLM) are started once, before this script, and every worker uses them.
 #
-# GPU lock: with LOCK set (e.g. LOCK=/root/autodl-tmp/locks/gpu1.lock) a HEAVY robot's run takes the
+# GPU lock: with LOCK set (e.g. LOCK=<checkout>/.local/locks/gpu1.lock) a HEAVY robot's run takes the
 # lock once, exclusively, before starting the workers and holds it until they have all finished; the
 # workers and their pi processes and env servers do not hold it. Taking it per worker or per episode
 # would serialize the workers (an exclusive flock admits one holder), and a worker waiting on it while

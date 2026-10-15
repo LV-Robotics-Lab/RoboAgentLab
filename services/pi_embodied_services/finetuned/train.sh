@@ -2,7 +2,7 @@
 # train.sh: GUMI recordings -> Show-Harness training set -> LLaMA-Factory LoRA SFT -> an adapter serve.sh serves.
 #
 #   NAME=pick_cube_gumi \
-#     bash train.sh /root/autodl-tmp/pi-embodied/.local/runs/gumi/<session>/rollouts [more GUMI record dirs...]
+#     bash train.sh <checkout>/.local/runs/gumi/<session>/rollouts [more GUMI record dirs...]
 #   NAME=pick_cube_lerobot \
 #     bash train.sh --from-lerobot <LeRobot v3.0 dataset dir> [more dataset dirs...]
 #   NAME=blockpap_real2sim \
@@ -24,34 +24,42 @@
 #
 #   SH=        Show-Harness tree whose train/ and prompts/ are read, default ./showharness (the files of
 #              github.com/showlab/Show-Harness @137d571 this needs, vendored); a full checkout works too
-#   LF_VENV=/root/autodl-tmp/pi-embodied/.local/venvs/llamafactory   LF_ROOT=$LF_VENV/LlamaFactory: LLaMA-Factory and its
-#              venv, installed once by ./setup_llamafactory.sh (register_dataset.py writes LF_ROOT/data)
-#   NAME=      dataset / adapter name (required)       DATA=/root/autodl-tmp/pi-embodied/.local/data/finetuned/$NAME
+#   LF_VENV=   LLaMA-Factory's venv, installed once by ./setup_llamafactory.sh: setup.sh llamafactory's
+#              services/.venv-llamafactory when it exists, else <checkout>/.local/venvs/llamafactory
+#   LF_ROOT=$LF_VENV/LlamaFactory   (register_dataset.py writes LF_ROOT/data)
+#   NAME=      dataset / adapter name (required)       DATA=<checkout>/.local/data/finetuned/$NAME
 #   VERSION=v3 prompt version (must match --ft-prompt at inference)
-#   BASE_CONFIG=qwen3_5_2b_sim.yaml   MODEL_PATH=/root/autodl-tmp/pi-embodied/.local/checkpoints/Qwen3.5-2B   EPOCHS= (keep)
+#   BASE_CONFIG=qwen3_5_2b_sim.yaml   MODEL_PATH=<weights>/Qwen3.5-2B (as serve.sh's MODEL)   EPOCHS= (keep)
 #   SET="key=value ..." more yaml keys replaced or added, e.g. a smoke run: SET="max_steps=30 save_steps=10"
-#   GPU=1  LOCK=/root/autodl-tmp/pi-embodied/.local/locks/gpu1.lock   STEP=all|prepare (stop before registering; no LLaMA-Factory needed)
+#   GPU=1  LOCK=<checkout>/.local/locks/gpu1.lock (LOCK= to skip)   STEP=all|prepare (stop before registering; no LLaMA-Factory needed)
 #   PREPARE_ARGS= (e.g. --robot maniskill; --from-lerobot: e.g. --include-failures)
 #   PYTHON= (any python3; the converter is stdlib only)
 #   LEROBOT_PYTHON= python with pyarrow, numpy and pillow for --from-lerobot (the flywheel venv), default $PYTHON
+# Machine-local files (venvs, checkpoints, locks, caches) default to <checkout>/.local (gitignored): the
+# checkout of $PI_EMBODIED_SERVICES when it is set, else the one this script is in.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI="${PI:-$(cd "$HERE/../../.." && pwd)}"
 SH="${SH:-$HERE/showharness}"
-export LF_VENV="${LF_VENV:-/root/autodl-tmp/pi-embodied/.local/venvs/llamafactory}"
+SERVICES="${PI_EMBODIED_SERVICES:-$HERE/../..}"
+LOCAL="$(cd "$SERVICES/.." && pwd)/.local"
+LF_DEFAULT="$SERVICES/.venv-llamafactory"
+[ -d "$LF_DEFAULT" ] || LF_DEFAULT="$LOCAL/venvs/llamafactory"
+export LF_VENV="${LF_VENV:-$LF_DEFAULT}"
 export LF_ROOT="${LF_ROOT:-$LF_VENV/LlamaFactory}"
 NAME="${NAME:?NAME (dataset/adapter name) is required}"
-DATA="${DATA:-/root/autodl-tmp/pi-embodied/.local/data/finetuned/$NAME}"
+DATA="${DATA:-$LOCAL/data/finetuned/$NAME}"
 VERSION="${VERSION:-v3}"
 BASE_CONFIG="${BASE_CONFIG:-qwen3_5_2b_sim.yaml}"
-MODEL_PATH="${MODEL_PATH:-/root/autodl-tmp/pi-embodied/.local/checkpoints/Qwen3.5-2B}"
+MODEL_PATH="${MODEL_PATH:-${PI_EMBODIED_WEIGHTS:-$LOCAL/checkpoints}/Qwen3.5-2B}"
 GPU="${GPU:-1}"
-LOCK="${LOCK-/root/autodl-tmp/pi-embodied/.local/locks/gpu1.lock}"
-PY="${PYTHON:-$(command -v python3 || echo /root/miniconda3/bin/python)}"
+LOCK="${LOCK-$LOCAL/locks/gpu1.lock}"
+PY="${PYTHON:-$(command -v python3 || true)}"
+[ -n "$PY" ] || { echo "no python3 on PATH: set PYTHON" >&2; exit 2; }
 FROM=gumi
 case "${1:-}" in --from-lerobot) FROM=lerobot; shift ;; --from-rollouts) FROM=rollouts; shift ;; esac
 [ $# -gt 0 ] || { echo "usage: NAME=... bash train.sh <gumi record dir>... | --from-lerobot <lerobot dataset dir>... | --from-rollouts <rollout dir>..." >&2; exit 2; }
-export PATH=/root/autodl-tmp/pi-embodied/.local/tools/node/bin:$PATH
+[ -d "$LOCAL/tools/node/bin" ] && export PATH="$LOCAL/tools/node/bin:$PATH"
 
 if [ "$FROM" = rollouts ]; then
   echo "[1/3] rollouts -> $DATA/rollouts"
@@ -109,6 +117,7 @@ done
 # DATA_PREP_PYTHON: their llamafactory_env.sh dies under set -e on a box without python3 on PATH.
 train() { CONFIG="$CONFIG" GPU="$GPU" MODEL_PATH="$MODEL_PATH" DATA_PREP_PYTHON="$PY" bash "$SH/train/scripts/train.sh"; }
 if [ -n "$LOCK" ]; then
+  mkdir -p "$(dirname "$LOCK")"
   exec 9> "$LOCK"
   echo "waiting for $LOCK"
   flock 9

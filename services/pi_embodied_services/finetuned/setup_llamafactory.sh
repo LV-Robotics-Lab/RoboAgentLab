@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # Copyright 2026 The Show-Harness Authors. Licensed under the Apache License, Version 2.0.
 # Modified by pi-embodied: train/scripts/setup_llamafactory.sh of github.com/showlab/Show-Harness @137d571
-# for this box: one venv at /root/autodl-tmp/pi-embodied/.local/venvs/llamafactory with the pinned LLaMA-Factory checked out
-# inside it, pip through China mirrors (torch from the SJTU pytorch-wheels mirror), qwen3_5/internvl3_5 only.
+# for the lab box: one venv with the pinned LLaMA-Factory checked out inside it, pip through China
+# mirrors (torch from the aliyun pytorch-wheels mirror), qwen3_5/internvl3_5 only.
 #
 # Installs what train.sh needs (LLaMA-Factory LoRA SFT of the Show-Harness mvtoken VLMs):
 #
-#   bash setup_llamafactory.sh
-#   LF_VENV=/root/autodl-tmp/pi-embodied/.local/venvs/llamafactory LF_ROOT=$LF_VENV/LlamaFactory   (the defaults)
+#   bash setup_llamafactory.sh            (services/setup.sh llamafactory runs it with services/.venv-llamafactory)
+#   LF_VENV=<venv> LF_ROOT=$LF_VENV/LlamaFactory
+#
+# Machine-local files default to <checkout>/.local (gitignored; the checkout of $PI_EMBODIED_SERVICES when
+# it is set, else this one): LF_VENV services/.venv-llamafactory when it exists, else .local/venvs/llamafactory
+# (train.sh looks in the same places); WHEELS .local/.cache/wheels/cu129; UV_CACHE_DIR .local/.cache/uv;
+# UV_PYTHON_INSTALL_DIR .local/tools/uv-python; UV .local/tools/uvpkg/bin/uv, else uv on PATH;
+# CUDA_HOME .local/tools/cuda-12.8, else /usr/local/cuda.
 #
 # then  LF_VENV=... LF_ROOT=... are what train.sh passes to Show-Harness's train/scripts/train.sh.
 # The pins are upstream's, each a worked-around bug (see their script): LLaMA-Factory 9ce6b66,
@@ -19,18 +25,26 @@ LF_UPSTREAM_URL="${LF_UPSTREAM_URL:-https://github.com/hiyouga/LLaMA-Factory.git
 LF_UPSTREAM_PIN="${LF_UPSTREAM_PIN:-9ce6b663e9d87cd3c0cb42a1d3ff5cdfe292426d}"
 TRANSFORMERS="${TRANSFORMERS:-5.7.0}"
 FLASH_ATTN="${FLASH_ATTN:-2.8.3}"
-LF_VENV="${LF_VENV:-/root/autodl-tmp/pi-embodied/.local/venvs/llamafactory}"
+SERVICES="${PI_EMBODIED_SERVICES:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+LOCAL="$(cd "$SERVICES/.." && pwd)/.local"
+LF_DEFAULT="$SERVICES/.venv-llamafactory"
+[ -d "$LF_DEFAULT" ] || LF_DEFAULT="$LOCAL/venvs/llamafactory"
+LF_VENV="${LF_VENV:-$LF_DEFAULT}"
 LF_ROOT="${LF_ROOT:-$LF_VENV/LlamaFactory}"
-UV="${UV:-/root/autodl-tmp/pi-embodied/.local/tools/uvpkg/bin/uv}"
+UV_DEFAULT="$LOCAL/tools/uvpkg/bin/uv"
+[ -x "$UV_DEFAULT" ] || UV_DEFAULT="$(command -v uv || echo uv)"
+UV="${UV:-$UV_DEFAULT}"
 INDEX="${INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 # torch is 1.2 GB and a single stream from any mirror crawls (0.2-1 MB/s here): aria2c it from aliyun first
 TORCH_MIRROR="${TORCH_MIRROR:-https://mirrors.aliyun.com/pytorch-wheels/cu129}"
-WHEELS="${WHEELS:-/root/autodl-tmp/pi-embodied/.local/.cache/wheels/cu129}"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-/root/autodl-tmp/pi-embodied/.local/.cache/uv}" UV_LINK_MODE=copy UV_HTTP_TIMEOUT=600
-export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-/root/autodl-tmp/pi-embodied/.local/tools/uv-python}"
+WHEELS="${WHEELS:-$LOCAL/.cache/wheels/cu129}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$LOCAL/.cache/uv}" UV_LINK_MODE=copy UV_HTTP_TIMEOUT=600
+export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$LOCAL/tools/uv-python}"
 export UV_INDEX_URL="$INDEX" PIP_INDEX_URL="$INDEX"
 # deepspeed's setup probes nvcc; a CUDA toolkit (no ops are built, DS_BUILD_OPS=0).
-export CUDA_HOME="${CUDA_HOME:-/root/autodl-tmp/pi-embodied/.local/tools/cuda-12.8}" DS_BUILD_OPS=0
+CUDA_DEFAULT="$LOCAL/tools/cuda-12.8"
+[ -d "$CUDA_DEFAULT" ] || CUDA_DEFAULT=/usr/local/cuda
+export CUDA_HOME="${CUDA_HOME:-$CUDA_DEFAULT}" DS_BUILD_OPS=0
 # No proxy: every download here is a China mirror or a GitHub release.
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
 

@@ -5,7 +5,7 @@
 """Fetch the released Show-Harness training data (showlab/Show-Harness-Data), pinned and verified.
 
     python -m pi_embodied_services.finetuned.download_dataset --splits real sim \\
-        --dest /root/autodl-tmp/pi-embodied/.local/data/Show-Harness-Data [--register --lf-root $LF_ROOT]
+        --dest <dir> (default <checkout>/.local/data/Show-Harness-Data) [--register --lf-root $LF_ROOT]
 
 writes ``<dest>/<split>/`` (``rollouts.json`` with image paths relative to it, the frames and
 ``episodes.jsonl``) plus ``README.md``, all from ``$HF_ENDPOINT`` (default https://hf-mirror.com) at
@@ -32,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from pi_embodied_services.finetuned.download import HEADERS, digest, endpoint, verified
+from pi_embodied_services.utils.config import get_local_dir
 
 REPO = "showlab/Show-Harness-Data"
 REVISION = "0c568ffa757ed02cc01780e553a54e8289af2b49"
@@ -127,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         "--splits", nargs="+", default=["real", "sim"], choices=sorted(SPLITS)
     )
     p.add_argument(
-        "--dest", default="/root/autodl-tmp/pi-embodied/.local/data/Show-Harness-Data"
+        "--dest", default=str(get_local_dir() / "data" / "Show-Harness-Data")
     )
     p.add_argument("--jobs", type=int, default=16)
     p.add_argument(
