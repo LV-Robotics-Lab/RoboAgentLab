@@ -7,8 +7,7 @@
  * that describe the held thing taken out, else "sitting on the ramekin" reads as a release and the
  * ramekin as the receiver (step 4 round 2 defect 3).
  *
- * Clean room: written from the spec's description of the original's behaviour (head words; the
- * receiving words with the held thing's place tail cut off and "is / are" phrases skipped).
+ * Derived from MotorMind (Motor-Mind/MotorMind-Code @3732bf3), used under the MIT License; see NOTICE.
  */
 
 /** Place prepositions that start a phrase describing where a thing stands. */

@@ -6,7 +6,7 @@
  * read off the measured segments. Every rule reads structured fields (`outcome`, `abort_reason`,
  * `grasp.holding`, `detail.opening_mm`), never a message.
  *
- * Clean room: written from the spec; constants are the spec's numbers.
+ * Derived from MotorMind (Motor-Mind/MotorMind-Code @3732bf3), used under the MIT License; see NOTICE.
  */
 
 import { actionLabel, fitToReach, pyFixed } from "./command.ts";

@@ -4,7 +4,7 @@
  * image centre, and a 4x4 camera-to-base extrinsic in the OpenCV convention (x right, y down, z
  * forward). Everything metric is in the robot's base frame, in metres; error bars are in mm.
  *
- * Clean room: these are the geometric rules of spec-locate, written from the spec.
+ * Derived from MotorMind (Motor-Mind/MotorMind-Code @3732bf3), used under the MIT License; see NOTICE.
  */
 
 import type { Box, Camera } from "./contract.ts";

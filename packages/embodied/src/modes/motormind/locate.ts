@@ -6,9 +6,9 @@
  * replace the fixed answer from close in. The answer is a base-frame point with a heuristic xy error
  * bar, how it was built, and every signal against it.
  *
- * Clean room: the rules, constants and failure handling are spec-locate's; the prompt is
- * ./prompts/locate.md, written to the intent spec-locate §2.4 describes. Unlike the original, a
- * failed model call is recorded apart from "not visible" (`failures`), with the same effect.
+ * Derived from MotorMind (Motor-Mind/MotorMind-Code @3732bf3), used under the MIT License; see NOTICE.
+ * The prompt is ./prompts/locate.md. Unlike the original, a failed model call is recorded apart from
+ * "not visible" (`failures`), with the same effect.
  */
 
 import type { Ask, Box, Camera, CameraName, RoleCallRecord, RoleReply } from "./contract.ts";
