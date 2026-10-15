@@ -85,6 +85,9 @@ export const median = (v: number[]) => {
 	return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
 };
 export const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** A failed start's message, naming the env server's log unless it already does. */
+export const withServerLog = (msg: string, log: string | undefined) =>
+	log && !msg.includes(log) ? `${msg} (env server log: ${log})` : msg;
 
 const TRACEBACK = "Traceback (most recent call last):";
 
@@ -357,7 +360,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	let finishing = false;
 	let claimed: Claim | undefined;
 	let signal: AbortSignal | undefined;
-	let server: { proc: ChildProcess; rpc: RpcClient } | undefined;
+	/** The `serve`d env server; `log` once it is up (its output goes there). */
+	let server: { proc: ChildProcess; rpc: RpcClient; log?: string } | undefined;
 	let turns = 0;
 	let started: number | undefined;
 	let outOfBudget: "turns" | "time" | "cost" | "tool_calls" | "tokens" | undefined;
@@ -842,8 +846,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			);
 			ready = true;
 		} catch (err) {
-			// Without a robot there is nothing to act on: no tools, and a non-interactive run exits.
-			failed = message(err);
+			// Without a robot there is nothing to act on: no tools, and a non-interactive run exits. The env
+			// server's own error (a traceback behind an RPC error) is in its log: the message names it.
+			failed = withServerLog(message(err), server?.log);
 			pi.setActiveTools([]);
 			if (ctx.hasUI) ctx.ui.notify(`${name} unavailable: ${failed}`, "error");
 			else {
@@ -1303,6 +1308,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			const owned = startService(o);
 			server = owned;
 			const log = await owned.ready;
+			if (server?.proc === owned.proc) server.log = log;
 			// Stopping clears ownership first; any other exit breaks this episode.
 			owned.proc.once("exit", (code, sig) => {
 				if (server?.proc === owned.proc) fail(`env server exited (${code ?? sig}); see ${log}`);

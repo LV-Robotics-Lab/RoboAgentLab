@@ -30,6 +30,11 @@ export const NOTICE_ENTRY = "pi-embodied-setup-notice";
 export const COMMAND = "embodied-setup";
 export const NOTICE =
 	"pi-embodied: run /embodied-setup to pick a robot, a mode and where the services run; the agent then installs and checks them.";
+/** Without a model the agent cannot run the install, and the planner modes have nothing to plan with. */
+export const NO_MODEL =
+	"/embodied-setup: no model is configured. The agent that runs the install (and the planner) needs one: run /login, or add a provider to ~/.pi/agent/models.json (pi's docs/models.md), then /embodied-setup again.";
+/** The quickstart's episode budget: an interactive episode has none by default and can run (and bill) for an hour. */
+export const BUDGET = "--max-turns 40 --time-limit 900";
 
 type Mode = "tools" | "units" | "finetuned" | "flash";
 export type Robot = {
@@ -241,7 +246,7 @@ function packageSource(pi: ExtensionAPI): string {
 	return PKG;
 }
 
-/** The launch flags for a choice (after `pi`). */
+/** The launch flags for a choice (after `pi`), with the quickstart's episode budget. */
 export function launchFlags(c: Choice): string {
 	const mode =
 		c.mode === "units"
@@ -251,7 +256,7 @@ export function launchFlags(c: Choice): string {
 				: c.mode === "flash"
 					? "--model flash/replay"
 					: "";
-	return [c.robot.task, mode, "--dashboard=true"].filter(Boolean).join(" ");
+	return [c.robot.task, mode, BUDGET, "--dashboard=true"].filter(Boolean).join(" ");
 }
 
 /** The experiment directory's settings: this package without onboarding, the robot, the dashboard, the planner. */
@@ -282,9 +287,17 @@ export function experimentSettings(c: Choice, source: string, root: string, exis
 	return out;
 }
 
+/** The command that starts an episode: the experiment directory, the environment setup.sh wrote, pi. */
+export function launchCommand(c: Choice): string {
+	return `cd ${c.dir} && source ${c.services}/.venv-${c.robot.id}/pi-embodied.env && pi ${launchFlags(c)}`;
+}
+
+/** A model the agent can run on: pi's placeholder `unknown/unknown` (no model configured) is none. */
+const realModel = (m: { provider: string; id: string } | undefined) =>
+	m && !(m.provider === "unknown" && m.id === "unknown") ? `${m.provider}/${m.id}` : undefined;
+
 function handoff(c: Choice, settingsText: string): string {
 	const setup = `${c.services}/setup.sh ${c.robot.id}${c.weights ? " --weights" : ""}`;
-	const venv = `${c.services}/.venv-${c.robot.id}`;
 	const where = c.remote
 		? `remote: run everything on \`ssh ${c.remote.host}\` in the checkout ${c.remote.checkout} (clone ${REPO} there if missing); the robot runs where pi runs, so pi and the experiment directory go on the box too`
 		: existsSync(c.services)
@@ -313,7 +326,7 @@ function handoff(c: Choice, settingsText: string): string {
 		c.model ? `- planner: ${c.model}` : "- planner: the policy named in the launch flags",
 		...finetuned,
 		`- experiment dir: ${c.dir}; ${settings}`,
-		`- launch: \`cd ${c.dir} && source ${venv}/pi-embodied.env && pi ${launchFlags(c)}\``,
+		`- launch: \`${launchCommand(c)}\``,
 		"- trust: the first pi in the experiment dir asks whether to trust the project (its .pi/settings.json loads the robot extension); I answer yes there, or the robot does not load (/trust saves the decision)",
 		"Run the install, then the preflight, fix what fails, and end with the launch command. Ask me before sudo, anything touching real hardware, or downloads not listed here.",
 	].join("\n");
@@ -329,6 +342,12 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 		return;
 	}
 	const ui = ctx.ui;
+	const current = realModel(ctx.model);
+	const available = ctx.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`);
+	if (!available.length) {
+		ui.notify(NO_MODEL, "error");
+		return;
+	}
 	const robotOpts = ROBOTS.map((r) => `${r.label}: ${r.needs}`);
 	const robot = ROBOTS[robotOpts.indexOf((await ui.select("Robot or benchmark", robotOpts)) ?? "")];
 	if (!robot) return;
@@ -355,18 +374,15 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 
 	let model: string | undefined;
 	if (mode === "tools" || mode === "units") {
-		const current = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-		const ids = ctx.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`);
-		const opts = [...new Set([...(current ? [current] : []), ...ids])];
-		model = opts.length
-			? await ui.select("Planner model", opts)
-			: (await ui.input("Planner model", "provider/model"))?.trim();
+		model = await ui.select("Planner model", [...new Set([...(current ? [current] : []), ...available])]);
 		if (!model?.includes("/")) return;
 	}
 	const weights =
 		mode === "tools" && robot.weights ? await ui.confirm("Model weights", `Also download ${robot.weights}?`) : false;
-	const answer = (await ui.input("Experiment directory", join(ctx.cwd, `embodied-${robot.id}`)))?.trim();
-	const dir = resolve(ctx.cwd, (answer || join(ctx.cwd, `embodied-${robot.id}`)).replace(/^~(?=\/|$)/, homedir()));
+	const fallback = join(ctx.cwd, `embodied-${robot.id}`);
+	// The title names the default: an empty input field shows no placeholder in every TUI.
+	const answer = (await ui.input(`Experiment directory (empty: ${fallback})`, fallback))?.trim();
+	const dir = resolve(ctx.cwd, (answer || fallback).replace(/^~(?=\/|$)/, homedir()));
 	const choice: Choice = { robot, mode, remote, services, weights, model, dir };
 
 	const file = join(dir, ".pi", "settings.json");
@@ -388,7 +404,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 		remote ? `services on ${remote.host}:${services}` : `services at ${services}`,
 		`install: ${services}/setup.sh ${robot.id}${weights ? " --weights" : ""}${mode === "finetuned" ? ", the adapter download and the vLLM server" : ""}; the agent runs it after this confirmation (pi does not ask per step)`,
 		remote ? "settings: the agent writes them on the box" : `writes ${file}`,
-		`launch: cd ${dir} && pi ${launchFlags(choice)}`,
+		`launch: ${launchCommand(choice)}`,
 	].join("\n");
 	if (!(await ui.confirm("Set up pi-embodied?", summary))) {
 		ui.notify("Nothing written or installed.", "info");
