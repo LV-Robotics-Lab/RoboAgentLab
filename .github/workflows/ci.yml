@@ -40,7 +40,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: python3 -m pip install --user -q uv==0.12.17
-      - run: services/test.sh
+      # As root, like a deployed env server: run_code isolates programs under their own uid, which needs root.
+      - run: sudo env "PATH=$PATH" services/test.sh
 
   audit:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
