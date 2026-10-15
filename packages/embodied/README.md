@@ -36,12 +36,15 @@ mkdir -p ~/robot-runs && cd ~/robot-runs && pi        # a notice points to /embo
 
 `/embodied-setup` asks for the robot or benchmark (and what it needs: GPU, Isaac Sim, real hardware
 and an operator), the mode (tools, units, fine-tuned, flash), where the services run (here, or a
-remote GPU box over ssh) and the planner model; it stops when pi has no model. After you confirm, it
+remote GPU box over ssh), the planner model (tools and units modes) and the experiment directory
+(`Experiment directory (empty: <cwd>/embodied-<robot>)`). Without a model it says how to add one
+(`/login`, or `~/.pi/agent/models.json`) and exits without writing anything. After you confirm, it
 writes the experiment directory's `.pi/settings.json` and asks the agent to follow the
 `embodied-quickstart` skill: run `services/setup.sh <robot>` (venv, pyproject extra, assets,
 `--weights` for checkpoints), then the preflight (`node src/infra/check.ts <robot>`; `/robot-check`
 inside a robot session), and report the launch command. The agent runs each step with its bash
-tool, under your normal approvals.
+tool; pi does not ask per step, so your confirmation covers the install, and the agent asks before
+sudo, real hardware or a download the plan does not list.
 
 The experiment directory's settings load the robot through `extensions` and drop the onboarding
 extension with a delta entry for this package (pi's package filters only narrow what the manifest
@@ -57,13 +60,14 @@ declares, so they cannot add a robot):
 ```
 
 Settings cannot carry extension flags, so the task, the mode and the budget stay on the command
-line:
+line. The launch command `/embodied-setup` prints for LIBERO in units mode (with absolute paths):
 
 ```bash
-cd ~/robot-runs/embodied-libero && source ~/pi-embodied/services/.venv-libero/pi-embodied.env
-pi --libero-type standard --suite libero_10 --task 0 --seed 0 --units=true --dashboard=true \
-  --max-turns 40 --time-limit 900 --thinking low
+cd ~/robot-runs/embodied-libero && source ~/pi-embodied/services/.venv-libero/pi-embodied.env && pi --libero-type standard --suite libero_10 --task 0 --seed 0 --units=true --max-turns 40 --time-limit 900 --dashboard=true
 ```
+
+With a planner that has thinking levels, `--thinking low` may be added (pi clamps it to the model's
+levels).
 
 The robot resets the scene and waits for a prompt: type `Solve the task.` to start the episode. In
 print mode the prompt goes on the command line:
@@ -538,9 +542,13 @@ them into both plugins and generates `codex/.mcp.json`; `test/integrations.test.
 
 Needs the repository's Python services (`services/`, package `pi_embodied_services`) installed
 with the `[libero]` extra: `services/setup.sh libero` builds `services/.venv-libero` and installs
-the scene assets (standard LIBERO, `--libero-type standard`). `services/setup.sh libero-pro` and
-`libero-plus` install LIBERO-PRO (`--libero-type pro`, the flag's default, with suites such as
-`libero_10_task`) and LIBERO-Plus (`--libero-type plus`) in their own venvs; see services/README.md.
+the scene assets (standard LIBERO, `--libero-type standard`): `RLinf/LIBERO-PRO-assets` pinned at
+`e4b10c9a`, about 430 MB, checked file by file and linked as the package's `libero/libero/assets`
+(`--no-assets` skips them; the preflight then FAILs on the missing scene). `services/setup.sh
+libero-pro` and `libero-plus` install LIBERO-PRO (`--libero-type pro`, the flag's default, with
+suites such as `libero_10_task`) and LIBERO-Plus (`--libero-type plus`) in their own venvs;
+libero-pro also links standard LIBERO's assets to LIBERO-PRO's verified download. See
+services/README.md.
 The extension speaks the services' HTTP RPC directly.
 Robots spawn their env servers from `services_dir` of the deployment config (env
 `PI_EMBODIED_SERVICES`, default the repo's `services/`) with `PYTHONPATH` set to it; `serve.sh` and `eval.sh` default to the same directory.

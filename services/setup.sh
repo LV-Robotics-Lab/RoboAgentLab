@@ -7,7 +7,7 @@
 #   services/setup.sh <target> [--venv DIR] [--weights] [--weights-dir DIR] [--no-assets] [--dry-run]
 #
 # Targets (the extra, the Python, and what else it fetches):
-#   libero          [libero] py3.11, LIBERO scene assets (RLinf/LIBERO-PRO-assets, ~414 MB, pinned and
+#   libero          [libero] py3.11, LIBERO scene assets (RLinf/LIBERO-PRO-assets, ~430 MB, pinned and
 #                   checked file by file; robots/libero/assets.py)   --weights: Pi0.5 LIBERO SFT, SAM3 (gated)
 #   libero-pro      [libero-pro] py3.11, LIBERO-PRO assets (patched downloader), linked for standard LIBERO
 #                   too   --weights: as libero

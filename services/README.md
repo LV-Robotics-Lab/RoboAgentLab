@@ -62,7 +62,9 @@ and checkpoints); behind a restricted network see
 # LIBERO (+ SAM3 + Pi0.5 via RLinf's openpi fork; mujoco==3.3.0)
 uv venv services/.venv-libero --python 3.11 && source services/.venv-libero/bin/activate
 uv pip install -e "services[libero]"          # or [libero-pro] / [libero-plus]
-# The scene assets are not in the package: services/setup.sh libero (or libero-pro) installs them.
+# The scene assets are not in the package: services/setup.sh libero (or libero-pro) links them, or
+# by hand (RLinf/LIBERO-PRO-assets at e4b10c9a, ~430 MB, every file checked, then linked):
+python -m pi_embodied_services.robots.libero.assets
 
 # RoboCasa (RLDX-1 needs Python 3.10; install a CUDA torch>=2.7/torchvision>=0.22 pair first)
 uv venv services/.venv-robocasa --python 3.10 && source services/.venv-robocasa/bin/activate
@@ -74,7 +76,9 @@ uv pip install -e "services[robocasa]" \
 
 # ManiSkill: the stock scenes need no assets; the Show-Harness real2sim rigs BlockPAP-v1
 # (default) / BlockStack-v1 come from github.com/AaronCaoZJ/RLinf (Apache-2.0):
-#   bash services/pi_embodied_services/robots/maniskill/fetch_real2sim.sh
+#   bash services/pi_embodied_services/robots/maniskill/fetch_real2sim.sh [dest]
+# (default dest <checkout>/.local/assets/RLinf-real2sim and PYTHON services/.venv-maniskill's when it
+# exists; setup.sh maniskill passes its weights dir)
 # (sparse-clones the rig code, fetches the table textures with sha256 checks, and writes
 # BlockStack's extended-finger Panda URDF, which is not published anywhere).
 
@@ -317,7 +321,11 @@ GIT_PROXY=http://<proxy host>:<port> bash services/pi_embodied_services/finetune
 
 Then `train.sh` turns GUMI recordings (or `--from-lerobot` datasets, or `--from-rollouts`
 generated ones) into a LoRA adapter, `serve.sh` serves base + adapter on an OpenAI-compatible vLLM
-endpoint, and `episode.sh` runs pi episodes against it (usage in each script's header). The
+endpoint, and `episode.sh` runs pi episodes against it (usage in each script's header). Their
+machine-local defaults are under `<checkout>/.local` (gitignored; the checkout of
+`$PI_EMBODIED_SERVICES` when it is set, else the scripts' own): checkpoints `$PI_EMBODIED_WEIGHTS`
+first, venvs `services/.venv-<name>` from `setup.sh` where one exists (`llamafactory`), else
+`.local/venvs/<name>`; every explicit variable wins. The
 Show-Harness files training reads (github.com/showlab/Show-Harness @137d571, Apache-2.0: the
 `rollouts_to_alpaca.py` converter and its `prompts/v3`, `v4`, `register_dataset.py`, the four
 `train/configs`, the LLaMA-Factory extension and their `train/scripts/train.sh`) are vendored under

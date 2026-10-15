@@ -54,20 +54,20 @@ yes. Inside pi:
 
 1. `/login` to connect a provider, or configure one in `~/.pi/agent/models.json`
    ([providers](packages/coding-agent/docs/providers.md), [models](packages/coding-agent/docs/models.md)).
-   `/embodied-setup` stops when pi has no model.
-2. `/embodied-setup`: pick LIBERO, mode units, services here, your model, and the default experiment
-   directory (`~/robot-runs/embodied-libero`). After you confirm, the agent runs
-   `services/setup.sh libero` (venv, packages and the LIBERO scene assets) and the preflight, and
-   ends with the launch command.
+   Without a model `/embodied-setup` says how to add one and exits without writing anything.
+2. `/embodied-setup`: pick LIBERO, mode units, services here and your model; at
+   `Experiment directory (empty: …)` press Enter for the default, `~/robot-runs/embodied-libero`.
+   After you confirm, the agent runs `services/setup.sh libero` (venv, packages and the LIBERO scene
+   assets, about 430 MB) and the preflight, and ends with the launch command.
 
-Then start the episode with a budget:
+The launch command `/embodied-setup` prints (with absolute paths) carries the episode budget:
 
 ```bash
-cd ~/robot-runs/embodied-libero
-source ~/pi-embodied/services/.venv-libero/pi-embodied.env
-pi --libero-type standard --suite libero_10 --task 0 --seed 0 --units=true --dashboard=true \
-  --max-turns 40 --time-limit 900 --thinking low
+cd ~/robot-runs/embodied-libero && source ~/pi-embodied/services/.venv-libero/pi-embodied.env && pi --libero-type standard --suite libero_10 --task 0 --seed 0 --units=true --max-turns 40 --time-limit 900 --dashboard=true
 ```
+
+With a model that has thinking levels, `--thinking low` keeps each turn's reasoning short (pi clamps
+the level to what the model supports).
 
 pi asks once whether to trust the experiment directory (its settings load the robot); answer yes.
 The robot resets the scene and waits: type `Solve the task.` to start the episode. The dashboard URL
@@ -94,9 +94,10 @@ China. The install still works through mirrors or a proxy:
 - GitHub: the extras clone repositories with submodules during `uv pip install`; route git through
   a proxy (`https_proxy`) if a clone stalls.
 - Hugging Face: `HF_ENDPOINT=https://hf-mirror.com`. The mirror rate-limits (HTTP 429) downloads of
-  datasets with many files, such as the LIBERO-PRO assets; retry, or download from huggingface.co
-  through a proxy. `pi-embodied.env` does not set `HF_ENDPOINT`, so export it in the shell that
-  runs pi as well.
+  datasets with many files, such as the LIBERO scene assets (`RLinf/LIBERO-PRO-assets`, 865 files) of
+  `setup.sh libero` and `libero-pro`; rerun `setup.sh` (it resumes, and links the assets only once
+  every file is there), or download from huggingface.co through a proxy. `pi-embodied.env` does not
+  set `HF_ENDPOINT`, so export it in the shell that runs pi as well.
 - PyPI: `UV_INDEX_URL` / `PIP_INDEX_URL` pointing at a PyPI mirror.
 - PyTorch CUDA wheels: a mirror of `download.pytorch.org/whl/cu128`, used with `--find-links`.
 

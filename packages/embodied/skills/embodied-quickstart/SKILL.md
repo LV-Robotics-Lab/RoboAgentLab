@@ -12,10 +12,12 @@ every command over `ssh <host>`; pi and the experiment directory live on the box
 
 ## 1. Pick
 
-`/embodied-setup` asks for the robot, the mode, where services run and the planner, and writes the
-experiment directory's `.pi/settings.json`: the robot extension, the dashboard, and this package
-without its onboarding extension. A robot extension replaces the coding tools, so start pi for the
-robot only in that directory. Settings cannot hold flags; the task and mode go on the command line.
+`/embodied-setup` asks for the robot, the mode, where services run, the planner (tools and units
+modes) and the experiment directory, and writes the experiment directory's `.pi/settings.json`: the
+robot extension, the dashboard, and this package without its onboarding extension. A robot extension
+replaces the coding tools, so start pi for the robot only in that directory. Settings cannot hold
+flags; the task and mode go on the command line. With no model configured it writes nothing and
+tells the user to `/login` or add a provider to `~/.pi/agent/models.json`.
 
 Modes: tools (default), units (`--units=true`; `--units=both` keeps the tools), code (`--code=true`,
 CaP-X run_code; `--tier S1..S4|M1..M4` sets a whole CaP-X tier, `--preset showharness|rpent|openeta|
@@ -26,9 +28,10 @@ ManiSkill, RoboLab, RoboDojo).
 Fine-tuned mode needs two more steps after the install: `FT_ADAPTER=<adapter> services/setup.sh
 finetuned` (default `qwen3_5_2b_sim`) fetches the released adapter and its base model with
 `finetuned/download.py` (pinned, verified), and `services/pi_embodied_services/finetuned/serve.sh`
-(`MODEL`, `LORA`, `VLLM_VENV` as setup.sh prints them) serves them on the vLLM endpoint the
-deployment's `services.finetuned` names (default http://127.0.0.1:8010/v1). Start it before the
-episodes and leave it running. LIBERO's adapters are the user's own (`--model finetuned/local
+(`MODEL`, `LORA`, `VLLM_VENV` as setup.sh prints them; serve.sh's own defaults are
+`$PI_EMBODIED_WEIGHTS`, else `<checkout>/.local/checkpoints`, and `<checkout>/.local/venvs/vllm`)
+serves them on the vLLM endpoint the deployment's `services.finetuned` names (default
+http://127.0.0.1:8010/v1). Start it before the episodes and leave it running. LIBERO's adapters are the user's own (`--model finetuned/local
 --ft-model <served adapter>`).
 
 The user confirms the plan once in `/embodied-setup`; pi does not gate each tool call, so ask before
@@ -57,9 +60,12 @@ libero-plus, maniskill, metaworld, robosuite, genesis, robocasa, robotwin, robol
 behavior, humanclaw, franka, franka-polymetis, dual-franka, piper, ur5e; others: finetuned,
 llamafactory, flywheel (LeRobot export), graspnet1b. Most create `services/.venv-<target>` with the
 matching extra; robolab, robodojo, behavior (Isaac Sim 6.1) and humanclaw (Habitat-Sim) run their
-install scripts on a checkout under `$HOME` (or `<NAME>_ROOT`). Assets (`--no-assets` skips them) and
-`--weights` go to `$PI_EMBODIED_WEIGHTS` (default `~/.cache/pi-embodied`); libero and libero-pro both
-fetch the LIBERO scene assets (about 400 MB from Hugging Face). It writes
+install scripts on a checkout under `$HOME` (or `<NAME>_ROOT`). `--weights` go to
+`$PI_EMBODIED_WEIGHTS` (default `~/.cache/pi-embodied`), as do most targets' assets; `--no-assets`
+skips the assets. libero fetches
+the LIBERO scene assets (`RLinf/LIBERO-PRO-assets` pinned at `e4b10c9a`, about 430 MB) into the
+Hugging Face cache, checks every file the Hub lists and links the package's `libero/libero/assets`
+to them; libero-pro links the same directory to LIBERO-PRO's own verified download. It writes
 `<venv>/pi-embodied.env`; `source` it before pi, `serve.sh` and `eval.sh`; it holds absolute paths. Mirrors (for example from
 mainland China): `HF_ENDPOINT=https://hf-mirror.com` (it can answer HTTP 429 for datasets with many
 files; retry, or use huggingface.co through a proxy), `UV_INDEX_URL` / `PIP_INDEX_URL`, a PyTorch
@@ -89,14 +95,18 @@ Fix every FAIL before running (LIBERO: a missing scene asset is a FAIL; rerun `s
 
 ## 4. One episode
 
+The launch command `/embodied-setup` hands over (`[mode flags]`: none in tools mode, `--units=true` in
+units mode, `--units=true` and the adapter's `--model ...` flags in fine-tuned mode, `--model
+flash/replay` in flash mode):
+
 ```bash
-cd <experiment dir> && source <repo>/services/.venv-<target>/pi-embodied.env
-pi <task flags> [--units=true] --dashboard=true --max-turns 40 --time-limit 900 --thinking low
+cd <experiment dir> && source <services>/.venv-<target>/pi-embodied.env && pi <task flags> [mode flags] --max-turns 40 --time-limit 900 --dashboard=true
 ```
 
 Always give the user the command with a budget: every turn sends camera images, and without
 `--max-turns` / `--time-limit` (default no limit) an episode runs until the model calls `finish`,
-which against a paid API can cost a lot. `--thinking low` applies to models with a thinking level.
+which against a paid API can cost a lot. With a planner that has thinking levels, `--thinking low`
+may be added (pi clamps it to the model's levels).
 After the start the robot waits for a prompt: the user types `Solve the task.` (or another
 instruction). For a first run without the terminal UI:
 `pi -a -p <task flags> [--units=true] --max-turns 40 --time-limit 900 --thinking low "Solve the task."`.
@@ -138,8 +148,11 @@ the same out dir is refused. `src/scripts/eval-parallel.sh [-j N --gpus LIST] [-
 
 ## Common failures
 
-- `[robot] unavailable: ...` at start: the env server did not come up; the message names its log
-  (LIBERO: `/tmp/pi-embodied-env-<suite>-t<task>-s<seed>-<port>.log`). Read it, then run the preflight.
+- `<robot> unavailable: ...` at start (`[<robot>] unavailable: ...` with `-p`): the robot did not start.
+  Once its env server has bound its port, the message names the server's log (`... (env server log:
+  <path>)` or `see <path>`; LIBERO: `/tmp/pi-embodied-env-<suite>-t<task>-s<seed>-<port>.log`), where
+  the traceback is; a server that exits before that carries its printed output in the message
+  instead. Read it, then run the preflight.
 - No robot (no `/robot-task`, the coding tools are back) in the experiment directory: project trust
   was declined, or `pi -p` ran without `-a`; start pi there again and accept, or `/trust`.
 - Import errors in the preflight: wrong venv (or the deployment's `python.<robot>` names another).
@@ -149,6 +162,9 @@ the same out dir is refused. `src/scripts/eval-parallel.sh [-j N --gpus LIST] [-
   cuRobo built against it (services/README.md).
 - LIBERO renders black or crashes: `MUJOCO_GL=egl` needs an NVIDIA EGL driver; pick the GPU with
   `MUJOCO_EGL_DEVICE_ID`. MuJoCo must stay `3.3.0`.
+- `LIBERO assets: incomplete download of RLinf/LIBERO-PRO-assets ...`: rerun `setup.sh libero` (it
+  resumes; nothing is linked until every file is there). `... holds files but not <scene>`: an old
+  `libero/libero/assets` directory is in the way; move it and rerun.
 - LIBERO-PRO assets "ready" but tasks missing files: rerun `setup.sh libero-pro`; its patched
   downloader verifies every file. `FileNotFoundError` under an old venv path: `~/.liberopro/config.yaml`
   (and `~/.libero/`) keep absolute paths; rewrite them after moving the venv, or set `LIBERO_CONFIG_PATH`.
