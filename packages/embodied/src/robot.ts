@@ -423,7 +423,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		type: "string",
 		default: "false",
 		description:
-			"Mark the task message and the newest message as explicit prompt-cache breakpoints for NInfer (true / false, true on the selfhost provider; Strata ignores the marker; ./planner/cache-breakpoints.ts)",
+			"Mark the task message and the newest message as explicit prompt-cache breakpoints, for an OpenAI-compatible server that caches prompt prefixes at marked points (true / false, true on the selfhost provider; servers without such caching ignore the marker; ./planner/cache-breakpoints.ts)",
 	});
 	pi.registerFlag("max-turns", {
 		type: "string",

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# fixed-regression.sh <new-output-directory> <environment-directory> [provider/model]
+# fixed-regression.sh <new-output-directory> <environment-directory> <provider/model>
 # Environment directory contains metaworld-env.sh, maniskill-env.sh and libero-env.sh.
 # Run under the host's GPU lock. The six cells are sequential, with independent empty memories.
 set -euo pipefail
-[ "$#" -ge 2 ] && [ "$#" -le 3 ] || { echo "usage: $0 <new-out> <env-dir> [provider/model]" >&2; exit 2; }
+[ "$#" -eq 3 ] || { echo "usage: $0 <new-out> <env-dir> <provider/model>" >&2; exit 2; }
 root=$(cd "$(dirname "$0")/../../../.." && pwd)
 out=$1
 envdir=$(cd "$2" && pwd)
-model=${3:-relay/gpt-6-astra}
+model=$3
 for robot in metaworld maniskill libero; do
  [ -f "$envdir/$robot-env.sh" ] || { echo "missing $envdir/$robot-env.sh" >&2; exit 2; }
 done

@@ -57,7 +57,7 @@ function checkout() {
 test("fixed-regression.sh runs its six cells with flags the eval scripts accept, and a fresh memory per cell through dirs.memory", () => {
 	const c = checkout();
 	const out = join(c.root, "results");
-	const r = spawnSync("bash", [join(c.scripts, "fixed-regression.sh"), out, c.env], {
+	const r = spawnSync("bash", [join(c.scripts, "fixed-regression.sh"), out, c.env, "example/planner"], {
 		env: { ...process.env, PATH: `${c.bin}:${process.env.PATH}` },
 		encoding: "utf8",
 	});
@@ -83,14 +83,14 @@ test("fixed-regression.sh runs its six cells with flags the eval scripts accept,
 			assert.ok(!argv.some((a) => a.startsWith("--memory-dir")), `${robot} ${seed}: --memory-dir is gone`);
 			for (const flag of ["--units=true", "--code=false", "--thinking", "--memory-profile"])
 				assert.ok(argv.includes(flag), flag);
-			assert.equal(argv[argv.indexOf("--model") + 1], "relay/gpt-6-astra", "the default model");
+			assert.equal(argv[argv.indexOf("--model") + 1], "example/planner", "the model argument");
 			const memory = join(out, `memory-${robot}-${seed}`);
 			assert.equal(readFileSync(join(cell, "memory"), "utf8").trim(), memory);
 			assert.match(readFileSync(join(memory, "MEMORY.md"), "utf8"), /No stored task recipes/);
 		}
 	}
 	assert.equal(readFileSync(join(out, "commit.txt"), "utf8"), readFileSync(join(out, "commit-after.txt"), "utf8"));
-	assert.equal(readFileSync(join(out, "model.txt"), "utf8").trim(), "relay/gpt-6-astra");
+	assert.equal(readFileSync(join(out, "model.txt"), "utf8").trim(), "example/planner");
 	assert.ok(existsSync(join(out, "completed.txt")));
 	// The stand-in eval.sh refuses the old flag like the real ones: the test would catch its return.
 	const old = spawnSync(
@@ -111,9 +111,16 @@ test("fixed-regression.sh runs its six cells with flags the eval scripts accept,
 	assert.match(old.stderr, /--memory-dir is gone/);
 });
 
-test("fixed-regression.sh takes the model as its third argument", () => {
+test("fixed-regression.sh takes the model as its third argument and has no default", () => {
 	const c = checkout();
 	const out = join(c.root, "results");
+	const none = spawnSync("bash", [join(c.scripts, "fixed-regression.sh"), out, c.env], {
+		env: { ...process.env, PATH: `${c.bin}:${process.env.PATH}` },
+		encoding: "utf8",
+	});
+	assert.equal(none.status, 2);
+	assert.match(none.stderr, /usage: .* <new-out> <env-dir> <provider\/model>/);
+	assert.ok(!existsSync(out), "nothing is written without a model");
 	const r = spawnSync("bash", [join(c.scripts, "fixed-regression.sh"), out, c.env, "selfhost/qwen3.8-27b"], {
 		env: { ...process.env, PATH: `${c.bin}:${process.env.PATH}` },
 		encoding: "utf8",

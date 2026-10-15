@@ -59,12 +59,13 @@ sequentially. This diagnostic is too small to estimate general task ability.
 Run from a clean, built checkout under the host's GPU reservation:
 
 ```sh
-bash packages/embodied/src/scripts/fixed-regression.sh /path/to/new-results /path/to/env-files
+bash packages/embodied/src/scripts/fixed-regression.sh /path/to/new-results /path/to/env-files <provider>/<model>
 ```
 
 The environment directory provides `metaworld-env.sh`, `maniskill-env.sh` and
-`libero-env.sh`, with backend Python, rendering, GPU and asset locations. Model
-credentials remain in pi's existing registry. The runner selects this checkout's
+`libero-env.sh`, with backend Python, rendering, GPU and asset locations. The
+third argument is the planner model, as `pi --model` takes it; its credentials
+remain in pi's existing registry. The runner selects this checkout's
 CLI and services, rejects reused output directories, and records Git version
 before and after. Build from that same clean version before running. Report
 successes out of all six planned cells as well as valid cells; model/transport
