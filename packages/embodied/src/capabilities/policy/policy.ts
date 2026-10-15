@@ -172,7 +172,7 @@ export async function openPolicy(options: {
 				return state.lastAction ? { ...state.lastAction } : null;
 			}, ctx);
 			return {
-				content: [
+				output: [
 					...text({
 						episode: observation.episode,
 						revision: observation.revision,
@@ -217,7 +217,7 @@ export async function openPolicy(options: {
 				const state = await tx.doc(PolicyDoc, api.conversationId);
 				if (state.lastAction?.callId === api.callId) state.lastAction.outcome = "returned";
 			}, ctx);
-			return { content };
+			return { output: content };
 		},
 	});
 	const finish = defineTool({
@@ -242,7 +242,7 @@ export async function openPolicy(options: {
 				goal.summary = args.summary;
 				state.observation = null;
 			}, ctx);
-			return { content: text(args), control: { terminate: true } };
+			return { output: text(args), control: { terminate: true } };
 		},
 	});
 	const remember = defineTool({
@@ -256,7 +256,7 @@ export async function openPolicy(options: {
 			await api.commit(async (tx) => {
 				(await tx.doc(PolicyDoc, api.conversationId)).memory = args.memory;
 			}, ctx);
-			return { content: text({ saved: true }) };
+			return { output: text({ saved: true }) };
 		},
 	});
 	const registry = createRegistry();

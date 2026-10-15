@@ -7,8 +7,8 @@ import {
 	INTRODUCED,
 	NUMERIC,
 	numberError,
-	params,
 	PROVIDER_DEFAULTS,
+	params,
 	providerDefault,
 	trackedFlags,
 	trackFlags,
@@ -146,7 +146,8 @@ test("the result records the extras that were on, every experiment flag (params)
 
 test("a flag PROVIDER_DEFAULTS names reads as the session provider's value unless given; params records it, params_default the registration", async () => {
 	assert.deepEqual(Object.keys(PROVIDER_DEFAULTS), ["selfhost"]);
-	for (const name of Object.keys(PROVIDER_DEFAULTS.selfhost)) assert.ok(name in INTRODUCED, `${name} is a flipped default: listed in INTRODUCED`);
+	for (const name of Object.keys(PROVIDER_DEFAULTS.selfhost))
+		assert.ok(name in INTRODUCED, `${name} is a flipped default: listed in INTRODUCED`);
 	assert.equal(providerDefault("replay-thinking", "selfhost"), "none");
 	assert.equal(providerDefault("replay-thinking", "relay"), undefined);
 	assert.equal(providerDefault("replay-thinking", undefined), undefined);
@@ -195,19 +196,45 @@ test("a flag PROVIDER_DEFAULTS names reads as the session provider's value unles
 			process.argv = saved;
 		}
 		const r = entries.find((e) => e.type === RESULT_ENTRY)?.data;
-		const pick = (o: Record<string, unknown>) => [o["replay-thinking"], o["image-trim-every"], o["cache-breakpoints"]];
-		return { ran: pick(r.params), def: pick(r.params_default), read: pick({ ...Object.fromEntries(["replay-thinking", "image-trim-every", "cache-breakpoints"].map((n) => [n, pi.getFlag(n)])) }) };
+		const pick = (o: Record<string, unknown>) => [
+			o["replay-thinking"],
+			o["image-trim-every"],
+			o["cache-breakpoints"],
+		];
+		return {
+			ran: pick(r.params),
+			def: pick(r.params_default),
+			read: pick({
+				...Object.fromEntries(
+					["replay-thinking", "image-trim-every", "cache-breakpoints"].map((n) => [n, pi.getFlag(n)]),
+				),
+			}),
+		};
 	};
 	const self = await run("selfhost", {});
 	assert.deepEqual(self.read, ["none", "8", "true"], "the robot reads the selfhost defaults");
 	assert.deepEqual(self.ran, ["none", "8", "true"], "params records what ran");
 	assert.deepEqual(self.def, ["false", "0", "false"], "params_default stays the registered default (INTRODUCED's)");
-	assert.deepEqual((await run("relay", {})).ran, ["false", "0", "false"], "another provider keeps the registered defaults");
+	assert.deepEqual(
+		(await run("relay", {})).ran,
+		["false", "0", "false"],
+		"another provider keeps the registered defaults",
+	);
 	assert.deepEqual((await run(undefined, {})).ran, ["false", "0", "false"], "no model: the registered defaults");
 	// Given at another value: kept. Given at the registered default: known from the command line, kept too.
-	assert.deepEqual((await run("selfhost", { "replay-thinking": "true", "image-trim-every": "4" })).ran, ["true", "4", "true"]);
+	assert.deepEqual((await run("selfhost", { "replay-thinking": "true", "image-trim-every": "4" })).ran, [
+		"true",
+		"4",
+		"true",
+	]);
 	assert.deepEqual(
-		(await run("selfhost", { "replay-thinking": "false", "cache-breakpoints": "false" }, ["--replay-thinking", "false", "--cache-breakpoints=false"])).ran,
+		(
+			await run("selfhost", { "replay-thinking": "false", "cache-breakpoints": "false" }, [
+				"--replay-thinking",
+				"false",
+				"--cache-breakpoints=false",
+			])
+		).ran,
 		["false", "8", "false"],
 	);
 });

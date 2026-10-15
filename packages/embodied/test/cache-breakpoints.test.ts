@@ -133,7 +133,11 @@ test("on the selfhost provider (NInfer) the breakpoints are the default; given, 
 		"the cache-friendly context is the selfhost default, recorded as what ran",
 	);
 	assert.deepEqual(
-		[r.params_default["cache-breakpoints"], r.params_default["replay-thinking"], r.params_default["image-trim-every"]],
+		[
+			r.params_default["cache-breakpoints"],
+			r.params_default["replay-thinking"],
+			r.params_default["image-trim-every"],
+		],
 		["false", "false", "0"],
 		"params_default stays the registered default",
 	);
