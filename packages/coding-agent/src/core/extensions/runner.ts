@@ -378,6 +378,9 @@ export class ExtensionRunner {
 	private waitForIdleFn: () => Promise<void> = async () => {};
 	private abortFn: () => void = () => {};
 	private hasPendingMessagesFn: () => boolean = () => false;
+	private withdrawQueuedMessageFn: (text: string) => boolean = () => false;
+	private exportSessionFn: (format: "jsonl" | "html", outputPath: string) => Promise<string> = () =>
+		Promise.reject(new Error("session export is not available"));
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
@@ -451,6 +454,8 @@ export class ExtensionRunner {
 		this.getSignalFn = contextActions.getSignal;
 		this.abortFn = contextActions.abort;
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
+		this.withdrawQueuedMessageFn = contextActions.withdrawQueuedMessage ?? (() => false);
+		if (contextActions.exportSession) this.exportSessionFn = contextActions.exportSession;
 		this.shutdownHandler = contextActions.shutdown;
 		this.getContextUsageFn = contextActions.getContextUsage;
 		this.compactFn = contextActions.compact;
@@ -941,6 +946,14 @@ export class ExtensionRunner {
 			hasPendingMessages: () => {
 				runner.assertActive();
 				return runner.hasPendingMessagesFn();
+			},
+			withdrawQueuedMessage: (text: string) => {
+				runner.assertActive();
+				return runner.withdrawQueuedMessageFn(text);
+			},
+			exportSession: (format: "jsonl" | "html", outputPath: string) => {
+				runner.assertActive();
+				return runner.exportSessionFn(format, outputPath);
 			},
 			shutdown: () => {
 				runner.assertActive();

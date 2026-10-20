@@ -1,0 +1,266 @@
+/**
+ * A robot's experiment parameters (PARAMS.md 2.6, 2.7): every flag the robot's extension
+ * registers is tracked (`trackFlags`, the first call of each robot's extension), so
+ * - a flag registered twice is visible (test/params.test.ts refuses it: one owner per flag);
+ * - numbers fail closed: a numeric flag whose value does not parse, or is out of range, stops the
+ *   robot at session start (`paramsError`, called by ../robot.ts) instead of turning silently into
+ *   a default;
+ * - the result records `params` (every experiment flag's effective value) and `params_default`
+ *   (its registered default), so a result names its configuration and the eval scripts compare
+ *   runs generically (../scripts/params-match.mjs) instead of by hand-kept lists.
+ * Where services and files live is deployment config (./config.ts), not flags; the few flags
+ * that remain about where things run (`--deployment`, `--env-url`, ...) are left out of `params`.
+ * The tracker also owns the robot's reads (`getFlag`): `--tier` / `--preset` (./tiers.ts) set the
+ * values of the flags they expand to before the robot reads them (`Tracked.expand`), so a tier is
+ * nothing but those flags' values, and `params` records what ran.
+ * pi does not expose whether a flag was given: it applies the command line's values after the
+ * extensions loaded and answers `getFlag` with the registered default otherwise, so `--max-turns 0`
+ * and no `--max-turns` read alike. The tracker therefore reads the process's own command line
+ * (`argvFlags`, pi's `--name[=value]` rules) for the flags named on it (`Tracked.given`), the same
+ * parse the eval scripts' tier-flags.mjs makes of the arguments it is given, so the robot and the
+ * scripts refuse the same contradictions (`--tier S3 --max-turns 0` included); a value that is not
+ * the registered default counts as given too (a flag set another way than the command line).
+ */
+
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export type FlagSpec = { type?: string; default?: unknown; description?: string };
+export type Tracked = {
+	names: Map<string, FlagSpec>;
+	duplicates: string[];
+	/** A flag's value as given (the command line, else its default), before any expansion. */
+	raw: (name: string) => unknown;
+	/**
+	 * Whether a tracked flag was given: named on the process's command line (at any value, its
+	 * default included), or holding another value than its registered default.
+	 */
+	given: (name: string) => boolean;
+	/** What `getFlag` returns for `name` given its raw value (./tiers.ts sets it). */
+	expand?: (name: string, raw: unknown) => unknown;
+	/**
+	 * The planner's provider (../robot.ts sets it at session start from the session's model): a flag
+	 * `PROVIDER_DEFAULTS` names for it reads as that value unless given (`given`).
+	 */
+	provider?: string;
+};
+
+/**
+ * The `--name[=value]` flags among `args`, with their values, by pi's own rules
+ * (packages/coding-agent/src/cli/args.ts): `--name=value`; `--name value` when the next word is not
+ * an option or an @file; else a bare switch, true; `--` ends the options. Shared by the tracker
+ * (over `process.argv`) and ../scripts/tier-flags.mjs (over the pi arguments an eval run is given).
+ */
+export function argvFlags(args: readonly string[]): Map<string, string | true> {
+	const found = new Map<string, string | true>();
+	for (let i = 0; i < args.length; i++) {
+		const a = String(args[i]);
+		if (a === "--") break;
+		if (!a.startsWith("--")) continue;
+		const eq = a.indexOf("=");
+		if (eq > 0) {
+			found.set(a.slice(2, eq), a.slice(eq + 1));
+			continue;
+		}
+		const next = args[i + 1];
+		if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) {
+			found.set(a.slice(2), next);
+			i++;
+		} else found.set(a.slice(2), true);
+	}
+	return found;
+}
+
+/** Numeric flags: the range a value must fall in (inclusive), and whether it must be an integer. */
+export const NUMERIC: Record<string, { min?: number; max?: number; integer?: boolean }> = {
+	seed: { min: 0, integer: true },
+	"layout-set": { min: 0, integer: true },
+	"max-turns": { min: 0, integer: true },
+	"time-limit": { min: 0 },
+	"max-cost": { min: 0 },
+	"max-tool-calls": { min: 0, integer: true },
+	"max-tokens": { min: 0, integer: true },
+	"keep-images": { min: 0, integer: true },
+	"image-trim-every": { min: 0, integer: true },
+	"max-move": { min: 0 },
+	"max-rotate": { min: 0 },
+	"max-yaw": { min: 0 },
+	"grasp-max-tilt": { min: 0, max: 90 },
+	"unit-tol": { min: 0 },
+	"units-coarse-step": { min: 0.001 },
+	"units-stage-steps": { min: 0, integer: true },
+	"units-point-verify": { min: 0, integer: true },
+	"units-video-ref-frames": { min: 1, integer: true },
+	"mm-step-timeout": { min: 1 },
+	"libero-settle-ticks": { min: 0, integer: true },
+	"libero-max-steps": { min: 1, integer: true },
+	"code-timeout": { min: 1 },
+	"code-max-calls": { min: 1, integer: true },
+	"code-max-move": { min: 0 },
+	"approval-timeout": { min: 0 },
+	"approval-large-move": { min: 0 },
+	"ensemble-timeout": { min: 0 },
+	"explore-sessions": { min: 1, integer: true },
+	"explore-attempts-per-session": { min: 0, integer: true },
+	"fallback-after": { min: 1, integer: true },
+	"fallback-retry-primary": { min: 0, integer: true },
+	"fallback-timeout": { min: 0 },
+	"ft-phase-steps": { min: 1, integer: true },
+	"gumi-operator-confidence": { min: 0, max: 1 },
+	"gumi-operator-max-steps": { min: 1, integer: true },
+	"hi-res": { min: 0, integer: true },
+	"max-api-concurrency": { min: 0, integer: true },
+	"vdm-timeout": { min: 0 },
+	"vdm-video-frames": { min: 1, integer: true },
+	"xpolicy-timeout": { min: 0 },
+	"xpolicy-connect-timeout": { min: 0 },
+	"serve-timeout": { min: 1 },
+	"serve-min-free": { min: 0 },
+	"dashboard-port": { min: 0, max: 65535, integer: true },
+	"dashboard-live-fps": { min: 0.2, max: 30 },
+	"humanclaw-max-steps": { min: 1, integer: true },
+	"humanclaw-max-tokens": { min: 1, integer: true },
+	"curobo-batch-size": { min: 1, integer: true },
+};
+
+/**
+ * Flags that say where things run or land, not how the experiment runs: left out of `params`
+ * (the rest of that kind is deployment config, ./config.ts).
+ */
+export const DEPLOYMENT: ReadonlySet<string> = new Set([
+	"deployment",
+	"env-url",
+	"serve-lock",
+	"dashboard",
+	"dashboard-port",
+	"dashboard-host",
+	"dashboard-language",
+	"dashboard-live-fps",
+]);
+
+/**
+ * Defaults that depend on the planner's provider: flag values by provider, read in place of the
+ * registered default when the flag is not given (the tracker's `getFlag`, with `Tracked.provider`),
+ * and by ../scripts/params-match.mjs for the provider `--model` / `--provider` names (`providerDefault`).
+ * `selfhost` is the bjb2 GPU 0 planner (openai-completions): NInfer until 2026-10-13 (Qwen3.8-27B, a hybrid
+ * recurrent model whose prefix cache reuses only exact checkpoints, ../planner/cache-breakpoints.ts), Strata
+ * since (Qwen3.8-Flash-Next; checkpoints at the previous turn boundary, every 16K prompt tokens and the end of
+ * the system prompt, no session key, and it ignores the breakpoint marker). The cache-friendly context is its
+ * default since the A/B of 2026-10-12 on NInfer (LIBERO libero_spatial, 30 episodes per arm: success 23 vs 22 of 30,
+ * Fisher p = 1.0; cache hits 2.9% to 72.1% of the prompt tokens; request p50 11.2 to 6.6 s; episode wall 0.61x);
+ * on Strata the same context reuses 88-96% of each prompt after the second request against 40-56% with the
+ * registered defaults (the first five requests of a LIBERO episode replayed, 2026-10-13, with and without the marker alike).
+ * Every other provider keeps the registered defaults.
+ */
+export const PROVIDER_DEFAULTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+	selfhost: { "replay-thinking": "none", "image-trim-every": "8", "cache-breakpoints": "true" },
+};
+
+/** `name`'s default under `provider` when PROVIDER_DEFAULTS names one, else undefined (the registered default stands). */
+export const providerDefault = (name: string, provider: string | undefined): string | undefined =>
+	provider === undefined ? undefined : PROVIDER_DEFAULTS[provider]?.[name];
+
+/**
+ * Tracked flags added after results existed, with the default each had when it was introduced
+ * (`introduced`) and its registered default now (`default`, test/params.test.ts keeps it equal to
+ * the registration; a provider's own default is `PROVIDER_DEFAULTS`). ../scripts/params-match.mjs
+ * compares a flag listed here against the default of the run asked for (this table and the run's
+ * provider), not the default the result recorded, so a result at an old default never passes as one
+ * at the flipped default. A result whose `params` lacks the flag was written before it existed, so it
+ * ran with the introduced default: the script reads the missing key as that value, so
+ * `--image-trim-every 8` never mixes with such a result, and neither does a run without the flag
+ * once its default is flipped. A missing flag not listed here is skipped (its value then is unknown)
+ * and named in the script's output.
+ */
+export const INTRODUCED: Readonly<Record<string, { introduced: string; default: string }>> = {
+	"image-trim-every": { introduced: "0", default: "0" },
+	"replay-thinking": { introduced: "false", default: "false" },
+	"cache-breakpoints": { introduced: "false", default: "false" },
+};
+
+const tracked = new WeakMap<object, Tracked>();
+
+/**
+ * Track every flag registered on `pi` from now on (call it first in a robot's extension). A second
+ * registration of the same name is recorded as a duplicate and ignored, so the first owner's
+ * definition stands (pi itself would silently keep the last one). Reads go through the provider's
+ * defaults (`PROVIDER_DEFAULTS` for `provider`, once ../robot.ts set it) and then `expand` when one
+ * is set: a flag not given (`given`: named on the command line, or not at its default) reads as the
+ * provider's value, and a flag a tier expands to reads as the tier's value unless it was given itself.
+ */
+export function trackFlags(pi: ExtensionAPI): Tracked {
+	const had = tracked.get(pi);
+	if (had) return had;
+	const raw = pi.getFlag.bind(pi);
+	// The command line's flags, read when first asked (after the robot registered its flags).
+	let named: Map<string, string | true> | undefined;
+	const t: Tracked = {
+		names: new Map(),
+		duplicates: [],
+		raw,
+		given: (name) => {
+			const spec = t.names.get(name);
+			if (!spec) return false;
+			named ??= argvFlags(process.argv);
+			if (named.has(name)) return true;
+			const value = raw(name);
+			return value !== undefined && String(value) !== String(spec.default ?? "");
+		},
+	};
+	tracked.set(pi, t);
+	(pi as { getFlag: typeof pi.getFlag }).getFlag = ((name: string) => {
+		let value = raw(name);
+		const byProvider = providerDefault(name, t.provider);
+		if (byProvider !== undefined && !t.given(name)) value = byProvider;
+		return t.expand ? t.expand(name, value) : value;
+	}) as typeof pi.getFlag;
+	const register = pi.registerFlag.bind(pi);
+	(pi as { registerFlag: typeof pi.registerFlag }).registerFlag = ((name: string, spec: FlagSpec) => {
+		if (t.names.has(name)) {
+			t.duplicates.push(name);
+			return;
+		}
+		t.names.set(name, spec);
+		register(name, spec as never);
+	}) as typeof pi.registerFlag;
+	return t;
+}
+
+/** The flags tracked on `pi` (undefined when the robot did not call trackFlags). */
+export const trackedFlags = (pi: ExtensionAPI) => tracked.get(pi);
+
+/** Why a numeric flag's value is refused, else undefined. */
+export function numberError(name: string, value: unknown): string | undefined {
+	const spec = NUMERIC[name];
+	if (!spec || value === undefined || value === "" || value === null) return undefined;
+	const n = typeof value === "number" ? value : Number(String(value).trim());
+	const shown = JSON.stringify(value);
+	if (!Number.isFinite(n)) return `--${name} must be a number, got ${shown}`;
+	if (spec.integer && !Number.isInteger(n)) return `--${name} must be an integer, got ${shown}`;
+	if (spec.min !== undefined && n < spec.min) return `--${name} must be at least ${spec.min}, got ${shown}`;
+	if (spec.max !== undefined && n > spec.max) return `--${name} must be at most ${spec.max}, got ${shown}`;
+	return undefined;
+}
+
+/** The first numeric flag of `pi` with a refused value, else undefined. */
+export function paramsError(pi: ExtensionAPI): string | undefined {
+	const t = tracked.get(pi);
+	const names = t ? [...t.names.keys()] : Object.keys(NUMERIC);
+	for (const name of names) {
+		const why = numberError(name, pi.getFlag(name));
+		if (why) return why;
+	}
+	return undefined;
+}
+
+/** `params` and `params_default` for the result: every tracked experiment flag, effective and registered default. */
+export function params(pi: ExtensionAPI): { params: Record<string, unknown>; params_default: Record<string, unknown> } {
+	const t = tracked.get(pi);
+	const effective: Record<string, unknown> = {};
+	const defaults: Record<string, unknown> = {};
+	for (const [name, spec] of [...(t?.names ?? new Map<string, FlagSpec>())].sort(([a], [b]) => a.localeCompare(b))) {
+		if (DEPLOYMENT.has(name)) continue;
+		effective[name] = pi.getFlag(name) ?? null;
+		defaults[name] = spec.default ?? null;
+	}
+	return { params: effective, params_default: defaults };
+}

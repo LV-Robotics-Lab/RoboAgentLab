@@ -1,0 +1,597 @@
+/**
+ * Metaworld robot for pi: a Sawyer in Metaworld's MT50 / ML45 tabletop tasks (metaworld 3.1.1).
+ *
+ *   pi -e packages/embodied/src/robots/metaworld --task reach-v3 --seed 0
+ *   pi -e packages/embodied/src/robots/metaworld --task pick-place-v3 --seed 3 --units=true
+ *   pi -e packages/embodied/src/robots/metaworld --task button-press-v3 --seed 0 --privileged
+ *   pi -e packages/embodied/src/robots/metaworld --task reach-v3 --seed 0 --code=true --code-api=low   (run_code, CaP-X's S3)
+ *
+ * Starts one Metaworld env server per session (services/.../robots/metaworld/env_server.py, the
+ * `metaworld` venv; MuJoCo renders through EGL, or on the CPU with MUJOCO_GL=osmesa). The action is a world-frame hand translation plus
+ * the gripper effort, so `move_delta` and the units hook `apply` share one server-side closed-loop
+ * motion (`env.move_delta`: at most 0.2 m per call, inside the task's workspace box). Every result
+ * carries the agentview (Metaworld's `corner4`) and wrist (`gripperPOV`) images and the state;
+ * success is the env's own `info["success"]`, latched and recorded in `robot_result`. Tools and code
+ * primitives: ../../primitives/manifests/metaworld.json (the env server reads it too); every tool
+ * runs one env server method (perception included: `segment` and `back_project` go through the
+ * server's rendered depth, `execute_grasp` runs the planned chain there).
+ * --collect-flywheel-data records every control step of a motion (services robots/metaworld/flywheel.py).
+ */
+
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { StringEnum } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { simDistil } from "../../capabilities/explore.ts";
+import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
+import { persistentPolicy } from "../../capabilities/policy/index.ts";
+import { python, service, servicesDir } from "../../infra/config.ts";
+import { MOLMO, SAM3 } from "../../infra/model-services.ts";
+import { trackFlags } from "../../infra/params.ts";
+import { encodePng } from "../../infra/png.ts";
+import { NdArray, type RpcClient } from "../../infra/rpc.ts";
+import type { MoveUnit, Vec3 } from "../../modes/units/index.ts";
+import { template } from "../../planner/context-version.ts";
+import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
+import {
+	graspActive,
+	graspArgs,
+	graspTools,
+	mountGraspTool,
+	placeOn,
+	registerGraspFlags,
+} from "../../primitives/grasp.ts";
+import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
+import { attach, defineRobot, type Json, type Mat, rgbOf, round } from "../../robot.ts";
+import { sideBySide } from "../maniskill/index.ts";
+
+const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
+const EXPLORE = template(new URL("./explore.md", import.meta.url));
+
+/** Metaworld's MT50 task names (`metaworld.env_dict.ALL_V3_ENVIRONMENTS`), the server's table. */
+export const TASKS = [
+	"assembly-v3",
+	"basketball-v3",
+	"bin-picking-v3",
+	"box-close-v3",
+	"button-press-topdown-v3",
+	"button-press-topdown-wall-v3",
+	"button-press-v3",
+	"button-press-wall-v3",
+	"coffee-button-v3",
+	"coffee-pull-v3",
+	"coffee-push-v3",
+	"dial-turn-v3",
+	"disassemble-v3",
+	"door-close-v3",
+	"door-lock-v3",
+	"door-open-v3",
+	"door-unlock-v3",
+	"hand-insert-v3",
+	"drawer-close-v3",
+	"drawer-open-v3",
+	"faucet-open-v3",
+	"faucet-close-v3",
+	"hammer-v3",
+	"handle-press-side-v3",
+	"handle-press-v3",
+	"handle-pull-side-v3",
+	"handle-pull-v3",
+	"lever-pull-v3",
+	"pick-place-wall-v3",
+	"pick-out-of-hole-v3",
+	"pick-place-v3",
+	"plate-slide-v3",
+	"plate-slide-side-v3",
+	"plate-slide-back-v3",
+	"plate-slide-back-side-v3",
+	"peg-insert-side-v3",
+	"peg-unplug-side-v3",
+	"soccer-v3",
+	"stick-push-v3",
+	"stick-pull-v3",
+	"push-v3",
+	"push-wall-v3",
+	"push-back-v3",
+	"reach-v3",
+	"reach-wall-v3",
+	"shelf-place-v3",
+	"sweep-into-v3",
+	"sweep-v3",
+	"window-open-v3",
+	"window-close-v3",
+] as const;
+export type Task = (typeof TASKS)[number];
+
+/**
+ * World frame of Metaworld's Sawyer: it stands at the origin facing +y across the table, so +y is
+ * away from the base, +x is the robot's right, +z up.
+ */
+export const VECTORS: Record<MoveUnit, Vec3> = {
+	MV_FWD: [0, 1, 0],
+	MV_BACK: [0, -1, 0],
+	MV_LEFT: [-1, 0, 0],
+	MV_RIGHT: [1, 0, 0],
+	MV_UP: [0, 0, 1],
+	MV_DOWN: [0, 0, -1],
+};
+/** Metres per MV_* decision (Show-Harness's 2 cm). */
+export const STEP_M = 0.02;
+/** Largest translation one call may command, m (the server refuses more). */
+export const MAX_MOVE_M = 0.2;
+/** Closed-and-empty gripper width, m: the pad distance settles at 0.023 on nothing (0.095 open). */
+export const EMPTY_WIDTH_M = 0.025;
+/** The table top, world z (Metaworld's tabletop geom; objects rest just above it). */
+export const TABLE_Z = 0;
+/** Square view size the server renders, px. */
+export const VIEW_SIZE = 256;
+/** The camera setup VIEWS describes; a server rendering anything else is refused. */
+export const VIEW_SETUP = { agentview: "corner4", wrist: "gripperPOV", view_size: VIEW_SIZE };
+
+/**
+ * How the views look, measured on pick-place-v3 seed 0 by projecting the TCP and the puck through
+ * the calibration while stepping each axis 6 cm: the agentview (`corner4`, turned 180 deg) stands
+ * at the robot's right, above the table, looking across it: the robot base is at the image left,
+ * +y (MV_FWD) runs toward the image right, +x (MV_RIGHT) toward the camera (image bottom), +z up.
+ * The wrist camera (`gripperPOV`) rides on the hand: the two finger pads are fixed at the left,
+ * one near the top and one near the bottom, and the grasp point is between them at mid-height,
+ * about a quarter of the width from the left edge; MV_FWD shifts the scene down, MV_RIGHT left.
+ */
+export const VIEWS = `Each result shows the third-person view, then the wrist view (both ${VIEW_SIZE}x${VIEW_SIZE}).
+- Third-person view: a fixed camera at the robot's right, looking across the table with the robot base at the image LEFT: MV_FWD moves the gripper toward the image RIGHT, MV_BACK toward the LEFT (toward the robot), MV_RIGHT toward the image bottom (toward the camera), MV_LEFT toward the image top, MV_UP up.
+- Wrist view: it rides on the hand looking past the fingers toward the table; the two finger pads stay fixed at the left edge (one near the top, one near the bottom) and the grasp point is between them, at mid-height, about a quarter of the width from the left. A target above the grasp point in the image needs MV_FWD, below it MV_BACK, to its right MV_RIGHT, to its left MV_LEFT; a target between the pads is under the gripper: MV_DOWN. The camera moves with the gripper, so after MV_FWD the scene shifts down and after MV_RIGHT it shifts left.`;
+
+type Obs = {
+	agentview: NdArray;
+	wrist: NdArray;
+	tcp_pos: NdArray;
+	gripper_width: number;
+	obs: NdArray;
+};
+type Info = Record<string, unknown>;
+/** A control step of a motion: its observation, the env action it applied and its success. */
+type Frame = Obs & { action?: NdArray; success?: boolean };
+type MoveResult = {
+	ok: boolean;
+	final_tcp_pos: number[];
+	final_error_m: number;
+	moved_m: number[];
+	gripper: string;
+	gripper_width: number;
+	steps_used: number;
+	frames: Frame[];
+	info: Info;
+	cancelled?: boolean;
+};
+type Meta = {
+	task: string;
+	seed: number;
+	metaworld: string;
+	workspace?: { min: number[]; max: number[] };
+	capabilities?: { perception?: { segment?: boolean; enhance_depth?: boolean } };
+} & Partial<typeof VIEW_SETUP>;
+type CameraMeta = { intrinsic_K: Mat; extrinsic_cam2world: Mat; height: number; width: number };
+type Camera = "agentview" | "wrist";
+const CAMERAS: readonly Camera[] = ["agentview", "wrist"];
+
+/** The two views, the TCP and finger opening, and the env action (services robots/metaworld/flywheel.py). */
+export const FLYWHEEL: FlywheelSpec = {
+	robot: "metaworld",
+	images: { agentview_images: [VIEW_SIZE, VIEW_SIZE, 3], wrist_images: [VIEW_SIZE, VIEW_SIZE, 3] },
+	state: 4,
+	action: 4,
+};
+const flyObs = (o: Obs): FlywheelObs => ({
+	images: { agentview_images: o.agentview, wrist_images: o.wrist },
+	state: [...o.tcp_pos.toArray(), o.gripper_width],
+});
+
+export default function metaworld(pi: ExtensionAPI) {
+	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
+	trackFlags(pi);
+	const _flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
+	pi.registerFlag("task", {
+		type: "string",
+		default: "reach-v3",
+		description: `Metaworld MT50 task (${TASKS.join(", ")})`,
+	});
+	pi.registerFlag("seed", { type: "string", default: "0", description: "Reset seed (the object layout)" });
+	pi.registerFlag("env-url", {
+		type: "string",
+		description: "Attach to a running env server instead of starting one",
+	});
+	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi);
+	// --grasp: plan_grasp and friends, and execute_grasp / execute_place (services/.../utils/grasp_chain.py on the env server).
+	registerGraspFlags(pi);
+	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
+	registerPointFlags(pi);
+
+	let env: RpcClient;
+	let obs: Obs;
+	let info: Info = {};
+	let success = false;
+	let envStep = 0;
+	let gripper: "open" | "close" = "open";
+	let language = "";
+	let workspace: Meta["workspace"];
+
+	/** The memory cell of this task at `seed`. */
+	const tag = (seed: string) => `metaworld_${robot.task.task}_s${seed}`;
+	const robot = defineRobot(pi, {
+		name: "metaworld",
+		// Tools and code primitives: ../../primitives/manifests/metaworld.json (the env server reads it too).
+		manifest: "metaworld",
+		vars: () => ({ max_move: MAX_MOVE_M, cameras: [...CAMERAS], arms: [] }),
+		capabilities: (c) =>
+			({
+				sam3: Boolean(service(pi, "sam3")),
+				grasp: graspActive(pi).length > 0,
+				place: graspActive(pi).length > 0 && placeOn(pi),
+				unidepth: Boolean(String(pi.getFlag("depth") ?? "").trim()),
+			})[c] ?? false,
+		services: { models: [SAM3, MOLMO] },
+		task: ["task", "seed"],
+		keepImages: 4,
+		video: true,
+		vdm: { views: 2, wrist: 1 },
+		flywheel: { spec: FLYWHEEL, select: () => robot.task.task },
+		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
+		// No corpus is published for Metaworld: memory is what exploration writes locally, one cell per task and seed.
+		memory: {
+			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
+			primitives: ["move_delta", "set_gripper", "act"],
+			published: false,
+		},
+		explore: {
+			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
+			reset: async (result, _ctx, signal) => {
+				success = false;
+				envStep = 0;
+				gripper = "open";
+				const [o, i] = await env.call<[Obs, Info]>("env.reset", {}, 300_000, [], signal);
+				absorb(o, i);
+				workspace = (await env.call<Meta>("env.get_env_meta", {}, 30_000, [], signal)).workspace;
+				fly.reset(flyObs(o), flyMeta());
+				return observe({ ...result, reset: true });
+			},
+			prompt: () => EXPLORE.replaceAll("{{task}}", robot.task.task).replaceAll("{{seed}}", robot.task.seed),
+			// The DISTIL pass once the cell is solved: the suite draft and lessons the memory corpus is merged from.
+			distil: () =>
+				simDistil({
+					suite: "metaworld",
+					task: robot.task.task,
+					seed: robot.task.seed,
+					auditFields: "task, seed, success",
+				}),
+			rewrite: [
+				[
+					/This is a single episode\. You may recover within it \(re-position, re-grasp\), but you cannot restart it\./,
+					"This is an exploration run: `reset` starts a fresh attempt (see Exploration). Within an attempt, recover in place (re-position, re-grasp).",
+				],
+			],
+		},
+		start: startEpisode,
+		prompt: () => SYSTEM.replaceAll("{{task_language}}", language).replaceAll("{{table_z}}", String(TABLE_Z)),
+		result: () => ({
+			task: robot.task.task,
+			seed: Number(robot.task.seed),
+			success,
+			env_steps: envStep,
+		}),
+		status: () => ({ language, step: envStep, solved: success }),
+		// The env server's primitive registry (code.api), recorded per episode.
+		codeApi: () => env,
+		// Code mode (../code): the env server runs the program against that registry; the result
+		// carries the control steps, the latched success, the new observation and the video frames.
+		code: {
+			rpc: () => env,
+			instruction: () => language,
+			refuse: () => (success ? "the task is already solved; call finish" : undefined),
+			observe: async (r) => {
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) video.frame(f);
+				const steps = Number(r.steps) || 0;
+				envStep += steps;
+				if (r.gripper === "open" || r.gripper === "close") gripper = r.gripper;
+				success ||= r.success === true;
+				if (r.obs) absorb(r.obs as Obs, (r.info as Info | undefined) ?? {});
+				return observe({ name: "run_code", status: r.status, env_steps: steps });
+			},
+		},
+		finish: {
+			description:
+				"End the episode after checking the latest state. Success is Metaworld's own success flag, not this call.",
+			parameters: Type.Object({
+				status: StringEnum(["success", "failure"] as const),
+				summary: Type.String(),
+			}),
+			result: (params) => ({
+				content: [{ type: "text", text: `Episode finished (success=${success}).` }],
+				details: params,
+			}),
+		},
+		units: {
+			vectors: VECTORS,
+			stepM: STEP_M,
+			instruction: () => language,
+			views: VIEWS,
+			// gripperPOV, the second image (VIEW_SETUP).
+			wrist: true,
+			emptyWidthM: EMPTY_WIDTH_M,
+			maxMoveM: () => MAX_MOVE_M,
+			apply: async (m, signal) => {
+				if (m.yaw || m.rot?.some(Boolean))
+					throw new Error("this robot has no rotation (the hand orientation is fixed)");
+				return observe(await move(m.delta, m.gripper, signal));
+			},
+			state: async () => ({
+				eef_xyz: obs.tcp_pos.toArray().map((v) => round(v, 4)),
+				gripper_width: round(obs.gripper_width, 4),
+				table_z: TABLE_Z,
+			}),
+		},
+	});
+	const { video } = robot;
+	const fly = robot.fly!;
+	/** raw/metaworld/<task>/seed_NNN (services robots/metaworld/flywheel.py). */
+	const flyMeta = () => ({
+		path: [robot.task.task, `seed_${robot.task.seed.padStart(3, "0")}`],
+		metadata: { task: robot.task.task, seed: Number(robot.task.seed), task_language: language },
+	});
+
+	const call = <T = unknown>(
+		method: string,
+		kwargs: Record<string, unknown> = {},
+		args: unknown[] = [],
+		signal = robot.signal,
+	) => env.call<T>(method, kwargs, 120_000, args, signal);
+
+	function absorb(o: Obs, i: Info) {
+		obs = o;
+		info = i;
+		success ||= Boolean(i.success);
+	}
+
+	/** One server-side closed-loop move with an optional gripper command; every control step goes to the video. */
+	async function move(delta: Vec3, grip: "open" | "close" | null, signal: AbortSignal | undefined) {
+		const norm = Math.hypot(...delta);
+		if (!(norm <= MAX_MOVE_M))
+			throw new Error(`delta moves ${round(norm, 4)} m; the limit is ${MAX_MOVE_M} m per call. Split the motion.`);
+		const r = await call<MoveResult>(
+			"env.move_delta",
+			{ delta_xyz: delta.map((v) => round(v, 6)), ...(grip ? { gripper: grip } : {}) },
+			[],
+			signal,
+		);
+		const moved = absorbMotion(r);
+		return {
+			commanded_m: delta.map((v) => round(v, 4)),
+			moved_m: r.moved_m.map((v) => round(v, 4)),
+			final_error_m: round(r.final_error_m, 4),
+			gripper,
+			env_steps: moved,
+			...(r.cancelled ? { cancelled: true } : {}),
+		};
+	}
+
+	/** A server motion's control steps to the video and Flywheel, its last frame to the state; the steps run. */
+	function absorbMotion(r: { frames: Frame[]; gripper: string; info: Info }) {
+		for (const f of r.frames) {
+			video.frame(sideBySide(f.agentview, f.wrist));
+			// Flywheel: every control step the motion ran (a call that ran none returns no action).
+			if (fly.recording && f.action)
+				fly.transition(f.action.toArray(), flyObs(f), f.success ? 1 : 0, Boolean(f.success), false);
+		}
+		// A call that ran no control step returns the current observation as its one frame.
+		const ran = r.frames.filter((f) => f.action).length;
+		envStep += ran;
+		gripper = r.gripper === "close" ? "close" : "open";
+		absorb(r.frames[r.frames.length - 1], r.info);
+		return ran;
+	}
+
+	/** The motion result with the new state, then the agentview and wrist images. */
+	function observe(result: Record<string, unknown>) {
+		const images = [obs.agentview, obs.wrist].map((a) => encodePng(a.data, a.shape[1], a.shape[0]));
+		const details = {
+			result,
+			step: envStep,
+			success,
+			terminated: success,
+			task_language: language,
+			state: {
+				tcp_pos: obs.tcp_pos.toArray().map((v) => round(v, 4)),
+				gripper_width: round(obs.gripper_width, 4),
+				gripper_command: gripper,
+				grasp_success: Boolean(info.grasp_success),
+				...(workspace ? { workspace } : {}),
+			},
+			images: [
+				`agentview ${obs.agentview.shape[1]}x${obs.agentview.shape[0]}`,
+				`wrist ${obs.wrist.shape[1]}x${obs.wrist.shape[0]}`,
+			],
+		};
+		return {
+			content: [
+				{ type: "text" as const, text: JSON.stringify(details) },
+				...images.map((png) => ({ type: "image" as const, data: png.toString("base64"), mimeType: "image/png" })),
+			],
+			details,
+		};
+	}
+
+	const text = (out: Record<string, unknown>, image?: string) => ({
+		content: [
+			{ type: "text" as const, text: JSON.stringify(out) },
+			...(image ? [{ type: "image" as const, data: image, mimeType: "image/png" }] : []),
+		],
+		details: out,
+	});
+	/** World xyz of pixels of the image shown, through the server's rendered depth (null where invalid). */
+	const locate = (camera: string, pixels: number[][]) =>
+		call<(number[] | null)[]>("env.back_project", { camera, pixels });
+
+	// Every tool below runs one env server method with the manifest's parameters
+	// (../../primitives/manifests/metaworld.json); here only what the planner sees is shaped.
+	robot.tool("view_env_state", "", Type.Object({}), async (params: Json) => {
+		if (params.fresh === true) {
+			// A cancelled motion may have advanced the server after the last reply reached this client.
+			// Queue fresh reads behind it instead of treating cached images as recovery evidence.
+			const state = await call<{
+				tcp_pos: number[];
+				gripper_width: number;
+				gripper_command: "open" | "close";
+				success_once: boolean;
+				info: Info;
+			}>("env.state");
+			const agentview = await call<NdArray>("env.render_camera", {
+				camera_name: "agentview",
+				height: VIEW_SIZE,
+				width: VIEW_SIZE,
+			});
+			const wrist = await call<NdArray>("env.render_camera", {
+				camera_name: "wrist",
+				height: VIEW_SIZE,
+				width: VIEW_SIZE,
+			});
+			absorb(
+				{ ...obs, agentview, wrist, tcp_pos: NdArray.f32(state.tcp_pos), gripper_width: state.gripper_width },
+				state.info,
+			);
+			gripper = state.gripper_command;
+			success ||= state.success_once;
+		}
+		return observe({ refreshed: params.fresh === true });
+	});
+
+	robot.tool("get_camera_meta", "", Type.Object({}), async (params: Json) =>
+		text({ camera: params.camera_name ?? "agentview", meta: await call<CameraMeta>("env.get_camera_meta", params) }),
+	);
+
+	robot.tool("segment", "", Type.Object({}), async (params: Json) => {
+		const { mask: _mask, overlay_png_base64, ...rest } = await call<Json>("env.segment", params);
+		return text(
+			rest.found === false ? { ...rest, error: rest.reason ?? "no mask" } : rest,
+			overlay_png_base64 ? String(overlay_png_base64) : undefined,
+		);
+	});
+
+	robot.tool("back_project", "", Type.Object({}), async (params: Json) =>
+		text(await call<Json>("env.back_project", params)),
+	);
+
+	// Molmo pointing on the current images (active with --point).
+	mountGraspTool(
+		robot.tool,
+		pointTool(pi, {
+			cameras: CAMERAS,
+			frame: async (c) => {
+				const a = obs[c as Camera];
+				return rgbOf(a);
+			},
+			locate: async (c, row, col) => {
+				const [p] = await locate(c, [[row, col]]);
+				return p ? { world_xyz: p } : undefined;
+			},
+			signal: () => robot.signal,
+		}),
+	);
+
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --depth unidepth).
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
+		cameras: CAMERAS,
+		// The server renders the images shown (VIEW_SIZE): the centroid's world xyz through its depth.
+		locate: async (c, d) => {
+			const rc = d.centroid_rc as number[] | null;
+			if (!rc) return {};
+			const [p] = await locate(c, [rc]);
+			return p ? { centroid_world_xyz: p } : {};
+		},
+	}))
+		mountGraspTool(robot.tool, d);
+
+	robot.tool("move_delta", "", Type.Object({}), async (params: Json, signal) => {
+		if (success) return observe({ error: "the task is already solved; call finish" });
+		return observe(await move(params.delta_xyz as Vec3, (params.gripper as "open" | "close") ?? null, signal));
+	});
+
+	robot.tool("set_gripper", "", Type.Object({}), async (params: Json, signal) => {
+		if (success) return observe({ error: "the task is already solved; call finish" });
+		const r = await call<MoveResult>("env.set_gripper", { close: params.close === true }, [], signal);
+		return observe({ gripper: r.gripper, gripper_width: round(r.gripper_width, 4), env_steps: absorbMotion(r) });
+	});
+
+	// Planned grasps (--grasp): the server runs the claimed path as move_delta legs
+	// (env.execute_grasp / env.execute_place, utils/grasp_chain.py).
+	for (const name of ["execute_grasp", "execute_place"])
+		robot.tool(name, "", Type.Object({}), async (params: Json, signal) => {
+			if (success) return observe({ error: "the task is already solved; call finish" });
+			const r = await call<MoveResult & Json>(`env.${name}`, params, [], signal);
+			const { frames: _f, info: _i, gripper_width: _w, steps_used: _s, ...rest } = r;
+			return observe({ ...rest, env_steps: absorbMotion(r) });
+		});
+
+	// plan_grasp / plan_place / check_attached over the env server's planner (--grasp), and
+	// execute_grasp / execute_place running a planned id as bounded move_delta legs (services/.../utils/grasp_chain.py on the env server).
+	for (const d of graspTools(pi, {
+		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
+		cameras: ["agentview", "wrist"],
+		task: () => language,
+	}))
+		mountGraspTool(robot.tool, d);
+	async function startEpisode() {
+		const { task, seed } = robot.task;
+		if (!(TASKS as readonly string[]).includes(task))
+			throw new Error(`unknown Metaworld task "${task}"; the ${TASKS.length} tasks are ${TASKS.join(", ")}`);
+		const endpoint = pi.getFlag("env-url") as string | undefined;
+		if (endpoint) env = await attach(endpoint);
+		else {
+			const services = servicesDir(pi);
+			env = await robot.serve({
+				python: python(pi, "metaworld"),
+				args: [
+					...["-m", "pi_embodied_services.robots.metaworld.env_server", "--task", task, "--seed", seed],
+					// env.segment (and the planner's object text) segment with SAM3 on the server.
+					...(service(pi, "sam3") ? ["--sam3", service(pi, "sam3")] : []),
+					...detectionArgs(pi, { sam3: false }),
+					...graspArgs(pi),
+				],
+				cwd: services,
+				// EGL unless the caller picks MUJOCO_GL=osmesa (CPU rendering).
+				env: { ...process.env, PYTHONPATH: services, MUJOCO_GL: process.env.MUJOCO_GL ?? "egl" },
+				log: (port) => join(tmpdir(), `pi-embodied-metaworld-${task}-s${seed}-${port}.log`),
+				readyMs: 300_000,
+			});
+		}
+		const meta = await env.call<Meta>("env.get_env_meta");
+		if (meta.task !== task || meta.seed !== Number(seed))
+			throw new Error(`env server runs ${meta.task} seed ${meta.seed}, not ${task} seed ${seed}`);
+		const setup = Object.entries(VIEW_SETUP).filter(([k, v]) => meta[k as keyof typeof VIEW_SETUP] !== v);
+		if (setup.length)
+			throw new Error(
+				`env server cameras (${setup.map(([k]) => `${k}=${meta[k as keyof typeof VIEW_SETUP]}`).join(", ")}) differ from the ones the prompt describes (${JSON.stringify(VIEW_SETUP)}); update the services dir`,
+			);
+		success = false;
+		envStep = 0;
+		gripper = "open";
+		const [o, i] = await env.call<[Obs, Info]>("env.reset", {}, 300_000);
+		absorb(o, i);
+		workspace = (await env.call<Meta>("env.get_env_meta")).workspace;
+		language = await env.call<string>("env.get_task_language");
+		fly.reset(flyObs(o), flyMeta());
+		return [
+			// segment requires SAM3 on the server, the chains a planner (the manifest drops them without).
+			...["view_env_state", "get_camera_meta", "segment", "back_project", "move_delta", "set_gripper", "finish"],
+			...detectionActive(pi, meta.capabilities?.perception),
+			...graspActive(pi),
+			...(graspActive(pi).length ? ["execute_grasp", "execute_place"] : []),
+			...pointActive(pi),
+		];
+	}
+
+	// The persistent policy prototype (../../capabilities/policy, --policy-store): a tracked flag of this
+	// robot and one more module tool, active only with a store.
+	persistentPolicy(pi);
+}

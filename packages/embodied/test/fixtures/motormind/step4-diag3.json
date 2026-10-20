@@ -1,0 +1,373 @@
+{
+	"_source": "bjb2 .local/runs/mm-step4/base-B3 (main @fe7fe9bf0), the session JSONL's custom entries (motormind_plan / motormind_verdict / motormind_cycle) transcribed by .local/runs/mm-step4/diag3/cells/*.txt; arm A (the original, .local/runs/mm-orig/base-nomon-nomem) for the side take and the turn criterion (step4-diagnosis-3.md)",
+	"part_words": {
+		"_note": "round 3 defect 1: the vocabulary's take sentence 'descend the rest of the way … the part of <object>' gave partOf() the part 'rest' (the old 'X of Y' regex took the first match); every take look then went down the part branch and came back doubtful",
+		"cases": [
+			{
+				"cell": "object t8_s1 take_pudding",
+				"subgoal": "Descend the rest of the way until the jaws are level with the part of the chocolate pudding box to be squeezed, with it between them, and close.",
+				"target": "the chocolate pudding box",
+				"old": "rest",
+				"want": null
+			},
+			{
+				"cell": "goal t7_s0 take_knob",
+				"subgoal": "descend the rest of the way until the jaws are level with the part of the black stove knob to be squeezed, with it between them, and close.",
+				"target": "the black stove knob",
+				"old": "rest",
+				"want": null
+			},
+			{
+				"cell": "object t7_s1 take_milk",
+				"subgoal": "Descend the rest of the way until the jaws are level with the part of the red and white milk carton to be squeezed, with it between them, and close.",
+				"target": "the red and white milk carton on the left side of the table",
+				"old": "rest",
+				"want": null
+			},
+			{
+				"cell": "goal t4_s0 take_bowl",
+				"subgoal": "descend the rest of the way until the jaws are level with the rim of the silver patterned bowl, with it between them, and close",
+				"target": "the silver patterned bowl",
+				"old": "rest",
+				"want": "rim"
+			},
+			{
+				"cell": "goal t0_s1 grasp_middle_handle",
+				"subgoal": "Move the gripper to the middle handle of the dark cabinet, aligning the open jaws with the handle, and close them.",
+				"target": "the middle handle of the dark cabinet",
+				"old": null,
+				"want": "handle"
+			},
+			{
+				"cell": "goal t0_s0 take_middle_handle",
+				"subgoal": "Move the gripper to the middle drawer handle of the dark cabinet, approach it from the side so the jaws are parallel to the handle, and close the jaws to grasp it.",
+				"target": "the middle drawer handle of the dark cabinet",
+				"old": "handle",
+				"want": "handle"
+			},
+			{
+				"cell": "a part of something else is where the thing stands",
+				"subgoal": "move the jaws over the bowl on the edge of the table and close",
+				"target": "the black bowl",
+				"old": "edge",
+				"want": null
+			}
+		]
+	},
+	"close_after_contact": {
+		"_note": "round 3 defect 2, goal t0_s0 grasp_middle_handle_top attempt 1: c1 'move down 50 PUSH' met the handle (contact, blocked after 32 mm); c2's close was refused for an unmeasured top face (the gate read only its own batch), a wrist re-look gave a doubtful table point 76 mm wide and the model drove off after it; c5/c6 the same with a 0 mm descent. 'top face has never been measured' refusals per suite (spatial/object/goal): B 3/7/11, B2 40/2/54, B3 77/60/28",
+		"subgoal": "Move the gripper directly above the middle drawer handle of the dark cabinet and lower it vertically until the handle is between the jaws, then close the jaws.",
+		"criterion": "The robot reports that it is HOLDING the handle of the middle drawer.",
+		"target": "the middle drawer handle of the dark cabinet",
+		"located_mm": [
+			711,
+			-141,
+			98
+		],
+		"located_error_mm": 19,
+		"table_z_mm": -11,
+		"refused": "the object's top face has never been measured: descend over it until the wrist sees it, then close",
+		"pairs": [
+			{
+				"cycles": "c1 -> c2",
+				"descent": {
+					"label": "move down 50.0 mm (base) [1/1]",
+					"outcome": "contact",
+					"abort_reason": "blocked",
+					"along_axis_mm": 32.3,
+					"lateral_mm": 3,
+					"turned_deg": 0.1
+				},
+				"relook_mm": [
+					655,
+					-124,
+					-11
+				],
+				"relook_error_mm": 76
+			},
+			{
+				"cycles": "c5 -> c6",
+				"descent": {
+					"label": "move down 50.0 mm (base) [1/1]",
+					"outcome": "contact",
+					"abort_reason": "blocked",
+					"along_axis_mm": 0.0,
+					"lateral_mm": 1,
+					"turned_deg": 0
+				},
+				"relook_mm": [
+					662,
+					-146,
+					-11
+				],
+				"relook_error_mm": 76
+			}
+		],
+		"refusals_per_suite": {
+			"B": [
+				3,
+				7,
+				11
+			],
+			"B2": [
+				40,
+				2,
+				54
+			],
+			"B3": [
+				77,
+				60,
+				28
+			]
+		}
+	},
+	"wrist_relook_override": {
+		"_note": "round 3 defect 3, object t8_s1: the hover step located the pudding box at [473,-244,-21] (10 mm bar, two views) and the take step carried it; take_pudding#1 c2's wrist re-look before the close read a 'part' (defect 1) and came back doubtful on the table at [494,-241,1] 58 mm wide, which replaced the point (wrist-only = override); take_pudding#2 c1's re-look read [483,79,191], 20 mm bar, doubtful, 320 mm off, replaced it again, and the model copied '320 mm LEFT' into a move",
+		"target": "the chocolate pudding box",
+		"kept": {
+			"point_mm": [
+				473,
+				-244,
+				-21
+			],
+			"error_mm": 10,
+			"doubtful": false,
+			"method": "scene and side met 4 mm apart at the contact edge"
+		},
+		"wrist_answers": [
+			{
+				"cycle": "take_pudding#1 c2",
+				"point_mm": [
+					494,
+					-241,
+					1
+				],
+				"error_mm": 58,
+				"doubtful": true
+			},
+			{
+				"cycle": "take_pudding#2 c1",
+				"point_mm": [
+					483,
+					79,
+					191
+				],
+				"error_mm": 20,
+				"doubtful": true
+			}
+		],
+		"model_move_after": "move left 320.0 mm (base)"
+	},
+	"turn_steps": {
+		"_note": "round 3 defect 4: holding the knob, receiverWords() found no destination phrase and fell back to the target, so the turn step located the knob in the jaws from a fixed view (another black thing) and the target block sent the model there; the original returns '' and takes no look. A's turn step (base-nomon-nomem t7_s0) only yawed and succeeded",
+		"cases": [
+			{
+				"cell": "B3 goal t7_s0 turn_knob",
+				"subgoal": "turn the black stove knob about the vertical axis by about 90 degrees without letting go.",
+				"criterion": "the black stove knob is rotated to a new position.",
+				"target": "the black stove knob",
+				"located_mm": [
+					-408,
+					386,
+					0
+				],
+				"located_error_mm": 28,
+				"model_move": "move backward 669.0 mm (base)"
+			},
+			{
+				"cell": "B3 goal t7_s1 turn_stove_knob_retry",
+				"subgoal": "Turn the black stove knob about the vertical axis by about 90 degrees without letting go.",
+				"criterion": "The black stove knob's marking aims somewhere new.",
+				"target": "the black stove knob",
+				"located_mm": [
+					539,
+					-171,
+					-11
+				],
+				"located_error_mm": 459,
+				"model_move": "move forward 280.0 mm (base)"
+			},
+			{
+				"cell": "A nomon goal t7_s0 turn (succeeded with rotate yaw_right 90)",
+				"subgoal": "turn the tool about the vertical axis by about 90 degrees without letting go of the black control knob on the stove",
+				"criterion": "The black control knob on the stove has turned: its pointer or marking aims somewhere new in the picture.",
+				"target": "the black control knob on the stove",
+				"located_mm": null,
+				"located_error_mm": null,
+				"model_move": "rotate yaw_right 90"
+			}
+		],
+		"lift_while_holding": {
+			"cell": "B3 goal t7_s1 lift_stove_knob",
+			"subgoal": "Raise the gripper straight up by about 15 cm without letting go of the black stove knob.",
+			"criterion": "The tool has risen at least 120 mm since this step began and the robot still reports holding the black stove knob.",
+			"target": "the black stove knob",
+			"located_mm": [
+				539,
+				-171,
+				-11
+			],
+			"located_error_mm": 459
+		},
+		"carry_keeps_its_receiver": {
+			"cell": "B3 goal t4_s0 carry_bowl",
+			"subgoal": "move the gripper sideways at this height until the silver patterned bowl is over the top of the dark brown drawer unit, still holding it",
+			"criterion": "the silver patterned bowl is over the top of the dark brown drawer unit and the robot still reports holding it",
+			"target": "the silver patterned bowl",
+			"want": "top of the dark brown drawer unit"
+		}
+	},
+	"side_take": {
+		"_note": "round 3 defect 3 (the side-take chain): B3 goal t0_s0 take_middle_handle#1 located 'it' from the planner's box read onto the table ([537,-176,-11], doubtful) and ended CANNOT_FROM_THE_SIDE ('the face is 0 mm over the table') with no move; the planner then wrote top-down grasps of the handle for three plans. Arm A (base-nomon-nomem t0_s1) asked the cameras for the part, got [693,-132,123] on the face, was told the standoff and 'right 124 mm with stop_on_contact', and succeeded (HELD 16 mm, pull left 150)",
+		"B3_t0_s0": {
+			"subgoal": "Move the gripper to the middle drawer handle of the dark cabinet, approach it from the side so the jaws are parallel to the handle, and close the jaws to grasp it.",
+			"criterion": "The robot reports that it is HOLDING the handle of the middle drawer.",
+			"target": "the middle drawer handle of the dark cabinet",
+			"plan_boxes": {
+				"scene": [
+					270,
+					540,
+					330,
+					580
+				],
+				"side": [
+					200,
+					300,
+					260,
+					330
+				]
+			},
+			"old_words": "it",
+			"located_mm": [
+				537,
+				-176,
+				-11
+			],
+			"table_z_mm": -11,
+			"tool_mm": [
+				443,
+				-7,
+				250
+			],
+			"old_ending": "CANNOT_FROM_THE_SIDE",
+			"old_cannot": "the face is 0 mm over the table, below the 100 mm the tilted tool can reach"
+		},
+		"A_t0_s1": {
+			"subgoal": "take the handle of the middle drawer of the cabinet from the side and close on it",
+			"criterion": "The robot reports HOLDING the handle of the middle drawer of the cabinet.",
+			"target": "the middle drawer of the cabinet, the dark brown drawer unit with three horizontal silver handles, positioned between the top and bottom drawers",
+			"part_point_mm": [
+				693,
+				-132,
+				123
+			],
+			"body_mm": [
+				692,
+				-231,
+				-16
+			],
+			"table_z_mm": -11,
+			"tool_mm": [
+				443,
+				-7,
+				250
+			],
+			"then": "forward 134 / left 179 / down 103 / roll_cw; then right 124 stop_on_contact + close -> HELD 16 mm"
+		},
+		"threshold_mm": {
+			"tilted_floor": 100,
+			"jaw_half_gap": 39.4,
+			"pad": 17,
+			"lowest_face": 77.6
+		}
+	},
+	"carry_lift": {
+		"_note": "round 3 defect 5, goal t4_s0 carry_bowl#1 (bowl -> cabinet top): the bowl was lifted 150 mm over the table; c0's first leg toward the cabinet was cut short (limited, blocked: the payload dragging), c1 and c2 copied the same move and were cut short at once; the lift mender measured 150 mm of clearance over the TABLE and inserted nothing; the reach gate's cut set the wall flag and the step ended WALL -> replan 'carry the bowl to the open table'. The original's lift_before_sideways puts a 100 mm lift before any sideways move while the payload has met something and has not risen since",
+		"subgoal": "move the gripper sideways at this height until the silver patterned bowl is over the top of the dark brown drawer unit, still holding it",
+		"criterion": "the silver patterned bowl is over the top of the dark brown drawer unit and the robot still reports holding it",
+		"target": "the silver patterned bowl",
+		"receiver_words": "top of the dark brown drawer unit",
+		"receiver_located_mm": [
+			753,
+			-258,
+			-68
+		],
+		"table_z_mm": -68,
+		"payload": {
+			"width_mm": 7.6,
+			"span_mm": 150,
+			"edge": true,
+			"tracking": true
+		},
+		"tool_over_table_mm": 150,
+		"c0_steps": [
+			{
+				"label": "move forward 185.0 mm (base) (shortened to 185 mm: past the 780 mm reach) (the first 17 mm) [1/1]",
+				"kind": "translate",
+				"outcome": "done",
+				"abort_reason": "",
+				"along_axis_mm": 13,
+				"lateral_mm": 1,
+				"turned_deg": 0.1,
+				"axis": [
+					1,
+					0,
+					0
+				]
+			},
+			{
+				"label": "move forward 185.0 mm (base) (shortened to 185 mm: past the 780 mm reach) (the rest) (1 of 6) [1/1]",
+				"kind": "translate",
+				"outcome": "limited",
+				"abort_reason": "blocked",
+				"along_axis_mm": 7,
+				"lateral_mm": 10,
+				"turned_deg": 2.2,
+				"axis": [
+					1,
+					0,
+					0
+				]
+			}
+		],
+		"c1_deltas": [
+			{
+				"direction": "forward",
+				"distance_mm": 166
+			},
+			{
+				"direction": "right",
+				"distance_mm": 266
+			}
+		],
+		"c1_reason": "the payload is dragging: a sideways move was blocked while holding",
+		"ending": "WALL"
+	},
+	"side_predicate": {
+		"_note": "round 3 defect 6: recorded plan steps (diag3/cells). B3 goal t4_s0 first plan (61 s, reasks {side: 2}) and t7_s1's knob plans drew side re-asks for steps that cannot be taken from the side; t0_s0's top-down handle grasps are what the complaint is for; A nomon t0_s1's side take says it",
+		"no_complaint": [
+			"open the jaws, move the gripper over the silver patterned bowl and lower it until it hovers about a palm's height above the bowl, jaws still open",
+			"descend the rest of the way until the jaws are level with the rim of the silver patterned bowl, with it between them, and close",
+			"raise the gripper straight up by about 15 cm without letting go of the silver patterned bowl",
+			"move the gripper sideways at this height until the silver patterned bowl is over the top of the dark brown drawer unit, still holding it",
+			"lower the gripper until the silver patterned bowl is just above the top of the dark brown drawer unit, then open the jaws to let it go",
+			"raise the gripper straight up by about 15 cm",
+			"Descend the rest of the way until the jaws are level with the black stove knob, with it between them, and close.",
+			"Raise the gripper straight up by about 15 cm without letting go of the black stove knob.",
+			"Move the gripper sideways at this height until the black stove knob is over its base on the stove, still holding it.",
+			"Turn the black stove knob about the vertical axis by about 90 degrees without letting go.",
+			"Move the gripper to the middle drawer handle of the dark cabinet, approach it from the side so the jaws are parallel to the handle, and close the jaws to grasp it.",
+			"Pull the middle drawer handle straight out away from the cabinet body until the drawer is visibly open, then open the jaws to release it.",
+			"take the handle of the middle drawer of the cabinet from the side and close on it"
+		],
+		"complaint": [
+			"Move the gripper directly above the middle drawer handle of the dark cabinet and lower it vertically until the handle is between the jaws, then close the jaws.",
+			"Move the gripper to the front of the middle drawer handle of the dark cabinet, aligning the jaws with the handle, and close the jaws to grasp it.",
+			"Close the jaws to grasp the middle drawer handle of the dark cabinet."
+		],
+		"t4_s0_first_plan_reasks": {
+			"side": 2
+		},
+		"t4_s0_first_plan_elapsed_s": 61.1
+	}
+}

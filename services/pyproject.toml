@@ -1,0 +1,362 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pi-embodied-services"
+dynamic = ["version"]
+description = "Robot environment and model RPC services for pi-embodied"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.10,<3.13"
+license = "Apache-2.0"
+authors = [{ name = "pi-embodied contributors" }]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: GPU :: NVIDIA CUDA :: 12",
+    "Programming Language :: Python :: 3",
+]
+# Server-side only: planner dependencies (claude-agent-sdk,
+# openai-codex, pydantic-ai, mcp, prompt-toolkit, fastapi, httpx, ...) are
+# intentionally absent.
+dependencies = [
+    "numpy",
+    "scipy",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-timeout",
+]
+rlinf = [
+    "rpent-rlinf",
+]
+sam3 = [
+    "sam3 @ git+https://github.com/RLinf/sam3.git@main",
+    "einops>=0.8.0",
+    "pycocotools",
+    "torch",
+    "torchvision",
+    "pillow>=10",
+]
+molmo = [
+    # Molmo's remote code uses transformers' video-processing API, which the
+    # LIBERO extra cannot supply: OpenPI pins transformers==4.53.2 exactly, and
+    # 4.53.2 has no transformers.video_utils.make_batched_metadata. Install this
+    # into its own environment and point the grounder at it over RPC.
+    "transformers>=4.57,<5",  # Molmo2 remote code targets 4.57.1
+    "accelerate",  # molmo_server --offload-blocks
+    "torch",
+    "torchvision",
+    "pillow>=10",
+]
+unidepth = [
+    # UniDepth V2 (components/unidepth_server.py): its package pins timm/xformers
+    # versions the robot extras do not share, so install it into its own environment
+    # and point the env servers at it with --unidepth. The checkpoint
+    # (lpiccinelli/unidepth-v2-vitl14) is fetched by huggingface_hub; set HF_ENDPOINT
+    # to a mirror where huggingface.co is unreachable.
+    "unidepth @ git+https://github.com/lpiccinelli-eth/UniDepth.git@main",
+    "huggingface-hub",
+    "torch",
+    "torchvision",
+    "pillow>=10",
+]
+graspnet1b = [
+    # GraspNet-1Billion grasp detectors (components/graspnet1b_server.py --model baseline|gsnet):
+    # services/setup.sh graspnet1b then builds their pointnet2 / knn CUDA ops and MinkowskiEngine
+    # (components/graspnet1b_install.sh). On sm_120 install a cu128 torch into the venv first.
+    "torch",
+    "numpy<2",  # MinkowskiEngine 0.5.4
+    "scipy",
+    "pillow>=10",
+    "tqdm",  # imported by graspness_implementation's dataset module (its batch collate)
+    "open3d",  # graspness_implementation's models/resnet.py refuses to import without it
+    "huggingface-hub",
+    "setuptools",
+    "wheel",
+    "ninja",
+]
+viser = [
+    # components/viser_view.py (pi's --viser): the live 3D view of an env server, in its own
+    # environment; omegaconf for the Franka source's calibration config.
+    "viser>=0.2",
+    "omegaconf",
+]
+flywheel = [
+    # LeRobot v3.0 export of Flywheel episodes (/flywheel-export; lerobot 0.4 writes
+    # v3.0, Python >= 3.10). Its numpy 2 and huggingface-hub pins break the LIBERO
+    # extra, so install it into its own environment and point pi's python.flywheel at it.
+    "lerobot>=0.4.4,<0.5",
+]
+# Third-party VLA adapters (components/openvla_server.py, openvla_oft_server.py,
+# gr00t_server.py): one venv each. Their repositories pin torch 2.2 / transformers 4.40
+# (OpenVLA family; OFT needs its transformers fork for bidirectional attention) or
+# torch 2.9 / transformers 4.57 (GR00T), none of which a robot extra shares. Their torch
+# pins have no sm_120 kernels: install the cu128 torch first, then the repo with --no-deps
+# and the pins below (see README). Checkpoints are pinned per server, fetched via HF_ENDPOINT.
+openvla = [
+    "openvla @ git+https://github.com/openvla/openvla.git@c8f03f48af692657d3060c19588038c7220e9af9",
+    "transformers==4.40.1",
+    "timm==0.9.10",
+    "tokenizers==0.19.1",
+    "accelerate",
+    "huggingface-hub",
+    "pillow>=10",
+]
+openvla-oft = [
+    # LIBERO checkpoints (moojink/openvla-7b-oft-finetuned-libero-*): L1 action head + proprio
+    # projector; get_vla_action needs tensorflow for the 0.9 center crop.
+    "openvla-oft @ git+https://github.com/moojink/openvla-oft.git@e4287e94541f459edc4feabc4e181f537cd569a8",
+    "transformers @ git+https://github.com/moojink/transformers-openvla-oft.git",
+    "timm==0.9.10",
+    "tokenizers==0.19.1",
+    "json-numpy",
+    "tensorflow-cpu==2.15.0 ; python_version < '3.12'",
+    "accelerate",
+    "huggingface-hub",
+    "pillow>=10",
+]
+gr00t = [
+    # Isaac-GR00T (N1.6 / N1.7 policies, Python 3.12; runs on torch 2.7.1+cu128 without flash-attn).
+    "gr00t @ git+https://github.com/NVIDIA/Isaac-GR00T.git@51d4c89f72fda44cbf77285c6a8114b52676b8a1",
+    "huggingface-hub",
+    "pillow>=10",
+]
+xpolicy = [
+    # The XPolicyLab bridge (components/xpolicy_bridge.py): XPolicyLab's websocket client's
+    # dependencies (its pyproject at d6332bf); the client itself comes from an XPolicyLab
+    # checkout (--xpolicylab-root). opencv is for --xpolicy-encode-images (encode_image_bit).
+    "websockets>=14.0",
+    "msgpack>=1.0.8",
+    "msgpack-numpy>=0.4.8",
+    "pydantic>=2.5",
+    "opencv-python-headless>=4.8",
+]
+libero = [
+    "pi-embodied-services[rlinf,sam3]",
+    "rpent-openpi @ git+https://github.com/RLinf/openpi.git@rpent",
+    "rpent-libero @ git+https://github.com/RLinf/LIBERO.git@rpent",
+    # MuJoCo 3.4+ changes LIBERO settling, misplacing objects and reducing task success; see https://github.com/RLinf/RLinf/issues/1460.
+    "mujoco==3.3.0",
+]
+libero-pro = [
+    "pi-embodied-services[libero]",
+    "rpent-liberopro @ git+https://github.com/RLinf/LIBERO-PRO.git@rpent",
+]
+libero-plus = [
+    # LIBERO-plus requires robosuite<1.5, so it cannot inherit the standard LIBERO extra.
+    "pi-embodied-services[rlinf,sam3]",
+    "rpent-openpi @ git+https://github.com/RLinf/openpi.git@rpent",
+    "rlinf-liberoplus==0.1.5",
+    "mujoco==3.3.0",
+    "h5py",
+]
+franka = [
+    "rlinf[franka] @ git+https://github.com/RLinf/RLinf.git@bde6c918642abf9a4776cb1d5fabcc5087dfe195",
+    "rpent-openpi @ git+https://github.com/RLinf/openpi.git@rpent",
+    "franky-control @ https://github.com/Brunch-Life/franky/releases/download/wheels-libfranka-0.19.0/franky_control-1.1.3-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version == '3.10' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "franky-control @ https://github.com/Brunch-Life/franky/releases/download/wheels-libfranka-0.19.0/franky_control-1.1.3-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version == '3.11' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "franky-control @ https://github.com/Brunch-Life/franky/releases/download/wheels-libfranka-0.19.0/franky_control-1.1.3-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version == '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "matplotlib>=3.8",
+    "pillow>=10",
+]
+maniskill = [
+    # ManiSkill 3 stock scenes (PickCube/StackCube/PushCube); on sm_120 install the
+    # torch 2.7.1+cu128 build first.
+    "mani_skill==3.0.1",
+    "torch",
+    "pillow>=10",
+    # BlockPAP/BlockStack view transform (Show-Harness's cv2 letterbox)
+    "opencv-python-headless",
+]
+metaworld = [
+    # Metaworld MT50 / ML45 (Sawyer, MuJoCo). metaworld 3.1.1 pins mujoco==3.3.0, the
+    # version the LIBERO extras pin too, so it shares no conflict with them.
+    "metaworld==3.1.1",
+    "pillow>=10",
+]
+genesis = [
+    # Genesis 1.4 (OpenETA's Franka cube_pick, robots/genesis); its own venv: it wants
+    # torch>=2.8 and pulls gs-madrona and quadrants. On sm_120 install a cu128 torch first.
+    "genesis-world==1.4.2",
+    "torch>=2.8",
+    "pillow>=10",
+]
+piper = [
+    # AgileX Piper over ROS topics (Show-Harness's Cobot Magic stack); ROS itself
+    # (rospy, the piper_msgs packages) comes from the host's ROS Noetic install.
+    "rospkg>=1.5.0",
+    "catkin_pkg>=1.0.0",
+]
+# RoboLab needs Isaac Sim + Isaac Lab from NVIDIA's index; its venv is built by a
+# script (see README), so this extra only marks the robot.
+robolab = []
+# RoboDojo needs Isaac Sim + Isaac Lab from NVIDIA's index and its cuRobo v2 fork; its venv is
+# built by robots/robodojo/install_isaac61.sh, so this extra only marks the robot.
+robodojo = []
+# HumanCLAW needs its own venv (torch 2.6 cu124, patched Habitat-Sim); robots/humanclaw/install.sh
+# builds it, so this extra only marks the robot.
+humanclaw = []
+# BEHAVIOR-1K (OmniGibson + BDDL) needs Isaac Sim from NVIDIA's index and OmniGibson from
+# the BEHAVIOR-1K checkout; its venv is built by robots/behavior/install.sh, so this extra
+# only marks the robot.
+behavior = []
+franka-polymetis = [
+    # Franka on a Polymetis NUC (Show-Harness's stack); no RLinf, no VLA. Cameras
+    # through the shared components/cameras layer (the cameras extra).
+    "pi-embodied-services[cameras]",
+    "zerorpc",
+    "omegaconf",
+    "pillow>=10",  # utils/perception.py decodes SAM3 masks and encodes frames as PNG
+]
+# The shared camera layer (components/cameras): RealSense D400 through pyrealsense2,
+# webcams and RTSP streams through OpenCV, checkerboard detection for calibrate.py.
+cameras = [
+    "pyrealsense2",
+    "opencv-python-headless>=4.8,<5",  # 5.x drops calibrateHandEye from the bindings
+]
+# An Intel L515 in the rig: pyrealsense2 2.54.1 is the last release that supports it
+# (later ones dropped the L515), so this extra pins it; install it instead of, not
+# next to, a newer pyrealsense2. D400 cameras work with either.
+realsense-l515 = [
+    "pi-embodied-services[cameras]",
+    "pyrealsense2==2.54.1.5216",
+]
+ur5e = [
+    # Universal Robots UR5e over RTDE (ur_rtde's Python bindings: rtde_control,
+    # rtde_receive, dashboard_client) with a Robotiq gripper (URCap socket, stdlib).
+    "pi-embodied-services[cameras]",
+    "ur-rtde>=1.5",
+]
+robocasa = [
+    "pi-embodied-services[rlinf]",
+    "rpent-robocasa365 @ git+https://github.com/RLinf/robocasa.git@rpent",
+    "rlinf-rldx @ git+https://github.com/RLinf/RLDX-1.git@rpent",
+    "robosuite @ git+https://github.com/RLinf/robosuite.git@rpent",
+]
+robosuite = [
+    # CaP-X's seven robosuite tasks on upstream robosuite 1.5 (OSC_POSE, its own MuJoCo);
+    # LIBERO and RoboCasa pin robosuite 1.4 forks, so this is its own venv.
+    "robosuite>=1.5.1,<1.6",
+    # robosuite 1.5.1's joint lookups assert on MuJoCo 3.14's joint-type enums; 3.3.0 (LIBERO's pin) works.
+    "mujoco==3.3.0",
+    # robosuite.utils.camera_utils imports h5py without declaring it.
+    "h5py",
+    "pillow>=10",
+]
+# The ik server (components/ik_server.py): PyRoKi + JAX on the CPU, its own venv.
+ik = [
+    "pyroki @ git+https://github.com/chungmin99/pyroki.git@388e43e1fc0d0ee382968d3dd72970fd62a0450c",
+    "robot_descriptions>=1.16",
+    "xacrodoc",
+    "yourdfpy",
+]
+# The ik server's cuRobo backend (components/ik_server.py --backend curobo; GPU, CUDA_HOME
+# to build). Install torch first; the PyRoKi backend (CPU, the default) needs none of it.
+ik-curobo = [
+    "nvidia-curobo @ git+https://github.com/NVlabs/curobo.git@v0.7.8",
+]
+robotwin = [
+    "pi-embodied-services[rlinf]",
+    "rlinf-robotwin-runtime==0.1.1",
+    "rlinf-lingbotvla==0.1.1",
+    "nvidia-curobo @ git+https://github.com/NVlabs/curobo.git@v0.7.8",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "pi_embodied_services.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pi_embodied_services*"]
+
+[tool.setuptools.package-data]
+"pi_embodied_services.robots.robocasa" = ["eval/*.json", "eval/*.txt"]
+"pi_embodied_services.robots.robotwin" = ["eval/*.json"]
+"pi_embodied_services.robots.franka" = ["config/*.yaml"]
+"pi_embodied_services.robots.franka_polymetis" = ["config/*.yaml"]
+"pi_embodied_services.robots.dual_franka" = ["config/*.yaml"]
+"pi_embodied_services.robots.piper" = ["config/*.yaml"]
+"pi_embodied_services.robots.ur5e" = ["config/*.yaml"]
+"pi_embodied_services.robots.robolab" = ["assets/*.usda", "assets/Props/*.usd"]
+"pi_embodied_services.components" = ["xpolicy_env_cfg/*.yml", "xpolicy_env_cfg/robot/*.json"]
+
+[tool.uv]
+prerelease = "allow"
+
+# Each robot extra pulls a separately pinned VLA runtime whose Torch,
+# Transformers, Tokenizers, or Diffusers versions are mutually incompatible.
+conflicts = [
+    [{ extra = "franka" }, { extra = "libero" }],
+    [{ extra = "franka" }, { extra = "libero-pro" }],
+    [{ extra = "franka" }, { extra = "libero-plus" }],
+    [{ extra = "franka" }, { extra = "robocasa" }],
+    [{ extra = "franka" }, { extra = "robotwin" }],
+    [{ extra = "robocasa" }, { extra = "robotwin" }],
+    [{ extra = "openvla" }, { extra = "libero" }],
+    [{ extra = "openvla" }, { extra = "molmo" }],
+    [{ extra = "openvla" }, { extra = "gr00t" }],
+    [{ extra = "openvla-oft" }, { extra = "libero" }],
+    [{ extra = "openvla-oft" }, { extra = "molmo" }],
+    [{ extra = "openvla-oft" }, { extra = "gr00t" }],
+    [{ extra = "gr00t" }, { extra = "libero" }],
+    # robosuite 1.5 against the robosuite 1.4 forks of LIBERO and RoboCasa.
+    [{ extra = "robosuite" }, { extra = "libero" }],
+    [{ extra = "robosuite" }, { extra = "libero-pro" }],
+    [{ extra = "robosuite" }, { extra = "libero-plus" }],
+    [{ extra = "robosuite" }, { extra = "robocasa" }],
+]
+
+[tool.uv.extra-build-dependencies]
+nvidia-curobo = ["torch==2.7.1"]
+
+# cuRobo's metadata, declared so that `uv lock` / `uv run` never build it: its setup.py compiles
+# CUDA extensions and fails without CUDA_HOME (a Mac), even when no extra that needs it is used.
+# From the v0.7.8 wheel's METADATA; update with the pin.
+[[tool.uv.dependency-metadata]]
+name = "nvidia-curobo"
+version = "0.7.8"
+requires-dist = [
+    "pybind11",
+    "networkx",
+    "numpy",
+    "numpy-quaternion",
+    "pyyaml",
+    "setuptools_scm>=6.2",
+    "torch>=1.10",
+    "trimesh",
+    "yourdfpy>=0.0.53",
+    "warp-lang>=0.9.0",
+    "scipy>=1.7.0",
+    "tqdm",
+    "wheel",
+    "importlib_resources",
+    "scikit-image",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+timeout = 60
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+extend-exclude = [
+    "**/eval/*.json",
+    # Vendored Show-Harness training code, kept as upstream wrote it (finetuned/train.sh).
+    "pi_embodied_services/finetuned/showharness",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+# Imports the RoboTwin runtime after defining helpers, on purpose.
+"pi_embodied_services/robots/robotwin/env_server.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pi_embodied_services"]

@@ -94,6 +94,17 @@ describe("provider retry classification", () => {
 		).toBe(true);
 	});
 
+	it("matches queue admission timeouts that arrive mid-stream without a status", () => {
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "inference request expired while waiting for admission",
+				}),
+			),
+		).toBe(true);
+	});
+
 	it("keeps provider limit errors non-retryable", () => {
 		expect(
 			isRetryableAssistantError(

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `Agent.removeQueuedMessage(match)`, which removes the first queued steering (else follow-up) message that matches before the loop takes it, and returns `false` when none matches.
 ## [1.2.0] - 2026-10-12
 
 ## [1.1.0] - 2026-10-07

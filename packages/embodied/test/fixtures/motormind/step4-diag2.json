@@ -1,0 +1,1005 @@
+{
+ "_source": "bjb2 .local/runs/mm-step4/base-B2 (main @ce9928415), the session JSONL's custom entries (motormind_plan / motormind_verdict / motormind_cycle); the analyses are in .local/runs/mm-step4/diag2/ (step4-diagnosis-2.md)",
+ "spatial_t2_s0": {
+  "task": "pick up the black bowl from table center and place it on the plate",
+  "clauses": [
+   "The akita black bowl is picked from the table center.",
+   "The akita black bowl is placed on the plate."
+  ],
+  "hover": {
+   "name": "hover_akita_bowl",
+   "criterion": "The akita black bowl sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
+   "target": "akita black bowl",
+   "verdict": {
+    "status": "done",
+    "gate": "",
+    "because": "The gripper is positioned directly above the akita black bowl at a height of 103 mm (approx. a palm's height) with jaws fully open.",
+    "clauses": [
+     {
+      "what": "The akita black bowl sits directly under the gripper in the wrist view",
+      "met": true,
+      "evidence": "The wrist camera shows the bowl centered in the field of view, directly below the gripper jaws."
+     },
+     {
+      "what": "the gripper is a palm's height or less above it",
+      "met": true,
+      "evidence": "The measured height is 103 mm, which is approximately a palm's height (100 mm)."
+     },
+     {
+      "what": "the jaws are open",
+      "met": true,
+      "evidence": "The gripper status is reported as FULLY OPEN with an opening of 80.0 mm."
+     }
+    ]
+   }
+  },
+  "take": {
+   "name": "take_akita_bowl",
+   "criterion": "The robot reports that it is HOLDING the akita black bowl.",
+   "verdict": {
+    "status": "done",
+    "gate": "held_width",
+    "because": "The robot reports holding an object, and the wrist view confirms the jaws are grasping the rim of the patterned bowl.",
+    "clauses": [
+     {
+      "what": "The akita black bowl is picked from the table center.",
+      "met": true,
+      "evidence": "The gripper is holding the patterned bowl, lifting it from the table surface."
+     }
+    ]
+   }
+  },
+  "replan": {
+   "trigger": "carry_akita_bowl (attempt 1) was judged not_done: the camera located \"plate\", which shares no word with the target \"akita black bowl\"",
+   "keep": 3,
+   "subgoals": [
+    {
+     "name": "hover_akita_bowl",
+     "clause": 0,
+     "subgoal": "Open the jaws, move the gripper over the akita black bowl in the center of the table (the patterned bowl near the stove), and lower it until it hovers about a palm's height above the bowl, jaws still open.",
+     "criterion": "The akita black bowl sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
+     "target": "akita black bowl"
+    },
+    {
+     "name": "take_akita_bowl",
+     "clause": 0,
+     "subgoal": "Descend the rest of the way until the jaws are level with the rim of the akita black bowl, with the rim between them, and close.",
+     "criterion": "The robot reports that it is HOLDING the akita black bowl.",
+     "target": "akita black bowl"
+    },
+    {
+     "name": "lift_akita_bowl",
+     "clause": 0,
+     "subgoal": "Raise the gripper straight up by about 15 cm without letting go of the akita black bowl.",
+     "criterion": "The tool has risen at least 120 mm since this step began and the robot still reports holding the akita black bowl.",
+     "target": "akita black bowl"
+    },
+    {
+     "name": "carry_akita_bowl_retry",
+     "clause": 1,
+     "subgoal": "Move the gripper sideways at this height until the akita black bowl is over the plate (the white dish with red rings), still holding it.",
+     "criterion": "The akita black bowl is over the plate and the robot still reports holding it.",
+     "target": "akita black bowl"
+    },
+    {
+     "name": "put_akita_bowl_retry",
+     "clause": 1,
+     "subgoal": "Lower the gripper until the akita black bowl is just above the plate, then open the jaws to let it go.",
+     "criterion": "The jaws are open and the akita black bowl rests on the plate, its middle over the middle of the plate.",
+     "target": "akita black bowl"
+    },
+    {
+     "name": "retreat_akita_bowl_retry",
+     "clause": -1,
+     "subgoal": "Raise the gripper straight up by about 15 cm.",
+     "criterion": "The tool has risen at least 120 mm since this step began.",
+     "target": "akita black bowl"
+    }
+   ]
+  }
+ },
+ "object_t9_s0": {
+  "task": "pick up the orange juice and place it in the basket",
+  "clauses": [
+   "The orange juice carton is picked up from the table.",
+   "The orange juice carton is placed inside the basket."
+  ],
+  "hover": {
+   "name": "hover_orange_juice",
+   "criterion": "The orange juice carton sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
+   "target": "the orange juice carton",
+   "verdict": {
+    "status": "done",
+    "gate": "",
+    "because": "The gripper is positioned directly above the orange juice carton with jaws open, meeting the hover criterion.",
+    "clauses": [
+     {
+      "what": "The orange juice carton sits directly under the gripper in the wrist view",
+      "met": true,
+      "evidence": "The wrist camera shows the orange juice carton centered in the frame, directly beneath the gripper."
+     },
+     {
+      "what": "the gripper is a palm's height or less above it",
+      "met": true,
+      "evidence": "The side view shows the gripper hovering just above the carton, consistent with the reported 100mm clearance."
+     },
+     {
+      "what": "the jaws are open",
+      "met": true,
+      "evidence": "The wrist view and robot state confirm the jaws are fully open (80.0 mm)."
+     }
+    ]
+   }
+  },
+  "take": {
+   "name": "take_orange_juice",
+   "criterion": "The robot reports that it is HOLDING the orange juice carton.",
+   "verdict": {
+    "status": "not_done",
+    "gate": "",
+    "because": "The gripper is fully open and has not closed around the orange juice carton, so it is not holding it.",
+    "clauses": [
+     {
+      "what": "The robot reports that it is HOLDING the orange juice carton.",
+      "met": false,
+      "evidence": "The gripper is fully open (80.0 mm) and the holding status is UNKNOWN, indicating no grasp has been made."
+     }
+    ]
+   }
+  },
+  "replan": {
+   "trigger": "take_orange_juice (attempt 2) was judged not_done: The gripper is fully open and not holding the orange juice carton. Earlier failures on the same object: take_orange_juice (attempt 1): The gripper is fully open and has not closed around the orange juice carton, so it is not holding it.",
+   "keep": 1,
+   "subgoals": [
+    {
+     "name": "hover_orange_juice",
+     "clause": 0,
+     "subgoal": "Open the jaws, move the gripper over the orange juice carton (the rectangular carton with the orange label and orange slice graphic) and lower it until it hovers about a palm's height above the carton, jaws still open.",
+     "criterion": "The orange juice carton sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
+     "target": "the orange juice carton"
+    },
+    {
+     "name": "hover_orange_juice_retry",
+     "clause": 0,
+     "subgoal": "Open the jaws, move the gripper over the orange juice carton (the rectangular carton with the orange label and orange slice graphic) and lower it until it hovers about a palm's height above the carton, jaws still open.",
+     "criterion": "The orange juice carton sits directly under the gripper in the wrist view, the gripper is a palm's height or less above it, and the jaws are open.",
+     "target": "the orange juice carton"
+    },
+    {
+     "name": "take_orange_juice_retry",
+     "clause": 0,
+     "subgoal": "Descend the rest of the way until the jaws are level with the middle of the orange juice carton, with it between them, and close.",
+     "criterion": "The robot reports that it is HOLDING the orange juice carton.",
+     "target": "the orange juice carton"
+    },
+    {
+     "name": "lift_orange_juice_retry",
+     "clause": 0,
+     "subgoal": "Raise the gripper straight up by about 15 cm without letting go of the orange juice carton.",
+     "criterion": "The tool has risen at least 120 mm since this step began and the robot still reports holding the orange juice carton.",
+     "target": "the orange juice carton"
+    },
+    {
+     "name": "carry_orange_juice_retry",
+     "clause": 1,
+     "subgoal": "Move the gripper sideways at this height until the orange juice carton is over the basket, still holding it.",
+     "criterion": "The orange juice carton is over the basket and the robot still reports holding it.",
+     "target": "the orange juice carton"
+    },
+    {
+     "name": "put_orange_juice_retry",
+     "clause": 1,
+     "subgoal": "Lower the gripper until the orange juice carton is just above the basket, then open the jaws to let it go.",
+     "criterion": "The jaws are open and the orange juice carton rests in the basket, its middle over the middle of the basket.",
+     "target": "the orange juice carton"
+    },
+    {
+     "name": "retreat_retry",
+     "clause": -1,
+     "subgoal": "Raise the gripper straight up by about 15 cm.",
+     "criterion": "The tool has risen at least 120 mm since this step began.",
+     "target": "the basket"
+    }
+   ]
+  }
+ },
+ "spatial_t2_s1_carry": {
+  "_note": "carry_bowl attempt 1: the plate was located in cycle 0 before the 223 mm move (the verifier was told 250 mm: its verdict text); the batch residuals after each cycle's moves are the recorded ones; truth at the verdict: bowl centre 8 mm from the plate centre, 123 mm up (vtruthB2.txt)",
+  "target": "the akita black bowl in the center of the table",
+  "subgoal": "Move the gripper sideways at this height until the akita black bowl is over the plate, still holding it.",
+  "criterion": "The akita black bowl is over the plate and the robot still reports holding it.",
+  "cycles": [
+   {
+    "index": 0,
+    "located": {
+     "label": "plate",
+     "point_mm": [
+      739.5979728729693,
+      185.56527398091646,
+      -58.22328876679911
+     ],
+     "error_mm": 10,
+     "doubtful": false
+    },
+    "batch": {
+     "actions": 7,
+     "ran": 7,
+     "motion_s": 21.133,
+     "residual_mm": 40.77727958788052
+    },
+    "stopped_by": null,
+    "assessment": "The robot is holding the akita black bowl. The target block states the plate is 109 mm FORWARD and 195 mm LEFT of the held object. The subgoal is to move the gripper sideways (and forward) to position the bowl over the plate. The total distance is sqrt(109^2 + 195^2) ≈ 223 mm, which is within the 400 mm limit for a single command. The tool is currently holding the bowl."
+   },
+   {
+    "index": 1,
+    "located": null,
+    "batch": {
+     "actions": 2,
+     "ran": 2,
+     "motion_s": 1.422,
+     "residual_mm": 31.986852162887804
+    },
+    "stopped_by": null,
+    "assessment": "The gripper is holding the akita black bowl. The target block states the plate is 10 mm FORWARD and 10 mm LEFT of the centre of what the jaws hold. The subgoal is to move the bowl over the plate. The offset is small (14 mm total), but the criterion requires the bowl to be over the plate. I will perform the move to align them."
+   },
+   {
+    "index": 2,
+    "located": null,
+    "batch": null,
+    "stopped_by": "the model says the subgoal is achieved",
+    "assessment": "The robot is holding the akita black bowl. The target block states the plate is 3 mm FORWARD and 2 mm LEFT of the centre of what the jaws hold. This offset is within the 6 mm tolerance threshold, meaning the tool is already positioned over the plate. The gripper reports holding the object."
+   }
+  ],
+  "ending": "MODEL_DONE",
+  "verdict": {
+   "status": "not_done",
+   "gate": "",
+   "because": "The bowl is not positioned over the plate; the camera-located plate is 250 mm away from the tool, contradicting the executor's claim of being over it.",
+   "evidence": "The scene view shows the gripper holding a bowl far to the right of the red-rimmed plate, and the measured distance from the tool to the plate is 250 mm."
+  },
+  "truth": {
+   "obj_recv_xy_mm": 8,
+   "dz_mm": 123
+  }
+ },
+ "located_identity_gated": {
+  "_note": "every verdict B2 gated located_identity (vtruthB2.txt): the located label is the receiver (or, at a lift, the landmark the thing stood on); truth at 13 of 15 was the thing over its receiver; `overrode` is the model's own answer",
+  "cases": [
+   {
+    "cell": "object_t2_s1",
+    "step": "carry_salad_dressing",
+    "attempt": 1,
+    "target": "the salad dressing bottle with the green cap",
+    "subgoal": "Move the gripper sideways at this height until the salad dressing bottle is over the basket, still holding it.",
+    "criterion": "The salad dressing bottle is over the basket and the robot still reports holding it.",
+    "located_label": "basket",
+    "because": "the camera located \"basket\", which shares no word with the target \"the salad dressing bottle with the green cap\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the salad dressing bottle and has moved it directly over the basket."
+    }
+   },
+   {
+    "cell": "object_t2_s1",
+    "step": "carry_salad_dressing_retry",
+    "attempt": 1,
+    "target": "the salad dressing bottle",
+    "subgoal": "Move the gripper sideways at this height until the salad dressing bottle is over the basket, still holding it.",
+    "criterion": "The salad dressing bottle is over the basket and the robot still reports holding it.",
+    "located_label": "basket",
+    "because": "the camera located \"basket\", which shares no word with the target \"the salad dressing bottle\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the salad dressing bottle and has moved it directly over the basket."
+    }
+   },
+   {
+    "cell": "object_t3_s1",
+    "step": "carry_bbq_sauce",
+    "attempt": 1,
+    "target": "the brown BBQ sauce bottle with the red cap",
+    "subgoal": "Move the gripper sideways at this height until the brown BBQ sauce bottle with the red cap is over the white woven basket, still holding it.",
+    "criterion": "The brown BBQ sauce bottle with the red cap is over the white woven basket and the robot still reports holding it.",
+    "located_label": "white woven basket",
+    "because": "the camera located \"white woven basket\", which shares no word with the target \"the brown BBQ sauce bottle with the red cap\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the BBQ sauce bottle directly over the white woven basket."
+    }
+   },
+   {
+    "cell": "object_t3_s1",
+    "step": "carry_bbq_sauce_retry",
+    "attempt": 1,
+    "target": "the BBQ sauce bottle",
+    "subgoal": "Move the gripper sideways at this height until the BBQ sauce bottle is over the white woven basket, still holding it.",
+    "criterion": "The BBQ sauce bottle is over the white woven basket and the robot still reports holding it.",
+    "located_label": "white woven basket",
+    "because": "the camera located \"white woven basket\", which shares no word with the target \"the BBQ sauce bottle\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the BBQ sauce bottle and has moved it to a position directly over the white woven basket."
+    }
+   },
+   {
+    "cell": "object_t8_s0",
+    "step": "lift_pudding",
+    "attempt": 1,
+    "target": "the chocolate pudding box",
+    "subgoal": "raise the gripper straight up by about 15 cm without letting go of the chocolate pudding box.",
+    "criterion": "The tool has risen at least 120 mm since this step began and the robot still reports holding the chocolate pudding box.",
+    "located_label": "orange juice carton",
+    "because": "the camera located \"orange juice carton\", which shares no word with the target \"the chocolate pudding box\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot has lifted the chocolate pudding box 140 mm, exceeding the 120 mm requirement, and is still holding it."
+    }
+   },
+   {
+    "cell": "object_t8_s0",
+    "step": "carry_pudding_retry",
+    "attempt": 1,
+    "target": "the chocolate pudding box",
+    "subgoal": "move the gripper sideways at this height until the chocolate pudding box is over the basket, still holding it",
+    "criterion": "the chocolate pudding box is over the basket and the robot still reports holding it",
+    "located_label": "basket",
+    "because": "the camera located \"basket\", which shares no word with the target \"the chocolate pudding box\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the chocolate pudding box and has moved it to a position directly over the basket."
+    }
+   },
+   {
+    "cell": "spatial_t2_s0",
+    "step": "carry_akita_bowl",
+    "attempt": 1,
+    "target": "akita black bowl",
+    "subgoal": "move the gripper sideways at this height until the akita black bowl is over the plate, still holding it",
+    "criterion": "the akita black bowl is over the plate and the robot still reports holding it",
+    "located_label": null,
+    "because": "the camera located \"plate\", which shares no word with the target \"akita black bowl\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the patterned bowl and has moved it to a position directly over the white plate with red rings."
+    }
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_bowl",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the red box",
+    "subgoal": "Move the gripper sideways at this height until the patterned bowl is over the white plate with red rings, still holding it.",
+    "criterion": "The patterned bowl is over the white plate with red rings and the robot still reports holding it.",
+    "located_label": "white plate",
+    "because": "the camera located \"white plate\", which shares no word with the target \"the patterned bowl sitting on the red box\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the patterned bowl and has moved it to a position directly over the white plate with red rings."
+    }
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_bowl_retry",
+    "attempt": 1,
+    "target": "the black and white patterned bowl",
+    "subgoal": "move the gripper sideways at this height until the black and white patterned bowl is over the plate, still holding it",
+    "criterion": "the black and white patterned bowl is over the plate and the robot still reports holding it",
+    "located_label": "plate",
+    "because": "the camera located \"plate\", which shares no word with the target \"the black and white patterned bowl\"",
+    "overrode": {
+     "status": "done",
+     "because": "the gripper reading settles holding; the model's not_done contradicted it twice"
+    }
+   },
+   {
+    "cell": "spatial_t7_s1",
+    "step": "carry_bowl",
+    "attempt": 1,
+    "target": "the patterned bowl on the stove",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl is over the white plate with red rings, still holding it.",
+    "criterion": "the patterned bowl is over the white plate with red rings and the robot still reports holding it.",
+    "located_label": "white plate",
+    "because": "the camera located \"white plate\", which shares no word with the target \"the patterned bowl on the stove\"",
+    "overrode": {
+     "status": "done",
+     "because": "The robot is holding the patterned bowl and has moved it to a position directly over the white plate with red rings."
+    }
+   }
+  ]
+ },
+ "still_holding_gated": {
+  "_note": "every take / lift / carry verdict B2 gated 'still holding' (vtruthB2.txt; 12 of the 13, the 13th being a true put step): the criterion names the held thing with where it stood, 'sitting on the grey ramekin' / 'sitting on the red box', which RELEASE_WORDS read as a release",
+  "cases": [
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_bowl_to_plate",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the red box",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the red box is over the plate, still holding it",
+    "criterion": "the patterned bowl sitting on the red box is over the plate and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_bowl_to_plate",
+    "attempt": 2,
+    "target": "the patterned bowl sitting on the red box",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the red box is over the plate, still holding it",
+    "criterion": "the patterned bowl sitting on the red box is over the plate and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_patterned_bowl_retry",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the red box",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the red box is over the plate, still holding it",
+    "criterion": "the patterned bowl sitting on the red box is over the plate and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_bowl_to_plate_retry2",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the red box",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the red box is over the red-rimmed plate, still holding it",
+    "criterion": "the patterned bowl sitting on the red box is over the red-rimmed plate and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "step": "carry_bowl_to_plate_retry2",
+    "attempt": 2,
+    "target": "the patterned bowl sitting on the red box",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the red box is over the red-rimmed plate, still holding it",
+    "criterion": "the patterned bowl sitting on the red box is over the red-rimmed plate and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "take_bowl",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "descend the rest of the way until the jaws are level with the rim of the patterned bowl sitting on the grey ramekin, with it between them, and close.",
+    "criterion": "The robot reports that it is HOLDING the patterned bowl sitting on the grey ramekin."
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "lift_bowl",
+    "attempt": 2,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "raise the gripper straight up by about 15 cm without letting go of the patterned bowl sitting on the grey ramekin.",
+    "criterion": "The tool has risen at least 120 mm since this step began and the robot still reports holding the patterned bowl sitting on the grey ramekin."
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "carry_bowl_retry",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the grey ramekin is over the white plate with red rings, still holding it",
+    "criterion": "the patterned bowl sitting on the grey ramekin is over the white plate with red rings and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "carry_bowl_retry",
+    "attempt": 2,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the grey ramekin is over the white plate with red rings, still holding it",
+    "criterion": "the patterned bowl sitting on the grey ramekin is over the white plate with red rings and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "carry_bowl_retry2",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the grey ramekin is over the white plate with red rings, still holding it",
+    "criterion": "the patterned bowl sitting on the grey ramekin is over the white plate with red rings and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "carry_bowl_to_plate",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the grey ramekin is over the white plate with red rings, still holding it",
+    "criterion": "the patterned bowl sitting on the grey ramekin is over the white plate with red rings and the robot still reports holding it"
+   },
+   {
+    "cell": "spatial_t5_s0",
+    "step": "carry_bowl_to_plate_retry",
+    "attempt": 1,
+    "target": "the patterned bowl sitting on the grey ramekin",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the grey ramekin is over the white plate with red rings, still holding it",
+    "criterion": "the patterned bowl sitting on the grey ramekin is over the white plate with red rings and the robot still reports holding it"
+   }
+  ]
+ },
+ "receiver_mislabelled": {
+  "_note": "carry / put locates whose label was a landmark instead of the receiver (carrylocB2.txt): the receiver words came from the first preposition of a criterion whose subject carries a place phrase",
+  "cases": [
+   {
+    "cell": "spatial_t5_s1",
+    "criterion": "the black bowl on the ramekin is placed on the plate, its middle over the middle of the plate",
+    "subgoal": "lower the gripper until the black bowl on the ramekin is just above the plate, then open the jaws to let it go",
+    "target": "the black bowl on the ramekin",
+    "located_label": "ramekin",
+    "want": "plate"
+   },
+   {
+    "cell": "spatial_t3_s0",
+    "criterion": "the patterned bowl sitting on the red box is over the plate and the robot still reports holding it",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl sitting on the red box is over the plate, still holding it",
+    "target": "the patterned bowl sitting on the red box",
+    "located_label": "red box is over the plate",
+    "want": "plate"
+   },
+   {
+    "cell": "spatial_t7_s1",
+    "criterion": "the patterned bowl on the stove is over the white plate with red rings and the robot still reports holding it",
+    "subgoal": "move the gripper sideways at this height until the patterned bowl on the stove is over the white plate with red rings, still holding it",
+    "target": "the patterned bowl on the stove",
+    "located_label": "stove is over the white plate",
+    "want": "white plate"
+   }
+  ]
+ },
+ "object_t3_s0_take_drift": {
+  "_note": "take_bbq_sauce_retry attempt 1 (the point carried in was [668,-93]; truth about 654): every cycle's descent was a push=true delta blocked by contact on the cap (lateral 1.4-2.9 mm), the shove rule then looked again each cycle and the anchor followed the tool 687 -> 700 -> 707 -> 710 -> 712 -> 714 (next attempt)",
+  "truth_x_mm": 654,
+  "carried_point_mm": [
+   668,
+   -93,
+   113
+  ],
+  "cycles": [
+   {
+    "index": 0,
+    "located": null,
+    "deltas": [
+     {
+      "kind": "translate",
+      "label": "move backward 5.0 mm (base)",
+      "axis": [
+       -1,
+       0,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move left 2.0 mm (base)",
+      "axis": [
+       0,
+       1,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move down 30.0 mm (base)",
+      "axis": [
+       0,
+       0,
+       -1
+      ],
+      "push": true
+     }
+    ],
+    "steps": [
+     {
+      "label": "move backward 5.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 2.29,
+      "lateral_mm": 0.83,
+      "turned_deg": 0.2
+     },
+     {
+      "label": "move left 2.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0,
+      "lateral_mm": 0,
+      "turned_deg": 0
+     },
+     {
+      "label": "move down 30.0 mm (base) [1/1]",
+      "outcome": "contact",
+      "abort_reason": "blocked",
+      "along_axis_mm": 0.91,
+      "lateral_mm": 1.43,
+      "turned_deg": 0.3
+     }
+    ],
+    "batch": {
+     "actions": 3,
+     "ran": 3,
+     "motion_s": 0.757,
+     "residual_mm": 4.7168667790869145
+    }
+   },
+   {
+    "index": 1,
+    "located": {
+     "label": "brown bbq sauce bottle with red cap",
+     "point_mm": [
+      687.3542748322641,
+      -91.8636804344622,
+      113.14873980717414
+     ],
+     "error_mm": 10,
+     "doubtful": true
+    },
+    "deltas": [
+     {
+      "kind": "translate",
+      "label": "move backward 4.0 mm (base)",
+      "axis": [
+       -1,
+       0,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move left 2.0 mm (base)",
+      "axis": [
+       0,
+       1,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move down 30.0 mm (base)",
+      "axis": [
+       0,
+       0,
+       -1
+      ],
+      "push": true
+     }
+    ],
+    "steps": [
+     {
+      "label": "move backward 4.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 1.1,
+      "lateral_mm": 0.63,
+      "turned_deg": 0.2
+     },
+     {
+      "label": "move left 2.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0,
+      "lateral_mm": 0,
+      "turned_deg": 0
+     },
+     {
+      "label": "move down 30.0 mm (base) [1/1]",
+      "outcome": "contact",
+      "abort_reason": "blocked",
+      "along_axis_mm": 0.72,
+      "lateral_mm": 1.62,
+      "turned_deg": 0.2
+     }
+    ],
+    "batch": {
+     "actions": 3,
+     "ran": 3,
+     "motion_s": 0.492,
+     "residual_mm": 5.24087670580257
+    }
+   },
+   {
+    "index": 2,
+    "located": {
+     "label": "brown bbq sauce bottle with red cap",
+     "point_mm": [
+      700.449744914367,
+      -91.34100416762384,
+      113.14873980717414
+     ],
+     "error_mm": 41.028004834130265,
+     "doubtful": true
+    },
+    "deltas": [
+     {
+      "kind": "translate",
+      "label": "move forward 8.0 mm (base)",
+      "axis": [
+       1,
+       0,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move left 3.0 mm (base)",
+      "axis": [
+       0,
+       1,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move down 30.0 mm (base)",
+      "axis": [
+       0,
+       0,
+       -1
+      ],
+      "push": true
+     }
+    ],
+    "steps": [
+     {
+      "label": "move forward 8.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 5.27,
+      "lateral_mm": 0.55,
+      "turned_deg": 0.3
+     },
+     {
+      "label": "move left 3.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0.22,
+      "lateral_mm": 0.43,
+      "turned_deg": 0
+     },
+     {
+      "label": "move down 30.0 mm (base) [1/1]",
+      "outcome": "contact",
+      "abort_reason": "blocked",
+      "along_axis_mm": -0.19,
+      "lateral_mm": 2.9,
+      "turned_deg": 0.2
+     }
+    ],
+    "batch": {
+     "actions": 3,
+     "ran": 3,
+     "motion_s": 0.8879999999999999,
+     "residual_mm": 2.817015397348514
+    }
+   },
+   {
+    "index": 3,
+    "located": {
+     "label": "brown bbq sauce bottle with red cap",
+     "point_mm": [
+      706.6351789992174,
+      -90.26639262677084,
+      113.14873980717414
+     ],
+     "error_mm": 58.55005838331539,
+     "doubtful": false
+    },
+    "deltas": [
+     {
+      "kind": "translate",
+      "label": "move forward 6.0 mm (base)",
+      "axis": [
+       1,
+       0,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move left 4.0 mm (base)",
+      "axis": [
+       0,
+       1,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move down 30.0 mm (base)",
+      "axis": [
+       0,
+       0,
+       -1
+      ],
+      "push": true
+     }
+    ],
+    "steps": [
+     {
+      "label": "move forward 6.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 3.05,
+      "lateral_mm": 0.32,
+      "turned_deg": 0.3
+     },
+     {
+      "label": "move left 4.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 1.59,
+      "lateral_mm": 0.98,
+      "turned_deg": 0.1
+     },
+     {
+      "label": "move down 30.0 mm (base) [1/1]",
+      "outcome": "contact",
+      "abort_reason": "blocked",
+      "along_axis_mm": 0.37,
+      "lateral_mm": 2.1,
+      "turned_deg": 0.2
+     }
+    ],
+    "batch": {
+     "actions": 3,
+     "ran": 3,
+     "motion_s": 0.913,
+     "residual_mm": 2.5440594742864207
+    }
+   },
+   {
+    "index": 4,
+    "located": {
+     "label": "brown bbq sauce bottle with red cap",
+     "point_mm": [
+      709.8573896030565,
+      -89.67102963136058,
+      113.14873980717414
+     ],
+     "error_mm": 49.6776291902194,
+     "doubtful": true
+    },
+    "deltas": [
+     {
+      "kind": "translate",
+      "label": "move forward 3.0 mm (base)",
+      "axis": [
+       1,
+       0,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move left 3.0 mm (base)",
+      "axis": [
+       0,
+       1,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move down 30.0 mm (base)",
+      "axis": [
+       0,
+       0,
+       -1
+      ],
+      "push": true
+     }
+    ],
+    "steps": [
+     {
+      "label": "move forward 3.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0.3,
+      "lateral_mm": 0.18,
+      "turned_deg": 0
+     },
+     {
+      "label": "move left 3.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0.22,
+      "lateral_mm": 0.24,
+      "turned_deg": 0
+     },
+     {
+      "label": "move down 30.0 mm (base) [1/1]",
+      "outcome": "contact",
+      "abort_reason": "blocked",
+      "along_axis_mm": 0.12,
+      "lateral_mm": 2.13,
+      "turned_deg": 0.2
+     }
+    ],
+    "batch": {
+     "actions": 3,
+     "ran": 3,
+     "motion_s": 0.48,
+     "residual_mm": 3.2052009415873486
+    }
+   },
+   {
+    "index": 5,
+    "located": {
+     "label": "brown bottle",
+     "point_mm": [
+      712.4154746982696,
+      -90.46106853560778,
+      113.14873980717414
+     ],
+     "error_mm": 62.60361617565574,
+     "doubtful": false
+    },
+    "deltas": [
+     {
+      "kind": "translate",
+      "label": "move forward 3.0 mm (base)",
+      "axis": [
+       1,
+       0,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move left 2.0 mm (base)",
+      "axis": [
+       0,
+       1,
+       0
+      ],
+      "push": false
+     },
+     {
+      "kind": "translate",
+      "label": "move down 31.0 mm (base)",
+      "axis": [
+       0,
+       0,
+       -1
+      ],
+      "push": true
+     }
+    ],
+    "steps": [
+     {
+      "label": "move forward 3.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0.3,
+      "lateral_mm": 0.18,
+      "turned_deg": 0
+     },
+     {
+      "label": "move left 2.0 mm (base) [1/1]",
+      "outcome": "done",
+      "abort_reason": "",
+      "along_axis_mm": 0,
+      "lateral_mm": 0,
+      "turned_deg": 0
+     },
+     {
+      "label": "move down 31.0 mm (base) [1/1]",
+      "outcome": "contact",
+      "abort_reason": "blocked",
+      "along_axis_mm": 0.05,
+      "lateral_mm": 2.41,
+      "turned_deg": 0.2
+     }
+    ],
+    "batch": {
+     "actions": 3,
+     "ran": 3,
+     "motion_s": 0.41100000000000003,
+     "residual_mm": 2.841922243870987
+    }
+   }
+  ],
+  "ending": "FROZEN"
+ }
+}

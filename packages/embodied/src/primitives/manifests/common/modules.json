@@ -1,0 +1,209 @@
+{
+	"internal": [],
+	"primitives": [
+		{
+			"name": "finish",
+			"side": "ts",
+			"tier": "low",
+			"module": "robot",
+			"doc": {
+				"tool": "End the episode (the robot's finish tool)."
+			}
+		},
+		{
+			"name": "act",
+			"side": "ts",
+			"tier": "raw",
+			"module": "units",
+			"doc": {
+				"tool": "One Show-Harness action unit (modes/units)."
+			}
+		},
+		{
+			"name": "plan",
+			"side": "ts",
+			"tier": "raw",
+			"module": "units",
+			"doc": {
+				"tool": "The units' subgoal plan (modes/units)."
+			}
+		},
+		{
+			"name": "point",
+			"side": "ts",
+			"tier": "low",
+			"module": "pointing",
+			"doc": {
+				"tool": "Molmo pointing (primitives/pointing.ts)."
+			}
+		},
+		{
+			"name": "molmo_point",
+			"side": "ts",
+			"tier": "low",
+			"module": "pointing",
+			"doc": {
+				"tool": "Molmo pointing under another name, where the units' point plugin owns `point` (primitives/pointing.ts)."
+			}
+		},
+		{
+			"name": "reset",
+			"side": "ts",
+			"tier": "low",
+			"module": "explore",
+			"doc": {
+				"tool": "Exploration's episode restart (capabilities/explore.ts)."
+			}
+		},
+		{
+			"name": "write_audit",
+			"side": "ts",
+			"tier": "low",
+			"module": "memory",
+			"doc": {
+				"tool": "Write the cell's audit, the task_only record paired with the recipe (capabilities/memory, a robot's `memory.audit`)."
+			}
+		},
+		{
+			"name": "request_operator_verdict",
+			"side": "ts",
+			"tier": "low",
+			"module": "operator",
+			"doc": {
+				"tool": "Ask the operator for a verdict (capabilities/operator.ts)."
+			}
+		},
+		{
+			"name": "request_scene_reset",
+			"side": "ts",
+			"tier": "low",
+			"module": "operator",
+			"doc": {
+				"tool": "Ask the operator to reset the scene (capabilities/operator.ts)."
+			}
+		},
+		{
+			"name": "run_code",
+			"side": "ts",
+			"tier": "low",
+			"module": "code",
+			"doc": {
+				"tool": "Code mode's program runner (modes/code)."
+			}
+		},
+		{
+			"name": "xpolicy_act",
+			"side": "ts",
+			"tier": "low",
+			"module": "xpolicy",
+			"doc": {
+				"tool": "An XPolicyLab policy's action chunks (primitives/xpolicy.ts)."
+			}
+		},
+		{
+			"name": "mm_observe",
+			"side": "ts",
+			"tier": "raw",
+			"module": "motormind",
+			"requires": [
+				"motormind"
+			],
+			"doc": {
+				"tool": "MotorMind mode's observation in the robot's base frame (modes/motormind, --mm=true)."
+			}
+		},
+		{
+			"name": "mm_act",
+			"side": "ts",
+			"tier": "raw",
+			"module": "motormind",
+			"requires": [
+				"motormind"
+			],
+			"doc": {
+				"tool": "One MotorMind action, run segment by segment with its measured feedback (modes/motormind, --mm=true)."
+			}
+		},
+		{
+			"name": "remember_object",
+			"side": "ts",
+			"tier": "low",
+			"module": "objects",
+			"requires": [
+				"object_memory"
+			],
+			"doc": {
+				"tool": "Record where an object was seen now (capabilities/objects.ts, --object-memory)."
+			}
+		},
+		{
+			"name": "recall_objects",
+			"side": "ts",
+			"tier": "low",
+			"module": "objects",
+			"requires": [
+				"object_memory"
+			],
+			"doc": {
+				"tool": "The object records (capabilities/objects.ts, --object-memory)."
+			}
+		},
+		{
+			"name": "forget_object",
+			"side": "ts",
+			"tier": "low",
+			"module": "objects",
+			"requires": [
+				"object_memory"
+			],
+			"doc": {
+				"tool": "Drop an object record (capabilities/objects.ts, --object-memory)."
+			}
+		},
+		{
+			"name": "retrieve_asset_reference",
+			"side": "ts",
+			"tier": "low",
+			"module": "objects",
+			"requires": [
+				"object_memory"
+			],
+			"doc": {
+				"tool": "Reference views and facts of a kind of object from the memory corpus (capabilities/assets.ts, --object-memory)."
+			}
+		},
+		{
+			"name": "web_search",
+			"side": "ts",
+			"tier": "low",
+			"module": "web",
+			"requires": [
+				"web"
+			],
+			"doc": {
+				"tool": "Web search from the pi package npm:pi-web-search@1.6.0 (capabilities/web.ts keeps it active, --web-tools); untrusted text."
+			}
+		},
+		{
+			"name": "policy_goal",
+			"side": "ts",
+			"tier": "low",
+			"module": "policy",
+			"doc": {
+				"tool": "The persistent MetaWorld policy's goal event (capabilities/policy, --policy-store)."
+			}
+		},
+		{
+			"name": "web_fetch",
+			"side": "ts",
+			"tier": "low",
+			"module": "web",
+			"requires": [
+				"web"
+			],
+			"doc": {
+				"tool": "A public web page as Markdown from the pi package npm:@zeldrisho/pi-web-fetch@0.9.2 (capabilities/web.ts, --web-tools); untrusted text."
+			}
+		}
+	]
+}

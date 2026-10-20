@@ -1,0 +1,696 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+
+/** Run `<robot>/eval.sh <out> ...positional` with a stand-in pi that records its argv and fails; `cell` is the result's directory. */
+function run(robot: string, positional: string[], cell: string, args: string[], env: Record<string, string> = {}) {
+	const dir = mkdtempSync(join(tmpdir(), "eval-"));
+	const pi = join(dir, "pi");
+	writeFileSync(pi, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "$(dirname "$0")/argv"\nexit 1\n`);
+	chmodSync(pi, 0o755);
+	const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;
+	const r = spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
+		env: { ...process.env, PI: pi, TIME_LIMIT: "0", ...env },
+		encoding: "utf8",
+	});
+	const read = (p: string) => {
+		try {
+			return readFileSync(join(dir, p), "utf8");
+		} catch {
+			return undefined;
+		}
+	};
+	const result = read(`out/${cell}/result.json`);
+	return {
+		status: r.status,
+		stderr: r.stderr,
+		argv: read("argv")?.trimEnd().split("\n"),
+		result: result && JSON.parse(result),
+	};
+}
+
+/** One cell per robot: its positional args, the result's directory, the environment narrowing the matrix. */
+const CELLS: [string, string[], string, Record<string, string>?][] = [
+	["maniskill", ["PickCube-v1", "0"], "PickCube-v1_s0"],
+	["metaworld", ["reach-v3", "0"], "reach-v3_s0"],
+	["robolab", ["BananaInBowlTask", "0"], "BananaInBowlTask_s0"],
+	["robodojo", ["stack_bowls", "0"], "stack_bowls_s0"],
+	["libero", ["libero_10_task", "0", "0"], "libero_10_task_t0_s0"],
+	["robosuite", ["Lift", "0"], "Lift_s0"],
+];
+const eval_ = (path: string) =>
+	JSON.parse(readFileSync(new URL(`../../../services/pi_embodied_services/robots/${path}`, import.meta.url), "utf8"));
+{
+	// RoboTwin runs every seed of a task; RoboCasa's matrix is narrowed to one cell.
+	const [task, [{ seed }]] = Object.entries(eval_("robotwin/eval/demo_randomized.json").tasks)[0] as [
+		string,
+		{ seed: number }[],
+	];
+	CELLS.push(["robotwin", [task], `${task}_s${seed}`]);
+	const { tasks, seeds } = eval_("robocasa/eval/target50.json").splits.atomic as { tasks: string[]; seeds: number[] };
+	CELLS.push([
+		"robocasa",
+		["atomic"],
+		`atomic/${tasks[0]}_s${seeds[0]}`,
+		{ TASKS: tasks[0], SEEDS: String(seeds[0]) },
+	]);
+}
+
+for (const [robot, positional, cell, env] of CELLS) {
+	const run1 = (args: string[]) => run(robot, positional, cell, args, env);
+	test(`${robot}/eval.sh records --units and --stateless as pi runs them and refuses a value pi would ignore`, () => {
+		// pi sets a boolean flag to true whatever its value: `--stateless=false` would run stateless.
+		for (const args of [["--stateless=false"], ["--stateless", "false"], ["--stateless=0"]]) {
+			const r = run1(args);
+			assert.equal(r.status, 2, args.join(" "));
+			assert.match(r.stderr, /stateless/);
+			assert.equal(r.argv, undefined, "pi never ran");
+		}
+		for (const args of [["--stateless"], ["--stateless=true"], ["--stateless", "--model", "m/x"]]) {
+			const r = run1(args);
+			assert.equal(r.result?.stateless, true, args.join(" "));
+			// The prompt precedes the user's args, so a trailing bare flag cannot swallow it.
+			const prompt = r.argv?.findIndex((a) => a.startsWith("Solve the task.")) ?? -1;
+			assert.ok(prompt >= 0 && prompt < (r.argv?.indexOf(args[0]) ?? -1), String(r.argv));
+		}
+		const plain = run1([]).result;
+		assert.equal(plain?.stateless, false);
+		assert.equal(plain?.units, "false");
+		for (const [args, units] of [
+			[["--units"], "true"],
+			[["--units=true"], "true"],
+			[["--units", "both"], "both"],
+			[["--units=pure"], "true"],
+		] as const)
+			assert.equal(run1([...args]).result?.units, units, args.join(" "));
+	});
+}
+
+for (const [robot, positional, cell, env] of CELLS) {
+	test(`${robot}/eval.sh records --vdm-video as its frame count and refuses a value pi would ignore`, () => {
+		const run1 = (args: string[]) => run(robot, positional, cell, args, env);
+		assert.equal(run1(["--vdm-video=false"]).status, 2);
+		assert.equal(run1([]).result?.vdm_video, null);
+		assert.equal(run1(["--vdm-video"]).result?.vdm_video, 8);
+		assert.equal(run1(["--vdm-video", "--vdm-video-frames", "4"]).result?.vdm_video, 4);
+	});
+}
+
+for (const [robot, positional, cell, env] of CELLS) {
+	test(`${robot}/eval.sh records --vdm, --aux-model and --vdm-wrist and refuses a value pi would ignore`, () => {
+		const run1 = (args: string[]) => run(robot, positional, cell, args, env);
+		for (const args of [["--vdm=false"], ["--vdm", "false"], ["--vdm-wrist=0"]]) {
+			const r = run1(args);
+			assert.equal(r.status, 2, args.join(" "));
+			assert.match(r.stderr, /vdm/);
+			assert.equal(r.argv, undefined, "pi never ran");
+		}
+		const plain = run1([]).result;
+		assert.deepEqual([plain?.vdm, plain?.vdm_model, plain?.vdm_wrist], [false, null, false]);
+		const on = run1(["--vdm", "--aux-model", "selfhost/muse", "--vdm-wrist"]).result;
+		assert.deepEqual([on?.vdm, on?.vdm_model, on?.vdm_wrist], [true, "selfhost/muse", true]);
+	});
+}
+
+test("libero/eval.sh records --unit-tol and drops --aux-model when --vdm is off", () => {
+	const run1 = (args: string[]) => run("libero", ["libero_10_task", "0", "0"], "libero_10_task_t0_s0", args);
+	// Without --vdm no VDM call runs: the model is not part of the configuration.
+	assert.equal(run1(["--aux-model", "selfhost/muse"]).result?.vdm_model, null);
+	// --unit-tol is recorded (the robot's default without it).
+	assert.equal(run1([]).result?.unit_tol, 0.004);
+	assert.equal(run1(["--unit-tol", "0.002"]).result?.unit_tol, 0.002);
+	assert.equal(run1(["--unit-tol=0.006"]).result?.unit_tol, 0.006);
+});
+
+test("libero/eval.sh records --vdm-video as its frame count, with the model, and refuses a value pi would ignore", () => {
+	const run1 = (args: string[]) => run("libero", ["libero_10_task", "0", "0"], "libero_10_task_t0_s0", args);
+	assert.equal(run1(["--vdm-video=false"]).status, 2);
+	assert.equal(run1([]).result?.vdm_video, null);
+	assert.equal(run1(["--vdm-video"]).result?.vdm_video, 8);
+	const on = run1(["--vdm-video", "--vdm-video-frames", "4", "--aux-model", "selfhost/muse"]).result;
+	assert.deepEqual([on?.vdm, on?.vdm_video, on?.vdm_model], [false, 4, "selfhost/muse"]);
+});
+
+test("robotwin/eval.sh records the env server's planner and never mixes results of another one in one out dir", () => {
+	const [, positional, cell] = CELLS.find(([r]) => r === "robotwin") as (typeof CELLS)[number];
+	const contract = readFileSync(
+		new URL("../../../services/pi_embodied_services/robots/robotwin/contract.py", import.meta.url),
+		"utf8",
+	);
+	const planner = /^ROBOTWIN_PLANNER = "([^"]+)"$/m.exec(contract)?.[1];
+	assert.ok(planner);
+	assert.equal(run("robotwin", positional, cell, []).result?.planner, planner);
+	// A result of the earlier planner (no `planner`, or another one) is another configuration.
+	for (const old of [{}, { planner: "curobo_lbfgs=cuda" }]) {
+		const dir = mkdtempSync(join(tmpdir(), "eval-"));
+		mkdirSync(join(dir, "out", cell), { recursive: true });
+		writeFileSync(
+			join(dir, "out", cell, "result.json"),
+			JSON.stringify({
+				status: "success",
+				model: null,
+				thinking: null,
+				max_turns: 0,
+				time_limit: 0,
+				units: "false",
+				stateless: false,
+				...old,
+			}),
+		);
+		const script = new URL("../src/robots/robotwin/eval.sh", import.meta.url).pathname;
+		const r = spawnSync("bash", [script, join(dir, "out"), ...positional], {
+			env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
+			encoding: "utf8",
+		});
+		assert.equal(r.status, 1);
+		assert.match(r.stderr, /planner \(an older env server\), .*; use another out dir/);
+	}
+});
+
+test("libero/eval.sh records --code and --code-api as pi runs them and never mixes code mode with tool runs", () => {
+	const run1 = (args: string[]) => run("libero", ["libero_10_task", "0", "0"], "libero_10_task_t0_s0", args);
+	const plain = run1([]).result;
+	assert.deepEqual([plain?.code, plain?.code_api], ["false", null]);
+	for (const [args, code, api] of [
+		// No --code-api: pi runs the robot's highest tier and its result names it (this fake pi
+		// records none, so the tier is unknown here); code_api_auto says it was the default.
+		[["--code"], "true", null],
+		[["--code=true"], "true", null],
+		[["--code", "both"], "both", null],
+		[["--code=pure"], "true", null],
+		[["--code", "--code-api", "low"], "true", "low"],
+		[["--code=both", "--code-api=low"], "both", "low"],
+		[["--code=false", "--code-api", "low"], "false", null],
+	] as const) {
+		const r = run1([...args]);
+		assert.deepEqual([r.result?.code, r.result?.code_api], [code, api], args.join(" "));
+		assert.equal(
+			r.result?.code_api_auto,
+			code === "false" ? null : !args.some((a) => a.startsWith("--code-api")),
+			args.join(" "),
+		);
+		// The prompt precedes the user's args, so a trailing bare --code cannot swallow it.
+		const prompt = r.argv?.findIndex((a) => a.startsWith("Solve the task.")) ?? -1;
+		assert.ok(prompt >= 0 && prompt < (r.argv?.indexOf(args[0]) ?? -1), String(r.argv));
+	}
+	const positional = ["libero_10_task", "0", "0"];
+	for (const [first, second] of [
+		[["--code"], []],
+		[[], ["--code=both"]],
+		[
+			["--code", "--code-api", "low"],
+			["--code", "--code-api", "high"],
+		],
+	]) {
+		const [a, b] = rerun("libero", positional, {}, first, second);
+		assert.equal(a.status, 0, a.stderr);
+		assert.equal(b.status, 1, `${first} then ${second}`);
+		assert.match(b.stderr, /code mode/);
+	}
+	// A default-tier run keeps its default-tier results, and an explicit tier never mixes with them.
+	const [, auto] = rerun("libero", positional, {}, ["--code"], ["--code"]);
+	assert.equal(auto.status, 0, auto.stderr);
+	const [, explicit] = rerun("libero", positional, {}, ["--code"], ["--code", "--code-api", "low"]);
+	assert.equal(explicit.status, 1, explicit.stderr);
+	const [, same] = rerun("libero", positional, {}, ["--code", "--code-api", "low"], ["--code", "--code-api", "low"]);
+	assert.equal(same.status, 0, same.stderr);
+	assert.match(same.stdout, /\/code=true:low/);
+});
+
+test("robolab/eval.sh records --instruction-type and --subtask and never mixes them in one out dir", () => {
+	const positional = ["BananaInBowlTask", "0"];
+	const run1 = (args: string[]) => run("robolab", positional, "BananaInBowlTask_s0", args);
+	for (const args of [["--subtask=false"], ["--subtask", "false"]]) {
+		const r = run1(args);
+		assert.equal(r.status, 2, args.join(" "));
+		assert.match(r.stderr, /subtask/);
+		assert.equal(r.argv, undefined, "pi never ran");
+	}
+	const plain = run1([]).result;
+	assert.equal(plain?.instruction_type, "default");
+	assert.equal(plain?.subtask, false);
+	const on = run1(["--instruction-type", "vague", "--subtask"]);
+	assert.equal(on.result?.instruction_type, "vague");
+	assert.equal(on.result?.subtask, true);
+	assert.ok(on.argv?.includes("--subtask") && on.argv?.includes("vague"), String(on.argv));
+	assert.equal(run1(["--instruction-type=specific"]).result?.instruction_type, "specific");
+	// A phrasing is a different task; a subtask run a different configuration.
+	for (const [first, second] of [
+		[["--instruction-type", "vague"], []],
+		[[], ["--instruction-type=specific"]],
+		[[], ["--subtask"]],
+	]) {
+		const [a, b] = rerun("robolab", positional, {}, first, second);
+		assert.equal(a.status, 0, a.stdout + a.stderr);
+		assert.equal(b.status, 1);
+		assert.match(b.stderr, /--instruction-type or --subtask \(or an older result without them\)/);
+	}
+	const [, same] = rerun(
+		"robolab",
+		positional,
+		{},
+		["--instruction-type", "vague", "--subtask"],
+		["--instruction-type=vague", "--subtask"],
+	);
+	assert.equal(same.status, 0, same.stdout + same.stderr);
+	assert.match(same.stdout, /\/vague\/subtask: success 1\/1/);
+});
+
+test("robodojo/eval.sh records --layout-set, never mixes layout sets in one out dir, and averages RoboDojo's score", () => {
+	const positional = ["stack_bowls", "0"];
+	const run1 = (args: string[]) => run("robodojo", positional, "stack_bowls_s0", args);
+	assert.equal(run1([]).result?.eval_seed, 0);
+	assert.equal(run1(["--layout-set", "1"]).result?.eval_seed, 1);
+	assert.equal(run1(["--layout-set=2"]).result?.eval_seed, 2);
+	const [a, b] = rerun("robodojo", positional, {}, [], ["--layout-set", "1"]);
+	assert.equal(a.status, 0, a.stdout + a.stderr);
+	assert.equal(b.status, 1);
+	assert.match(b.stderr, /--layout-set \(or an older result without them\)/);
+	const [, same] = rerun("robodojo", positional, {}, ["--layout-set", "1"], ["--layout-set=1"], { score: 1 });
+	assert.equal(same.status, 0, same.stdout + same.stderr);
+	assert.match(same.stdout, /\/eval_seed=1: success 1\/1 \(100.0%\), mean score 1.000/);
+});
+
+/** eval.sh twice into one out dir, with a stand-in pi that records one successful episode: `first` args, then `second`. */
+function rerun(
+	robot: string,
+	positional: string[],
+	env: Record<string, string>,
+	first: string[],
+	second: string[],
+	data: Record<string, unknown> = {},
+) {
+	const dir = mkdtempSync(join(tmpdir(), "eval-"));
+	const pi = join(dir, "pi");
+	const entry = JSON.stringify({
+		type: "custom",
+		customType: "robot_result",
+		// The code budget as pi's code mode records it: for the same flags its string equals eval.sh's CODE_BUDGET_FLAGS.
+		data: {
+			robot,
+			terminated: true,
+			success: true,
+			env_error: false,
+			planner_error: null,
+			code_budget_flags: "@BUDGET@",
+			...data,
+		},
+	});
+	writeFileSync(
+		pi,
+		`#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${entry}' | sed "s/@BUDGET@/$CODE_BUDGET_FLAGS/" > "$dir/s.jsonl"\n`,
+	);
+	chmodSync(pi, 0o755);
+	const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;
+	const once = (args: string[]) =>
+		spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
+			env: { ...process.env, PI: pi, TIME_LIMIT: "0", ...env },
+			encoding: "utf8",
+		});
+	return [once(first), once(second)];
+}
+
+for (const [robot, positional, cell, env] of CELLS) {
+	test(`${robot}/eval.sh records --privileged and never mixes it with runs without it in one out dir`, () => {
+		const run1 = (args: string[]) => run(robot, positional, cell, args, env);
+		for (const args of [["--privileged=false"], ["--privileged", "false"]]) {
+			const r = run1(args);
+			assert.equal(r.status, 2, args.join(" "));
+			assert.match(r.stderr, /privileged/);
+			assert.equal(r.argv, undefined, "pi never ran");
+		}
+		assert.equal(run1([]).result?.privileged, false);
+		const on = run1(["--privileged"]);
+		assert.equal(on.result?.privileged, true);
+		assert.ok(on.argv?.includes("--privileged"), "pi runs privileged");
+		for (const [first, second] of [
+			[["--privileged"], []],
+			[[], ["--privileged"]],
+		]) {
+			const [a, b] = rerun(robot, positional, env ?? {}, first, second);
+			assert.equal(a.status, 0, a.stdout + a.stderr);
+			assert.equal(b.status, 1);
+			assert.match(
+				b.stderr,
+				/--privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens(; use another out dir| \(or an older)/,
+			);
+		}
+		// The same configuration keeps its valid result.
+		const [, same] = rerun(robot, positional, env ?? {}, ["--privileged"], ["--privileged"]);
+		assert.equal(same.status, 0, same.stdout + same.stderr);
+		assert.match(same.stdout, /\/privileged/);
+	});
+}
+
+for (const [robot, positional, cell, env] of CELLS) {
+	test(`${robot}/eval.sh keys --approval, --max-tool-calls and --max-tokens and keeps the context version as data`, () => {
+		const r = run(
+			robot,
+			positional,
+			cell,
+			["--approval", "reviewed", "--max-tool-calls=40", "--max-tokens", "900000"],
+			env,
+		);
+		assert.equal(r.result?.approval, "reviewed");
+		assert.equal(r.result?.max_tool_calls, 40);
+		assert.equal(r.result?.max_tokens, 900000);
+		assert.ok(r.argv?.includes("reviewed"), "pi gets the flag");
+		const version = { context_version: { system_prompt_sha256: "a".repeat(64), git_commit: "unknown" } };
+		for (const [first, second] of [
+			[["--approval", "reviewed"], []],
+			[[], ["--max-tool-calls", "5"]],
+			[["--max-tokens=100"], ["--max-tokens=200"]],
+		]) {
+			const [a, b] = rerun(robot, positional, env ?? {}, first, second, version);
+			assert.equal(a.status, 0, a.stdout + a.stderr);
+			assert.equal(b.status, 1, `${first} then ${second}`);
+		}
+		// The same configuration (with a context version in its results) keeps its valid result.
+		const [, same] = rerun(robot, positional, env ?? {}, ["--approval=human"], ["--approval=human"], version);
+		assert.equal(same.status, 0, same.stdout + same.stderr);
+		assert.match(same.stdout, /\/approval=human/);
+	});
+}
+
+// The five scripts that record the fallback planner (src/planner/fallback.ts); newer robots' scripts are their own.
+const FALLBACK_ROBOTS = ["libero", "robocasa", "robotwin", "maniskill", "robolab", "robodojo"];
+for (const [robot, positional, cell, env] of CELLS.filter(([r]) => FALLBACK_ROBOTS.includes(r))) {
+	test(`${robot}/eval.sh records the fallback planner, never mixes it with runs without it, and totals planner_models`, () => {
+		const run1 = (args: string[]) => run(robot, positional, cell, args, env);
+		const plain = run1([]).result;
+		assert.deepEqual(
+			[plain?.fallback_model, plain?.fallback_after, plain?.fallback_retry_primary],
+			[null, null, null],
+		);
+		const on = run1([
+			"--fallback-model",
+			"selfhost/muse",
+			"--fallback-after",
+			"3",
+			"--fallback-retry-primary=5",
+		]).result;
+		assert.deepEqual([on?.fallback_model, on?.fallback_after, on?.fallback_retry_primary], ["selfhost/muse", 3, 5]);
+		// The defaults of src/planner/fallback.ts are recorded when only the model is given; without a model the rest is moot.
+		const defaults = run1(["--fallback-model=selfhost/muse"]).result;
+		assert.deepEqual([defaults?.fallback_after, defaults?.fallback_retry_primary], [2, 0]);
+		assert.equal(run1(["--fallback-after", "3"]).result?.fallback_after, null);
+		for (const [first, second] of [
+			[["--fallback-model", "selfhost/muse"], []],
+			[[], ["--fallback-model=selfhost/muse"]],
+			[
+				["--fallback-model", "selfhost/muse"],
+				["--fallback-model", "selfhost/muse", "--fallback-after", "3"],
+			],
+		]) {
+			const [a, b] = rerun(robot, positional, env ?? {}, first, second);
+			assert.equal(a.status, 0, a.stdout + a.stderr);
+			assert.equal(b.status, 1, `${first} then ${second}`);
+			assert.match(b.stderr, /fallback/);
+		}
+		const planned = { planner_models: { primary: 1, fallback: 2 } };
+		const [, same] = rerun(
+			robot,
+			positional,
+			env ?? {},
+			["--fallback-model", "selfhost/muse"],
+			["--fallback-model=selfhost/muse"],
+			planned,
+		);
+		assert.equal(same.status, 0, same.stdout + same.stderr);
+		assert.match(same.stdout, /\/fallback=selfhost\/muse:2:0/);
+		// Summed over the cells the script ran (robotwin runs every seed of the task).
+		const totals = /planner_models primary=(\d+) fallback=(\d+)/.exec(same.stdout);
+		assert.ok(totals && Number(totals[1]) >= 1 && Number(totals[2]) === 2 * Number(totals[1]), same.stdout);
+	});
+}
+
+test("maniskill/eval.sh records --arm as maniskill_robot and never mixes arms in one out dir", () => {
+	const positional = ["PickCube-v1", "0"];
+	const run1 = (args: string[]) => run("maniskill", positional, "PickCube-v1_s0", args);
+	// `robot` names the pi robot ("maniskill"); the arm is its own key, the Panda by default.
+	assert.equal(run1([]).result?.maniskill_robot, "panda");
+	const on = run1(["--arm", "xarm6_robotiq"]);
+	assert.equal(on.result?.maniskill_robot, "xarm6_robotiq");
+	assert.ok(on.argv?.includes("--arm") && on.argv?.includes("xarm6_robotiq"), String(on.argv));
+	assert.equal(run1(["--arm=widowxai"]).result?.maniskill_robot, "widowxai");
+	for (const [first, second] of [
+		[["--arm", "xarm6_robotiq"], []],
+		[[], ["--arm=widowxai"]],
+		[
+			["--arm", "xarm6_robotiq"],
+			["--arm", "widowxai"],
+		],
+	]) {
+		const [a, b] = rerun("maniskill", positional, {}, first, second);
+		assert.equal(a.status, 0, a.stdout + a.stderr);
+		assert.equal(b.status, 1, `${first} then ${second}`);
+		assert.match(b.stderr, /--arm/);
+	}
+	const [, same] = rerun("maniskill", positional, {}, ["--arm", "xarm6_robotiq"], ["--arm=xarm6_robotiq"]);
+	assert.equal(same.status, 0, same.stdout + same.stderr);
+	assert.match(same.stdout, /\/robot=xarm6_robotiq: success 1\/1/);
+	// "-" (BlockPAP-v1) and the rigs run their own Panda: another arm is refused up front, not per cell.
+	for (const envs of ["-", "PickCube-v1,BlockStack-v1"]) {
+		const rig = run("maniskill", [envs, "0"], "BlockPAP-v1_s0", ["--arm", "xarm6_robotiq"]);
+		assert.equal(rig.status, 2, envs);
+		assert.match(rig.stderr, /real2sim rigs with their own Panda; --arm xarm6_robotiq takes stock env ids/);
+		assert.equal(rig.argv, undefined, "pi never started");
+	}
+	// The Panda keeps its summary key; `--arm panda` is the default run.
+	const [, panda] = rerun("maniskill", positional, {}, [], ["--arm", "panda"]);
+	assert.equal(panda.status, 0, panda.stdout + panda.stderr);
+	assert.doesNotMatch(panda.stdout, /robot=/);
+});
+
+test("eval.sh keys the units mode on --units-plugins and the summary on a no-wrist run's effective plugins", () => {
+	for (const [robot, positional, cell, env] of CELLS) {
+		const run1 = (args: string[]) => run(robot, positional, cell, args, env).result?.units;
+		assert.equal(
+			run1(["--units", "--units-plugins", "proprioception,mem_text"]),
+			"true+plugins=proprioception,mem_text",
+			robot,
+		);
+		assert.equal(run1(["--units-plugins=", "--units=both"]), "both+plugins=", robot);
+		assert.equal(run1(["--units"]), "true", `${robot}: without the flag, as before`);
+		assert.equal(run1(["--units-plugins", "rotation"]), "false", `${robot}: units off`);
+		// The units' experiment knobs are part of the configuration too, in either flag spelling.
+		assert.equal(
+			run1([
+				"--units",
+				"--units-plugins=plan,action_ablation",
+				"--units-ablation",
+				"letters_blind",
+				"--units-stage-steps=20",
+				"--units-point-verify",
+				"0",
+			]),
+			"true+plugins=plan,action_ablation+ablation=letters_blind+stage-steps=20/arm+point-verify=0",
+			robot,
+		);
+	}
+	// Two valid ManiSkill results of the same flags, one on a robot without a wrist view: not one configuration.
+	const dir = mkdtempSync(join(tmpdir(), "eval-"));
+	const result = (extra: Record<string, unknown>) =>
+		JSON.stringify({
+			status: "success",
+			model: null,
+			thinking: null,
+			max_turns: 0,
+			time_limit: 0,
+			units: "true",
+			stateless: false,
+			maniskill_robot: "panda",
+			...extra,
+		});
+	for (const [seed, extra] of [
+		[0, { units_plugins: ["recovery", "variable_step"], units_wrist_view: true }],
+		[1, { units_plugins: ["recovery"], units_wrist_view: false }],
+	] as const) {
+		mkdirSync(join(dir, "out", `PickCube-v1_s${seed}`), { recursive: true });
+		writeFileSync(join(dir, "out", `PickCube-v1_s${seed}`, "result.json"), result(extra));
+	}
+	const script = new URL("../src/robots/maniskill/eval.sh", import.meta.url).pathname;
+	const r = spawnSync("bash", [script, join(dir, "out"), "PickCube-v1", "0-1", "--units"], {
+		env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
+		encoding: "utf8",
+	});
+	assert.equal(r.status, 1);
+	assert.match(r.stdout, /refusing to summarize: .* mixes configurations .*units=true\/no-wrist:recovery/);
+});
+
+test("libero/eval.sh records a finetuned/* model's --ft-* flags as ft_flags and never mixes them in one out dir", () => {
+	const positional = ["libero_10_task", "0", "0"];
+	const run1 = (args: string[]) => run("libero", positional, "libero_10_task_t0_s0", args);
+	// Another model never reads the fine-tuned flags: they are not part of its configuration.
+	assert.equal(run1(["--ft-prompt", "v5-libero"]).result?.ft_flags, null);
+	assert.equal(run1(["--model", "finetuned/x"]).result?.ft_flags, "default");
+	// The flags as given, without the adapter's key (where it is served is services.finetuned); pi gets them all.
+	const ft = run1([
+		"--model=finetuned/local",
+		"--ft-model",
+		"a",
+		"--ft-prompt=v5-libero",
+		"--ft-api-key=k",
+		"--ft-wrist",
+		"flip=none",
+	]);
+	assert.equal(ft.result?.ft_flags, "model=a+prompt=v5-libero+wrist=flip=none");
+	assert.ok(ft.argv?.includes("--ft-api-key=k"), String(ft.argv));
+	for (const [first, second] of [
+		[
+			["--model", "finetuned/x", "--ft-prompt", "v5-libero"],
+			["--model", "finetuned/x"],
+		],
+		[
+			["--model", "finetuned/x"],
+			["--model", "finetuned/x", "--ft-wrist", "flip=none"],
+		],
+	]) {
+		const [a, b] = rerun("libero", positional, {}, first, second);
+		assert.equal(a.status, 0, a.stdout + a.stderr);
+		assert.equal(b.status, 1, `${first} then ${second}`);
+		assert.match(b.stderr, /--ft-\* flags/);
+	}
+	const [, same] = rerun(
+		"libero",
+		positional,
+		{},
+		["--model", "finetuned/x", "--ft-prompt", "v5-libero"],
+		["--model=finetuned/x", "--ft-prompt=v5-libero"],
+	);
+	assert.equal(same.status, 0, same.stdout + same.stderr);
+	assert.match(same.stdout, /\/ft=prompt=v5-libero: success 1\/1/);
+	// A finetuned/* result from before the flags were recorded (the LIBERO wrist frame changed
+	// meanwhile) is another configuration: it needs another out dir.
+	const dir = mkdtempSync(join(tmpdir(), "eval-"));
+	mkdirSync(join(dir, "out", "libero_10_task_t0_s0"), { recursive: true });
+	const old = {
+		status: "success",
+		model: "finetuned/x",
+		thinking: null,
+		max_turns: 0,
+		time_limit: 0,
+		units: "false",
+		stateless: false,
+		libero_prompt: "rpent",
+	};
+	writeFileSync(join(dir, "out", "libero_10_task_t0_s0", "result.json"), JSON.stringify(old));
+	const script = new URL("../src/robots/libero/eval.sh", import.meta.url).pathname;
+	const again = spawnSync("bash", [script, join(dir, "out"), ...positional, "--model", "finetuned/x"], {
+		env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
+		encoding: "utf8",
+	});
+	assert.equal(again.status, 1);
+	assert.match(again.stderr, /--ft-\* flags/);
+});
+
+test("libero/eval.sh records --libero-prompt (rpent by default) and never mixes prompts in one out dir", () => {
+	const positional = ["libero_10_task", "0", "0"];
+	const run1 = (args: string[]) => run("libero", positional, "libero_10_task_t0_s0", args);
+	assert.equal(run1([]).result?.libero_prompt, "rpent");
+	const compact = run1(["--libero-prompt", "compact"]);
+	assert.equal(compact.result?.libero_prompt, "compact");
+	assert.ok(compact.argv?.includes("compact"), "pi runs the compact prompt");
+	assert.equal(run1(["--libero-prompt=compact"]).result?.libero_prompt, "compact");
+	const bad = run1(["--libero-prompt", "long"]);
+	assert.equal(bad.status, 2);
+	assert.equal(bad.argv, undefined, "pi never ran");
+	for (const [first, second] of [
+		[[], ["--libero-prompt", "compact"]],
+		[["--libero-prompt=compact"], []],
+	]) {
+		const [a, b] = rerun("libero", positional, {}, first, second);
+		assert.equal(a.status, 0, a.stdout + a.stderr);
+		assert.equal(b.status, 1);
+		assert.match(b.stderr, /--libero-prompt/);
+	}
+	const [, same] = rerun("libero", positional, {}, ["--libero-prompt", "compact"], ["--libero-prompt=compact"]);
+	assert.equal(same.status, 0, same.stdout + same.stderr);
+	assert.match(same.stdout, /\/prompt=compact/);
+	// A result from before the flag ran the compact prompt: an rpent run needs another out dir.
+	const dir = mkdtempSync(join(tmpdir(), "eval-"));
+	mkdirSync(join(dir, "out", "libero_10_task_t0_s0"), { recursive: true });
+	const old = {
+		status: "success",
+		model: null,
+		thinking: null,
+		max_turns: 0,
+		time_limit: 0,
+		units: "false",
+		stateless: false,
+	};
+	writeFileSync(join(dir, "out", "libero_10_task_t0_s0", "result.json"), JSON.stringify(old));
+	const script = new URL("../src/robots/libero/eval.sh", import.meta.url).pathname;
+	const again = (args: string[]) =>
+		spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
+			env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
+			encoding: "utf8",
+		});
+	assert.equal(again([]).status, 1);
+	assert.match(again(["--libero-prompt", "compact"]).stdout, /\/prompt=compact: success 1\/1/);
+});
+
+for (const [robot, positional, , env] of CELLS)
+	test(`${robot}/eval.sh never mixes runs with other OpenETA extras (result extras) in one out dir`, () => {
+		const extras = ["object-memory", "waypoints"];
+		const [a, b] = rerun(robot, positional, env ?? {}, ["--waypoints", "--object-memory=true"], [], { extras });
+		assert.equal(a.status, 0, a.stderr);
+		assert.equal(b.status, 1, "a run without the extras refuses the out dir");
+		const [, same] = rerun(
+			robot,
+			positional,
+			env ?? {},
+			["--object-memory", "--waypoints"],
+			["--waypoints", "--object-memory"],
+			{
+				extras,
+			},
+		);
+		assert.equal(same.status, 0, same.stderr);
+	});
+
+test("libero/eval.sh keys MotorMind runs by their variant and prompt hashes and refuses to mix them in one out dir", () => {
+	// Two cells of one out dir whose results ran the mission with other prompts: another configuration.
+	const dir = mkdtempSync(join(tmpdir(), "eval-"));
+	const base = {
+		status: "success",
+		model: null,
+		thinking: null,
+		max_turns: 0,
+		time_limit: 0,
+		units: "false",
+		stateless: false,
+		libero_prompt: "rpent",
+		mm: true,
+		mm_variant: "v",
+	};
+	for (const [cell, prompts] of [
+		["libero_10_t0_s0", "p1"],
+		["libero_10_t1_s0", "p2"],
+	]) {
+		mkdirSync(join(dir, "out", cell), { recursive: true });
+		writeFileSync(join(dir, "out", cell, "result.json"), JSON.stringify({ ...base, mm_prompts: prompts }));
+	}
+	const script = new URL("../src/robots/libero/eval.sh", import.meta.url).pathname;
+	const r = spawnSync("bash", [script, join(dir, "out"), "libero_10", "0-1", "0"], {
+		env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
+		encoding: "utf8",
+	});
+	assert.equal(r.status, 1);
+	assert.match(r.stderr, /MotorMind variant or prompts/);
+	// The same hashes are one configuration: both cells are kept and summarized.
+	writeFileSync(join(dir, "out", "libero_10_t1_s0", "result.json"), JSON.stringify({ ...base, mm_prompts: "p1" }));
+	const ok = spawnSync("bash", [script, join(dir, "out"), "libero_10", "0-1", "0"], {
+		env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
+		encoding: "utf8",
+	});
+	assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+	assert.match(ok.stdout, /\/mm=v:p1: success 2\/2/);
+	// A run without the mode records mm: false and no hashes.
+	const plain = run("libero", ["libero_10_task", "0", "0"], "libero_10_task_t0_s0", []);
+	assert.equal(plain.result?.mm, false);
+	assert.equal(plain.result?.mm_prompts, null);
+});

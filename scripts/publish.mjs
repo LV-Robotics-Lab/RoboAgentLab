@@ -3,7 +3,7 @@
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { produceArtifactSet } from "./package-artifacts.mjs";
-import { getPublicWorkspacePackages } from "./release-packages.mjs";
+import { getPiReleasePackages } from "./release-packages.mjs";
 import { execNpmSync } from "./npm-command.mjs";
 
 const dryRun = process.argv.includes("--dry-run");
@@ -28,7 +28,7 @@ function isPublished(name, version) {
 }
 
 const repoRoot = process.cwd();
-const packages = getPublicWorkspacePackages();
+const packages = getPiReleasePackages();
 const packageByName = new Map(packages.map((pkg) => [pkg.name, pkg]));
 const versions = [...new Set(packages.map((pkg) => pkg.version))];
 if (versions.length !== 1) throw new Error(`Publish packages are not lockstep versioned: ${versions.join(", ")}`);

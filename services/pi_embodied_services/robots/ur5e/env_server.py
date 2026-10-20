@@ -1,0 +1,956 @@
+# Copyright 2026 The pi-embodied Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""RPC server owning one UR5e (ur_rtde), its Robotiq gripper and its cameras.
+
+Methods and result shapes follow the Franka servers (``robots/franka_polymetis``):
+``env.get_env_meta`` reports ``capabilities`` in the same layout, motions return the
+franka-env keys, and ``env.open_gripper`` / ``env.close_gripper`` report ``gripper_jammed`` / ``grasp_empty``.
+Differences: ``env.move_pose`` (absolute pose within the per-call limits), no
+``env.chunk_step`` (no VLA), and observations are per camera (``images`` /
+``depths`` dicts) because the cameras may be RGB-only webcams or RTSP streams.
+
+Safety, all on this server (pi's robot adds its own gate on top): a translation
+beyond ``limits.max_move_m`` or a turn beyond ``max_rotate_rad`` is refused before
+anything is commanded; so is a target outside the workspace box, below
+``z_floor_m`` or tilting the tool past ``max_tilt_rad``, and any motion while the
+robot is protective/emergency stopped or while a camera cannot deliver frames (the
+agent would act blind). A moveL/moveJ the controller rejects raises; one that ends
+in a safety stop is reported at once (``protective_stopped`` / ``safety_stopped``,
+``interrupted: safety_stop``), as is one whose control script stopped (an
+unreachable target: ``interrupted: control_script_stopped``; the next command
+re-uploads the script). A running motion polls ``stop`` and is brought to rest with
+stopL/stopJ (``cancelled: true``); a stop, timeout, driver error or missed target
+clears the setpoint, so the next command starts from the measured pose. The reset's
+begin pose and joint path are checked with the controller's forward kinematics
+before the arm moves. Observations are fresh frames (the capture queue is drained
+first) and refuse frames older than ``cameras.max_frame_age_s``, dated by the
+device's own timestamp where the source has one (``frame_time_source``).
+The config (limits, begin pose, every camera's hand-eye calibration) is bound to
+one arm: ``calibration.arm_id`` must equal the controller's serial number, and each
+calibration YAML must name the same arm.
+
+pi's limits (utils/code_real.py): pi passes its ``--max-move`` / ``--max-rotate`` at spawn and
+every motion method holds them, next to the config's own caps, for every caller (pi's tools, the
+units, a program, a manual call); ``env.get_env_meta`` reports them as ``motion_limits``.
+
+Primitives (packages/embodied/src/primitives/manifests/ur5e.json, read for ``code.api`` and the
+startup self-check): ``move_delta`` / ``move_pose`` / ``rotate_delta`` / ``open_gripper`` /
+``close_gripper`` are what pi's tools and a program call alike. ``solve_ik`` / ``move_to_joints``
+are CaP-X's joint-space pair: the controller's IK (checked with its FK), and a moveJ bounded per
+call (a joint change of at most ``limits.max_joint_step_rad``; the TCP, at sampled points of the
+joint path, within --max-move / --max-rotate of where it starts, inside the workspace, under the
+tilt limit; the reset's joint speed; stopJ on ``stop``). Code mode (``code.run``) is served only
+with ``--code``.
+
+Deploying: on the UR pendant enable Remote Control and the RTDE/URCap ports; on the
+workstation install the services' ``ur5e`` extra (``ur-rtde``, cameras; add
+``realsense-l515`` for an L515), copy ``config/example.yaml``, fill in the IP, the
+cameras, then ``--print-identity`` (arm_id), ``--read-pose`` (floor, begin joints),
+calibrate the cameras with ``robots/ur5e/calibrate.py`` and start pi with
+``pi -e packages/embodied/src/robots/ur5e --operator --arm <id> --robot-config <yaml>``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import yaml
+
+from pi_embodied_services.components.cameras import (
+    intrinsic_matrix,
+    open_camera,
+    parse_sources,
+    validate_device,
+)
+from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.ur5e.calibrate import load_calibration_yaml
+from pi_embodied_services.robots.ur5e.control import (
+    EMPTY_WIDTH_FRACTION,
+    UR5eController,
+    UR5eLimits,
+    pose7_of,
+)
+from pi_embodied_services.utils import hardware_lock
+from pi_embodied_services.utils.code_real import (
+    RealCodeMode,
+    add_code_argument,
+    add_limit_arguments,
+    limits_from_args,
+    vec3,
+)
+from pi_embodied_services.utils.daemon import watch_parent_death
+from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.perception import (
+    add_perception_arguments,
+    install_perception,
+)
+
+logger = get_logger("ur5e_env_server")
+
+DEFAULT_CONFIG = Path(__file__).with_name("config") / "example.yaml"
+
+METHODS = (
+    "get_env_meta",
+    "reset",
+    "get_robot_state",
+    "get_observation",
+    "get_camera_meta",
+    "move_delta",
+    "move_pose",
+    "rotate_delta",
+    "set_gripper",
+    "open_gripper",
+    "close_gripper",
+    "solve_ik",
+    "move_to_joints",
+)
+
+#: ``gripper:`` section keys -> UR5eLimits fields.
+_GRIPPER_KEYS = {
+    "stroke_m": "gripper_stroke_m",
+    "speed": "gripper_speed",
+    "force": "gripper_force",
+    "timeout_s": "gripper_timeout_s",
+    "poll_s": "gripper_poll_s",
+    "motion_eps_m": "gripper_motion_eps_m",
+    "close_threshold_m": "close_threshold_m",
+    "empty_width_m": "empty_width_m",
+    "ack_timeout_s": "gripper_ack_timeout_s",
+    "settle_polls": "gripper_settle_polls",
+}
+#: ``cameras:`` keys besides ``devices`` (per-device defaults and read policy).
+_CAMERA_KEYS = (
+    "devices",
+    "width",
+    "height",
+    "fps",
+    "read_timeout_s",
+    "max_frame_age_s",
+)
+#: Frames older than this (seconds, monotonic) are re-read once, then refused.
+DEFAULT_MAX_FRAME_AGE_S = 0.5
+_LIMIT_KEYS = tuple(
+    f
+    for f in UR5eLimits.__dataclass_fields__
+    if f not in set(_GRIPPER_KEYS.values()) and f != "begin_joints"
+)
+
+
+def _section(cfg: dict[str, Any], name: str, allowed) -> dict[str, Any]:
+    section = cfg.get(name) or {}
+    if not isinstance(section, dict):
+        raise ValueError(f"{name} must be a mapping")
+    unknown = sorted(set(section) - set(allowed))
+    if unknown:
+        raise ValueError(f"unknown {name} keys {unknown}; valid: {sorted(allowed)}")
+    return section
+
+
+def _tuple(v: Any) -> Any:
+    return tuple(float(x) for x in v) if isinstance(v, (list, tuple)) else v
+
+
+def limits_from_config(cfg: dict[str, Any]) -> UR5eLimits:
+    """Build and validate the limits from a loaded robot YAML."""
+    kwargs: dict[str, Any] = {
+        key: _tuple(value)
+        for key, value in _section(cfg, "limits", _LIMIT_KEYS).items()
+    }
+    gripper = _section(cfg, "gripper", _GRIPPER_KEYS)
+    for key, value in gripper.items():
+        kwargs[_GRIPPER_KEYS[key]] = value
+    stroke = float(kwargs.get("gripper_stroke_m", UR5eLimits.gripper_stroke_m))
+    if "empty_width_m" not in gripper:
+        # Scaled to the gripper: a Robotiq closed on nothing reads ~9 mm on a 2F-85.
+        kwargs["empty_width_m"] = round(EMPTY_WIDTH_FRACTION * stroke, 4)
+    elif (
+        gripper["empty_width_m"] is not None
+        and float(gripper["empty_width_m"]) < 0.11 * stroke
+    ):
+        logger.warning(
+            "gripper.empty_width_m %.4f m is below what a Robotiq %.3f m gripper reads "
+            "when it closes on nothing (~%.4f m): empty grasps will not be detected; "
+            "remove the key to use %.4f m",
+            float(gripper["empty_width_m"]),
+            stroke,
+            0.106 * stroke,
+            EMPTY_WIDTH_FRACTION * stroke,
+        )
+    joints = (cfg.get("calibration") or {}).get("begin_joints")
+    if joints is not None:
+        kwargs["begin_joints"] = _tuple(joints)
+    limits = UR5eLimits(**kwargs)
+    limits.validate()
+    return limits
+
+
+def identity_source(cfg: dict[str, Any]) -> str:
+    """``robot.identity``: ``serial`` (default) or ``none``."""
+    source = str((cfg.get("robot") or {}).get("identity", "serial"))
+    if source not in ("serial", "none"):
+        raise ValueError("robot.identity must be serial or none")
+    return source
+
+
+def check_binding(cfg: dict[str, Any]) -> None:
+    """The config must name the arm it was captured on unless ``robot.identity: none``."""
+    if identity_source(cfg) == "none":
+        return
+    if (cfg.get("calibration") or {}).get("arm_id") in (None, ""):
+        raise ValueError(
+            "calibration.arm_id is not set: the limits and camera calibrations must name "
+            "the arm they were captured on. Run `python -m pi_embodied_services.robots."
+            "ur5e.env_server --robot-config <yaml> --print-identity` and copy the value "
+            "(or set robot.identity: none to skip the binding)"
+        )
+
+
+def camera_devices(
+    cfg: dict[str, Any], override: str = ""
+) -> tuple[str, list[str], dict[str, dict[str, Any]]]:
+    """(main camera, extra cameras sorted, devices) from ``cameras.devices``, or from a
+    ``--cameras name=type:source,...`` override (the config's devices supply
+    ``mount`` / ``calibration`` / ``intrinsics`` for names they share)."""
+    cams = cfg.get("cameras") or {}
+    unknown = sorted(set(cams) - set(_CAMERA_KEYS))
+    if unknown:
+        raise ValueError(f"unknown cameras keys {unknown}; valid: {list(_CAMERA_KEYS)}")
+    configured = cams.get("devices") or {}
+    if not isinstance(configured, dict):
+        raise ValueError("cameras.devices must be a mapping")
+    if override.strip():
+        devices = parse_sources(override)
+        for name, dev in devices.items():
+            for key in ("mount", "calibration", "intrinsics"):
+                if key in (configured.get(name) or {}) and key not in dev:
+                    dev[key] = configured[name][key]
+    else:
+        devices = {name: dict(dev or {}) for name, dev in configured.items()}
+    if not devices:
+        raise ValueError("configure at least one camera (cameras.devices or --cameras)")
+    devices = {name: validate_device(name, dev) for name, dev in devices.items()}
+    main = [name for name, dev in devices.items() if dev.get("main")]
+    if len(main) != 1:
+        raise ValueError("exactly one camera device must set main: true")
+    return main[0], sorted(n for n in devices if n != main[0]), devices
+
+
+def max_frame_age(cfg: dict[str, Any]) -> float:
+    """``cameras.max_frame_age_s`` (default :data:`DEFAULT_MAX_FRAME_AGE_S`)."""
+    value = (cfg.get("cameras") or {}).get("max_frame_age_s", DEFAULT_MAX_FRAME_AGE_S)
+    try:
+        age = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("cameras.max_frame_age_s must be a number") from None
+    if not math.isfinite(age) or age <= 0:
+        raise ValueError("cameras.max_frame_age_s must be positive")
+    return age
+
+
+def load_config(path: str | Path | None, cameras: str = "") -> dict[str, Any]:
+    """Load and validate the robot YAML (see config/example.yaml)."""
+    cfg = yaml.safe_load(Path(path or DEFAULT_CONFIG).expanduser().read_text()) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError("robot config must be a mapping")
+    if not (cfg.get("robot") or {}).get("ip"):
+        raise ValueError("robot.ip is required")
+    gripper = (cfg.get("robot") or {}).get("gripper") or {}
+    if str(gripper.get("type", "robotiq")) not in ("robotiq", "none"):
+        raise ValueError("robot.gripper.type must be robotiq or none")
+    limits_from_config(cfg)
+    check_binding(cfg)
+    camera_devices(cfg, cameras)
+    max_frame_age(cfg)
+    return cfg
+
+
+class UR5eEnvFacade(RealCodeMode, BaseEnvFacade):
+    """The ``env.*`` protocol on one UR5e (see the module docstring)."""
+
+    SERVICE_NAME = "ur5e-env"
+    #: pi's per-call limits (its --max-move / --max-rotate defaults); the config's caps apply too.
+    _LIMIT_DEFAULTS = {"max_move_m": 0.08, "max_rotate_rad": 0.2}
+
+    def __init__(
+        self,
+        cfg: dict[str, Any],
+        arm: Any,
+        gripper: Any,
+        cameras: dict[str, Any],
+        *,
+        config_path: str = "",
+        camera_flag: str = "",
+        task_description: str = "",
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+        code: bool = False,
+        limits: dict[str, Any] | None = None,
+    ) -> None:
+        # --code: code.run over the manifest, behind the RPC token; pi's limits (utils/code_real.py).
+        self._enable_code(code)
+        self._set_limits(limits)
+        super().__init__()
+        self._cfg = cfg
+        self._config_path = config_path
+        self._task = task_description
+        self._arm = arm
+        self._gripper = gripper
+        self._cameras = cameras
+        self._clock = clock
+        self._main, self._extras, self._devices = camera_devices(cfg, camera_flag)
+        missing = sorted({self._main, *self._extras} - set(cameras))
+        if missing:
+            raise ValueError(f"cameras not connected: {missing}")
+        self.max_frame_age_s = max_frame_age(cfg)
+        #: Cameras whose last read failed, with the error; motion is refused while
+        #: one is listed and a fresh read still fails.
+        self.camera_errors: dict[str, str] = {}
+        self.arm_id = self._bound_identity()
+        self.controller = UR5eController(
+            arm,
+            gripper,
+            limits_from_config(cfg),
+            self.stop_requested,
+            sleep=sleep,
+            clock=clock,
+        )
+        self._calibrations: dict[str, dict[str, Any] | None] = {
+            name: self._load_calibration(name) for name in cameras
+        }
+        self._meta = {name: self._camera_meta(name) for name in cameras}
+
+    def _bound_identity(self) -> str | None:
+        """Refuse an arm whose serial is not the one the config names."""
+        if identity_source(self._cfg) == "none":
+            return None
+        check_binding(self._cfg)
+        want = str(self._cfg["calibration"]["arm_id"])
+        got = self._arm.identity()
+        if got is None:
+            raise ValueError(
+                "the arm's serial number could not be read (dashboard port); set "
+                "robot.identity: none only if this arm cannot be identified"
+            )
+        if str(got) != want:
+            raise ValueError(
+                f"the arm reports serial {got!r}, but calibration.arm_id is {want!r}: this "
+                "config (Z floor, workspace, begin pose, camera calibrations) belongs to "
+                "another arm. Use that arm's config, or re-calibrate this arm and update "
+                "arm_id"
+            )
+        return str(got)
+
+    def _load_calibration(self, name: str) -> dict[str, Any] | None:
+        dev = self._devices[name]
+        path = dev.get("calibration")
+        if not path:
+            return None
+        cal = load_calibration_yaml(path)
+        mount = dev.get("mount") or ("wrist" if cal["eye_on_hand"] else "fixed")
+        if cal["eye_on_hand"] != (mount == "wrist"):
+            raise ValueError(
+                f"camera {name}: the calibration {path} is "
+                f"{'eye-in-hand' if cal['eye_on_hand'] else 'eye-to-hand'} but the camera "
+                f"is mounted {mount}"
+            )
+        if self.arm_id is not None and cal.get("arm_id") not in (None, self.arm_id):
+            raise ValueError(
+                f"camera {name}: the calibration {path} was made on arm "
+                f"{cal['arm_id']!r}, not this arm ({self.arm_id!r}); re-calibrate it "
+                "(robots/ur5e/calibrate.py) before using it"
+            )
+        if self.arm_id is not None and cal.get("arm_id") is None:
+            raise ValueError(
+                f"camera {name}: the calibration {path} names no arm_id; re-run "
+                "calibrate.py solve with --arm-id"
+            )
+        serial = getattr(self._cameras[name], "serial", None)
+        if (
+            serial
+            and cal.get("camera_serial")
+            and str(cal["camera_serial"]) != str(serial)
+        ):
+            raise ValueError(
+                f"camera {name}: the calibration {path} was made with camera "
+                f"{cal['camera_serial']!r}, not {serial!r}"
+            )
+        return cal
+
+    def _camera_meta(self, name: str) -> dict[str, Any]:
+        cam = self._cameras[name]
+        dev = self._devices[name]
+        raw = cam.intrinsics()
+        cal = self._calibrations[name]
+        return {
+            "name": name,
+            "role": "main" if name == self._main else "extra",
+            "mount": dev.get("mount"),
+            "has_depth": bool(cam.has_depth),
+            "raw_color_intrinsics": raw,
+            "intrinsic_K": intrinsic_matrix(raw) if raw else None,
+            "output_resolution": [raw["width"], raw["height"]] if raw else None,
+            "depth_unit": "m",
+            "extrinsic": None
+            if cal is None
+            else {
+                "frame": "tcp" if cal["eye_on_hand"] else "base",
+                "matrix": np.asarray(cal["matrix"]).tolist(),
+                "path": cal["path"],
+                "arm_id": cal.get("arm_id"),
+            },
+            **cam.describe(),
+        }
+
+    def serve(self, *, parent_watch: bool = False, **kwargs: Any) -> None:
+        """Parent death stops the running motion (not only the loop)."""
+
+        def on_death() -> None:
+            self.request_stop()
+            self.controller.hold()
+            self._shutdown_event.set()
+
+        if parent_watch:
+            watch_parent_death(on_death)
+        super().serve(parent_watch=False, **kwargs)
+
+    def _builtin_dispatch(self, method: str, args: tuple, kwargs: dict) -> Any:
+        if method == "shutdown":  # halt the running call before waiting for it
+            self.request_stop()
+        return super()._builtin_dispatch(method, args, kwargs)
+
+    def _register_rpc(self) -> None:
+        for name in METHODS:
+            self._rpc[f"env.{name}"] = getattr(self, name)
+        # code.api, the programs' whitelist and the startup self-check: manifests/ur5e.json.
+        self._install_real("ur5e", have=self._has)
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires`` (pi's must agree)."""
+        return {
+            "sam3": "env.detect" in self._rpc,
+            "unidepth": "env.enhance_depth" in self._rpc,
+        }.get(capability, False)
+
+    # -- code mode (run_code) ----------------------------------------------
+
+    def _video_frame(self, obs: dict) -> Any:
+        """pi's episode video follows the main camera."""
+        return (obs.get("images") or {}).get(self._main)
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """A program call's translation (the run's move budget): move_delta's delta,
+        move_pose's distance from the setpoint, a joint move's TCP translation (forward
+        kinematics); a rotation turns the TCP in place, the gripper moves none."""
+        if method == "env.move_delta":
+            return float(np.linalg.norm(vec3(kwargs["delta_xyz"], "delta_xyz")))
+        if method == "env.move_pose":
+            start = self.controller.setpoint()[:3]
+            return float(np.linalg.norm(vec3(kwargs["xyz"], "xyz") - start))
+        if method == "env.move_to_joints":
+            try:
+                q0 = np.asarray(self._arm.joints(), dtype=np.float64)
+                q1 = np.asarray(kwargs["joints"], dtype=np.float64).reshape(6)
+                a, b = self.controller._fk(q0), self.controller._fk(q1)
+                return float(np.linalg.norm(b[:3] - a[:3]))
+            except Exception:
+                return 0.0
+        return 0.0
+
+    def close(self) -> None:
+        for cam in self._cameras.values():
+            try:
+                cam.close()
+            except Exception:
+                pass
+        try:
+            self.controller.hold()
+        except Exception:
+            pass
+        for handle in (self._gripper, self._arm):
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+
+    # -- read -------------------------------------------------------------
+
+    def capabilities(self) -> dict[str, Any]:
+        lim = self.controller.limits
+        return {
+            "backend": "ur_rtde",
+            "has_vla": False,
+            "cameras": {
+                "main": self._main,
+                **{f"extra_{i}": n for i, n in enumerate(self._extras)},
+            },
+            "has_depth": bool(self._cameras[self._main].has_depth),
+            "camera_depth": {n: bool(c.has_depth) for n, c in self._cameras.items()},
+            "workspace": {
+                "min": list(lim.workspace_min),
+                "max": list(lim.workspace_max),
+            },
+            "z_floor_m": lim.z_floor_m,
+            "table_z_m": lim.z_floor_m,
+            "max_move_m": lim.max_move_m,
+            "max_rotate_rad": lim.max_rotate_rad,
+            "servo_step_m": None,
+            "servo_step_rad": None,
+            "empty_grasp_reopen_m": lim.empty_width_m,
+            "arm_id": self.arm_id,
+        }
+
+    def get_env_meta(self) -> dict[str, Any]:
+        lim = self.controller.limits
+        return {
+            "ok": True,
+            "robot": "ur5e",
+            "backend": "ur_rtde",
+            "arm_id": self.arm_id,
+            "config_path": self._config_path,
+            "task_description": self._task,
+            "cameras": sorted(self._cameras),
+            "main_camera": self._main,
+            "gripper": "robotiq" if self._gripper is not None else "none",
+            "has_begin_pose": lim.begin_joints is not None,
+            "limits": {
+                "z_floor_m": lim.z_floor_m,
+                "workspace_min": list(lim.workspace_min),
+                "workspace_max": list(lim.workspace_max),
+                "max_move_m": lim.max_move_m,
+                "max_rotate_rad": lim.max_rotate_rad,
+                "max_tilt_rad": lim.max_tilt_rad,
+                "speed_mps": lim.speed_mps,
+                "accel_mps2": lim.accel_mps2,
+                "empty_width_m": lim.empty_width_m,
+                "gripper_stroke_m": lim.gripper_stroke_m,
+                "reset_lift_m": lim.reset_lift_m,
+                "max_joint_step_rad": lim.max_joint_step_rad,
+            },
+            "capabilities": self.capabilities(),
+            "tasks": self._cfg.get("tasks") or {},
+        }
+
+    def get_robot_state(self) -> dict[str, Any]:
+        return {
+            "raw_base_state": self.controller.state(),
+            "backend": "ur_rtde",
+            "arm_id": self.arm_id,
+        }
+
+    def _fresh_frame(self, name: str) -> Any:
+        """A frame from camera ``name`` no older than ``max_frame_age_s`` (one re-read
+        when the first is stale); records the camera as unhealthy on failure."""
+        cam = self._cameras[name]
+        try:
+            frame = cam.read_fresh()
+            age = frame.age_s(self._clock())
+            if age > self.max_frame_age_s:
+                frame = cam.read_fresh()
+                age = frame.age_s(self._clock())
+            if age > self.max_frame_age_s:
+                raise RuntimeError(
+                    f"frame is {age:.2f} s old (> cameras.max_frame_age_s "
+                    f"{self.max_frame_age_s} s): the source is buffering or stalled"
+                )
+        except Exception as exc:
+            self.camera_errors[name] = str(exc)
+            raise
+        self.camera_errors.pop(name, None)
+        return frame
+
+    def _require_cameras(self, what: str) -> None:
+        """Refuse ``what`` while a camera that failed its last read still fails: the
+        agent would move without seeing the result."""
+        for name in sorted(self.camera_errors):
+            try:
+                self._fresh_frame(name)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"{what} refused: camera {name!r} is not delivering frames ({exc}); "
+                    "reconnect it (or restart the env server); nothing was commanded"
+                ) from exc
+
+    def get_observation(self) -> dict[str, Any]:
+        """Fresh frames per camera: ``images[name]`` uint8 [H,W,3]; ``depths[name]``
+        float32 [H,W] m for cameras with depth; ``timestamps[name]`` wall clock;
+        ``frame_age_s[name]`` seconds between the capture and this call, measured
+        from the clock ``frame_time_source[name]`` names (``device`` / ``backend`` /
+        ``stream_pts`` / ``host``, see components/cameras/base.py; ``host`` is the
+        dequeue time and cannot see a frame that waited in a queue). Every
+        camera is read before a failure is raised, so one dead camera marks only
+        itself unhealthy."""
+        images: dict[str, np.ndarray] = {}
+        depths: dict[str, np.ndarray] = {}
+        stamps: dict[str, float] = {}
+        ages: dict[str, float] = {}
+        sources: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        for name in self._cameras:
+            try:
+                f = self._fresh_frame(name)
+            except Exception as exc:
+                errors[name] = str(exc)
+                continue
+            images[name] = np.ascontiguousarray(f.rgb)
+            if f.depth is not None:
+                depths[name] = np.asarray(f.depth, dtype=np.float32)
+            stamps[name] = float(f.timestamp_s)
+            ages[name] = f.age_s(self._clock())
+            sources[name] = str(getattr(f, "time_source", "host"))
+        if errors:
+            raise RuntimeError(
+                "camera read failed: "
+                + "; ".join(f"{name}: {err}" for name, err in errors.items())
+                + ". Motion is refused until the camera delivers frames again"
+            )
+        return {
+            "images": images,
+            "depths": depths,
+            "timestamps": stamps,
+            "frame_age_s": ages,
+            "frame_time_source": sources,
+            "max_frame_age_s": self.max_frame_age_s,
+        }
+
+    def get_camera_meta(self) -> dict[str, Any]:
+        return {
+            "source": "ur5e_cameras",
+            "image_coordinate_convention": "pixel [u, v] maps to array [v, u]",
+            "depth_unit": "m",
+            "depth_aligned_to_color": True,
+            "cameras": self._meta,
+            "observation_camera_map": self.capabilities()["cameras"],
+            "arm_id": self.arm_id,
+        }
+
+    # -- motion -----------------------------------------------------------
+
+    def move_delta(self, delta_xyz: Any) -> dict[str, Any]:
+        """Translate the TCP by a base-frame delta (m), orientation held; refused beyond pi's
+        --max-move and the config's limit, or out of the workspace."""
+        self._require_cameras("the move")
+        return self.controller.move_delta(
+            delta_xyz, max_move_m=self._limit("max_move_m")
+        )
+
+    def move_pose(
+        self, xyz: Any, rotvec: Any = None, rpy: Any = None
+    ) -> dict[str, Any]:
+        """Move the TCP to an absolute base-frame pose within pi's --max-move / --max-rotate
+        and the config's limits from the setpoint."""
+        if rotvec is not None and rpy is not None:
+            raise ValueError("give rotvec or rpy, not both; nothing was commanded")
+        self._require_cameras("the move")
+        return self.controller.move_pose(
+            xyz,
+            rotvec=rotvec,
+            rpy=rpy,
+            max_move_m=self._limit("max_move_m"),
+            max_rotate_rad=self._limit("max_rotate_rad"),
+        )
+
+    def rotate_delta(self, delta_rpy: Any) -> dict[str, Any]:
+        """Rotate the TCP by base-frame rpy (rad); refused beyond pi's --max-rotate and the
+        config's limit, or past the tilt limit."""
+        self._require_cameras("the rotation")
+        return self.controller.rotate_delta(
+            delta_rpy, max_rotate_rad=self._limit("max_rotate_rad")
+        )
+
+    def _set_gripper(self, open: bool) -> dict[str, Any]:
+        self._require_cameras("the gripper command")
+        result = self.controller.set_gripper(open=open)
+        result["robot_state"] = self.get_robot_state()
+        result["states"] = None
+        return result
+
+    def set_gripper(self, open: bool) -> dict[str, Any]:
+        """Open (True) or close (False) the gripper: the low tier's open_gripper / close_gripper."""
+        return self._set_gripper(bool(open))
+
+    def open_gripper(self) -> dict[str, Any]:
+        """Open the Robotiq gripper and wait for the fingers to settle."""
+        return self._set_gripper(True)
+
+    def close_gripper(self) -> dict[str, Any]:
+        """Close the Robotiq gripper and wait for the fingers to settle; an empty close
+        reopens (``grasp_empty``)."""
+        return self._set_gripper(False)
+
+    def solve_ik(self, position: Any, quaternion_wxyz: Any = None) -> dict[str, Any]:
+        """CaP-X's solve_ik: joints (6, rad) for a TCP position (base frame, m) and
+        orientation (wxyz; None: the current one), from the current joints. Nothing moves."""
+        quat = None
+        if quaternion_wxyz is not None:
+            q = np.asarray(quaternion_wxyz, dtype=np.float64).reshape(-1)
+            if q.shape != (4,):
+                raise ValueError("quaternion_wxyz must be 4 numbers (w, x, y, z)")
+            quat = [q[1], q[2], q[3], q[0]]
+        return self.controller.solve_ik(vec3(position, "position"), quat)
+
+    def move_to_joints(self, joints: Any) -> dict[str, Any]:
+        """CaP-X's move_to_joints, bounded per call (control.py ``move_to_joints_bounded``):
+        pi's --max-move / --max-rotate and the config's caps along the FK-checked path,
+        ``limits.max_joint_step_rad`` per joint, the workspace and tilt limits."""
+        self._require_cameras("the joint move")
+        result = self.controller.move_to_joints_bounded(
+            joints,
+            max_move_m=self._limit("max_move_m"),
+            max_rotate_rad=self._limit("max_rotate_rad"),
+        )
+        result["robot_state"] = self.get_robot_state()
+        result["states"] = None
+        return result
+
+    def reset(self) -> dict[str, Any]:
+        """Open the gripper (a held object is released and reported), lift clear, moveJ
+        to ``calibration.begin_joints`` (moves the arm). Not gated on the cameras: it is
+        the fixed move home, the one motion that needs no observation after it."""
+        result = self.controller.reset()
+        result["robot_state"] = self.get_robot_state()
+        result["states"] = None
+        return result
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def build_arm(cfg: dict[str, Any]) -> tuple[Any, Any]:
+    """Connect the arm and (when configured) the Robotiq gripper."""
+    from pi_embodied_services.robots.ur5e.hardware import RobotiqGripper, RtdeArm
+
+    rc = cfg.get("robot") or {}
+    arm = RtdeArm(str(rc["ip"]), dashboard_port=int(rc.get("dashboard_port", 29999)))
+    gc = rc.get("gripper") or {}
+    gripper = None
+    if str(gc.get("type", "robotiq")) == "robotiq":
+        gripper = RobotiqGripper(str(rc["ip"]), int(gc.get("port", 63352)))
+    return arm, gripper
+
+
+def build(
+    cfg: dict[str, Any], camera_flag: str = ""
+) -> tuple[Any, Any, dict[str, Any]]:
+    """Connect the arm, the gripper and every camera named in ``cfg`` / the flag."""
+    arm, gripper = build_arm(cfg)
+    cameras: dict[str, Any] = {}
+    defaults = {k: v for k, v in (cfg.get("cameras") or {}).items() if k != "devices"}
+    try:
+        for name, dev in camera_devices(cfg, camera_flag)[2].items():
+            cameras[name] = open_camera(name, dev, defaults)
+    except Exception:
+        for cam in cameras.values():
+            cam.close()
+        if gripper is not None:
+            gripper.close()
+        arm.close()
+        raise
+    return arm, gripper, cameras
+
+
+def build_mock(
+    cfg: dict[str, Any], camera_flag: str = ""
+) -> tuple[Any, Any, dict[str, Any]]:
+    """Test doubles (refuse to construct outside tests; see mock.py)."""
+    from pi_embodied_services.robots.ur5e.mock import (
+        DOWN,
+        MockCamera,
+        MockRobotiq,
+        MockUrArm,
+        require_test_env,
+    )
+
+    require_test_env()
+    lim = limits_from_config(cfg)
+    lo, hi = np.asarray(lim.workspace_min), np.asarray(lim.workspace_max)
+    mid = (lo + hi) / 2
+    arm = MockUrArm(
+        (mid[0], mid[1], min(hi[2], lim.z_floor_m + 0.1), *DOWN),
+        serial=str((cfg.get("calibration") or {}).get("arm_id") or "mock"),
+    )
+    gc = (cfg.get("robot") or {}).get("gripper") or {}
+    gripper = MockRobotiq() if str(gc.get("type", "robotiq")) == "robotiq" else None
+    cameras = {
+        name: MockCamera(
+            name,
+            depth_m=0.5
+            if dev["type"] == "realsense" and dev.get("depth", True)
+            else None,
+        )
+        for name, dev in camera_devices(cfg, camera_flag)[2].items()
+    }
+    return arm, gripper, cameras
+
+
+def read_pose(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Read-only: TCP pose, joints and gripper width (nothing is commanded)."""
+    arm, gripper = build_arm(cfg)
+    try:
+        pose = np.asarray(arm.tcp_pose(), dtype=np.float64)
+        out = {
+            "tcp_pose_xyzw": [round(v, 5) for v in pose7_of(pose)],
+            "tcp_pose_rotvec": np.round(pose, 5).tolist(),
+            "tcp_z_m": round(float(pose[2]), 5),
+            "joints_rad": np.round(np.asarray(arm.joints()), 5).tolist(),
+            "serial": arm.identity(),
+        }
+        if gripper is not None:
+            try:
+                stroke = float((cfg.get("gripper") or {}).get("stroke_m", 0.085))
+                out["gripper_width_m"] = round(
+                    stroke * (1 - gripper.position() / 255), 5
+                )
+            except Exception as exc:
+                out["gripper_error"] = str(exc)
+        return out
+    finally:
+        if gripper is not None:
+            gripper.close()
+        arm.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--transport", choices=["http"], default="http")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--robot-config", default=None)
+    parser.add_argument(
+        "--cameras",
+        default="",
+        help="Override cameras.devices: name=type:source,... (realsense:<serial>, "
+        "webcam:<index|/dev/videoN>, rtsp://<url>); the first is the main camera",
+    )
+    parser.add_argument("--task-description", default="")
+    parser.add_argument("--parent-watch", action="store_true")
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        help="Validate and print the config, then exit without touching hardware.",
+    )
+    parser.add_argument(
+        "--print-identity",
+        action="store_true",
+        help="Print the arm's serial number (for calibration.arm_id), then exit; no motion.",
+    )
+    parser.add_argument(
+        "--read-pose",
+        action="store_true",
+        help="Print the live TCP pose, joints and gripper width (the arm never moves).",
+    )
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        help="Test doubles instead of hardware; refused unless PI_EMBODIED_MOCK_ROBOT=1.",
+    )
+    hardware_lock.add_lock_arguments(parser)
+    add_perception_arguments(parser, sam3=True)
+    add_code_argument(parser)
+    add_limit_arguments(parser, UR5eEnvFacade._LIMIT_DEFAULTS)
+    args = parser.parse_args(argv)
+    if args.mock:
+        from pi_embodied_services.robots.ur5e.mock import MOCK_ENV
+
+        if os.environ.get(MOCK_ENV) != "1":
+            parser.error(f"--mock is for tests only (needs {MOCK_ENV}=1)")
+    if (
+        args.read_pose or args.print_identity
+    ):  # before validation: how the values are found
+        path = Path(args.robot_config or DEFAULT_CONFIG).expanduser()
+        raw = yaml.safe_load(path.read_text()) or {}
+        if args.print_identity:
+            arm, gripper = build_arm(raw)
+            try:
+                print(f"arm_id: {arm.identity()!r}")
+            finally:
+                arm.close()
+            return 0
+        print(json.dumps(read_pose(raw)))
+        return 0
+    cfg = load_config(args.robot_config, args.cameras)
+    if args.print_config:
+        print(yaml.safe_dump(cfg, sort_keys=False))
+        return 0
+    # One server per physical arm on this machine (utils/hardware_lock.py); a mock drives none.
+    _lock = (
+        None
+        if args.mock
+        else hardware_lock.lock_from_args(
+            args,
+            hardware_lock.hardware_ids("ur5e", cfg),
+            "ur5e-env",
+        )
+    )
+    arm, gripper, cameras = (
+        build_mock(cfg, args.cameras) if args.mock else build(cfg, args.cameras)
+    )
+    try:
+        facade = UR5eEnvFacade(
+            cfg,
+            arm,
+            gripper,
+            cameras,
+            config_path=str(args.robot_config or DEFAULT_CONFIG),
+            camera_flag=args.cameras,
+            task_description=args.task_description,
+            code=args.code,
+            limits=limits_from_args(args, UR5eEnvFacade._LIMIT_DEFAULTS),
+        )
+        # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection and
+        # env.enhance_depth (UniDepth fills an RGB-only camera's depth) on get_observation's frames.
+        install_perception(
+            facade,
+            args,
+            cameras={name: ("images", "depths", name) for name in cameras},
+            intrinsics=lambda key: (
+                facade.get_camera_meta()["cameras"].get(key) or {}
+            ).get("intrinsic_K"),
+            mutating=(
+                "env.move_pose",
+                "env.set_gripper",
+                "env.open_gripper",
+                "env.close_gripper",
+                "env.move_to_joints",
+            ),
+        )
+    except Exception:
+        for cam in cameras.values():
+            cam.close()
+        if gripper is not None:
+            gripper.close()
+        arm.close()
+        raise
+    facade.serve(
+        transport=args.transport,
+        host=args.host,
+        port=args.port,
+        parent_watch=args.parent_watch,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

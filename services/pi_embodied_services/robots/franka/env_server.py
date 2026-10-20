@@ -1,0 +1,1005 @@
+# Copyright 2026 The RPent Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Modified by pi-embodied: import paths rewritten; healthz service name; HTTP is
+# the only --transport; ``stop`` reaches the worker's servo/chunk loops through a
+# Ray stop-flag actor polled between steps (results carry ``cancelled``);
+# ``get_env_meta`` reports ``capabilities`` (shared with franka_polymetis).
+
+"""RPC server owning one RLinf single-Franka ``RealWorldEnv`` worker."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from collections.abc import Callable
+from typing import Any
+
+import numpy as np
+
+from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.franka.code_mode import FrankaCodeMode
+from pi_embodied_services.robots.franka.runtime_config import (
+    load_runtime_config,
+    set_robot_config_path,
+)
+from pi_embodied_services.utils import hardware_lock, motion, reach
+from pi_embodied_services.utils.code_real import (
+    add_code_argument,
+    add_limit_arguments,
+    limits_from_args,
+)
+from pi_embodied_services.utils.detections import state_digest
+from pi_embodied_services.utils.grasp import (
+    GraspPlanner,
+    add_grasp_arguments,
+    urls_from_args,
+)
+from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.perception import (
+    FRANKA_CAMERAS,
+    Perception,
+    franka_intrinsics,
+)
+from pi_embodied_services.utils.serialization import to_numpy_tree
+from pi_embodied_services.utils.wrist_alignment import (
+    WristAligner,
+    add_align_wrist_argument,
+)
+
+logger = get_logger("franka_env_server")
+
+
+class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
+    """Expose the single-Franka ``env.*`` protocol from a Ray-backed worker.
+
+    pi's limits (``--max-move`` ..., code_mode.py) hold in ``env.move_delta`` / ``env.rotate_delta``
+    for every caller. The primitives are packages/embodied/src/primitives/manifests/franka.json
+    (dual_franka.json for the dual rig); code mode (``code.run``, ``--code``) runs a program's calls
+    through the same stoppable, reach-checked, limited handlers as pi's tools.
+    """
+
+    SERVICE_NAME = "franka-env"
+
+    _METHODS = (
+        "get_env_meta",
+        "reset",
+        "get_robot_state",
+        "get_observation",
+        "get_camera_meta",
+        "move_delta",
+        "rotate_delta",
+        "set_gripper",
+        "chunk_step",
+    )
+
+    #: Worker methods with a servo/step loop that polls the stop flag.
+    _STOPPABLE = frozenset(
+        {
+            "move_delta",
+            "rotate_delta",
+            "set_gripper",
+            "chunk_step",
+            "recover_joint_posture",
+        }
+    )
+
+    def __init__(
+        self,
+        backend: Any,
+        perception: Perception | None = None,
+        grasp: dict | None = None,
+        ik_reach: reach.ReachPreview | None = None,
+        ik_motion: motion.MotionPlanner | None = None,
+        geometry: bool = False,
+        code: bool = False,
+        limits: dict[str, Any] | None = None,
+        align_wrist: bool = False,
+    ) -> None:
+        self._backend = backend
+        # pi's --max-move / --max-rotate / --workspace-xy / --z-floor (code_mode.py).
+        self._set_limits(limits)
+        # --align-wrist: env.align_wrist (utils/wrist_alignment.py) over the calibrated wrist
+        # view; execute=True moves by the correction through env.move_delta (its limits apply).
+        self._align_wrist_on = align_wrist
+        # --geometry: env.point_views, env.mark_point, env.grip_target, env.grip_state
+        # (utils/geometry.py via grasp_views.franka_geometry); the client executes the targets.
+        self._geometry_on = geometry
+        # --code: code.run over the registry, behind the RPC token (code_mode.py).
+        self._enable_code(code)
+        self._perception = perception
+        # --contact-graspnet/--graspgenx/--anygrasp/--graspnet1b/--anyplace: env.plan_grasp, env.plan_place and
+        # the grasp/placement ids over this server's cameras (utils/grasp.py).
+        self._grasp_urls = grasp
+        # --ik: env.preview_reach, and move_delta / rotate_delta refuse a target the ik
+        # service cannot reach from the current joints (utils/reach.py).
+        self._reach = ik_reach
+        # --ik: move_delta / rotate_delta plan a collision-free path to their end pose
+        # (refused when none exists) and follow it segment by segment, checking the arm
+        # against the scene (PI_EMBODIED_IK_WORLD) and, on the dual rig, the other arm
+        # before each segment (utils/motion.py).
+        self._motion = ik_motion
+        self._world = motion.static_world() if ik_motion is not None else []
+        super().__init__()
+
+    def _register_rpc(self) -> None:
+        for name in self._METHODS:
+            handler = getattr(self._backend, name)
+            if name in self._STOPPABLE:
+                handler = self._stoppable(handler)
+            if name in ("move_delta", "rotate_delta"):
+                if self._motion is not None:
+                    handler = self._planned(name)
+                elif self._reach is not None:
+                    handler = self._reach_checked(handler, name)
+                # pi's limits first, for every caller (code_mode.py).
+                handler = self._limited(name, handler)
+            self._rpc[f"env.{name}"] = handler
+        self._rpc["env.preview_reach"] = self.preview_reach
+        self._readonly_methods.update(
+            {
+                "env.get_env_meta",
+                "env.get_robot_state",
+                "env.get_observation",
+                "env.get_camera_meta",
+            }
+        )
+        # --sam3 / --unidepth: env.segment, env.select_detection, env.reject_detection,
+        # env.enhance_depth over the latest env.get_observation (utils/perception.py). Ids
+        # expire when the arm's pose or gripper changed, not on every observation.
+        if self._perception is not None:
+            self._perception.epoch.set_digest(self._state_digest)
+            self._perception.install(self)
+        if getattr(self, "_geometry_on", False):
+            from pi_embodied_services.robots.franka.grasp_views import franka_geometry
+
+            franka_geometry(self._backend, state_digest=self._state_digest).install(
+                self
+            )
+        if getattr(self, "_align_wrist_on", False):
+            self._wrist_aligner().install(self)
+        self._grasp = self._grasp_planner()
+        if self._grasp is not None:
+            self._grasp.install(self)
+        # The manifest's methods, then code.api (with the startup self-check) and --code's code.run.
+        self._install_franka()
+
+    def _wrist_aligner(self) -> WristAligner:
+        """env.align_wrist on the single arm: the wrist camera rides on the TCP (its hand-eye
+        calibration), the gripper centre is the TCP, the move is this server's env.move_delta."""
+        from pi_embodied_services.robots.franka import perception as franka_perception
+        from pi_embodied_services.robots.franka.grasp_views import franka_view
+
+        cache: dict[str, Any] = {}
+
+        def calibration() -> dict[str, Any]:
+            if "bundle" not in cache:
+                cache["bundle"] = franka_perception.load_calibration_bundle()
+            return cache["bundle"]
+
+        view = franka_view(self._backend, calibration)
+        return WristAligner(
+            lambda: view("wrist"),
+            lambda: np.asarray(self._tcp_state()[0], dtype=float)[:3],
+            lambda _xyz, delta: self._rpc["env.move_delta"](
+                np.asarray(delta, dtype=np.float32)
+            ),
+            move_with="env.move_delta by delta_world",
+        )
+
+    def _state_digest(self) -> tuple:
+        """The arm's TCP pose and gripper, rounded (``utils/detections.state_digest``)."""
+        return state_digest(to_numpy_tree(self._backend.get_robot_state()))
+
+    def _grasp_planner(self) -> GraspPlanner | None:
+        """The planner over the wrist and third-person cameras; the wrist camera rides on the TCP.
+        Mask ids from ``env.segment`` (the perception book) are accepted as ``mask_id``, and
+        its SAM3 server segments ``plan_grasp(object=...)`` text."""
+        from pi_embodied_services.robots.franka.grasp_views import (
+            franka_grasp_planner,
+        )
+
+        return franka_grasp_planner(
+            self._backend,
+            self._perception,
+            self._grasp_urls,
+            state_digest=self._state_digest,
+        )
+
+    @classmethod
+    def perception_layout(
+        cls, backend: Any
+    ) -> tuple[dict[str, Any], Callable[[str], Any]]:
+        """``(cameras, intrinsics)`` of the ``env.segment`` perception: the planner's names."""
+        return FRANKA_CAMERAS, lambda key: franka_intrinsics(
+            backend.get_camera_meta(), key
+        )
+
+    def _stoppable(self, handler: Callable[..., Any]) -> Callable[..., Any]:
+        """Tell the worker which stop generation this call runs under, then run it."""
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            if self.motion_halt is not None:
+                # A thread that outlived its call (an abandoned run_code primitive) moves nothing.
+                raise RuntimeError(
+                    f"refused: {self.motion_halt}; nothing was commanded"
+                )
+            begin_op = getattr(self._backend, "begin_op", None)
+            if begin_op is not None:
+                begin_op(self.active_stop_generation)
+            return handler(*args, **kwargs)
+
+        return call
+
+    def _on_stop(self, generation: int) -> None:
+        # The running program first (code mode), then the worker's servo loops.
+        super()._on_stop(generation)
+        request_stop = getattr(self._backend, "request_stop", None)
+        if request_stop is not None:
+            request_stop(generation)
+
+    # ---- reach preview and collision-free motion (--ik) ----
+
+    #: Whether motion primitives take an ``arm`` first (the dual rig).
+    _ARMED = False
+    #: Set by __init__; class defaults so the registry can be built on a bare facade (tests).
+    _reach: reach.ReachPreview | None = None
+    _motion: motion.MotionPlanner | None = None
+
+    def _tcp_state(self) -> tuple[Any, Any]:
+        """(tcp_pose xyz+xyzw in the base frame, arm joints) from the robot state."""
+        state = to_numpy_tree(self._backend.get_robot_state())["raw_base_state"]
+        return state["tcp_pose"], state["arm_joint_position"]
+
+    def _arm_frame(self, arm: str | None) -> dict[str, Any]:
+        """The moving arm in the motion primitives' frame: joints ``q``, ``tcp`` (xyz +
+        xyzw), ``base_pose`` (the arm's base in that frame; None = it is the base frame)
+        and ``robots`` (other arms as ik ``robot`` obstacles in the arm's base frame)."""
+        if arm is not None:
+            raise ValueError("the single-arm franka server takes no arm")
+        tcp, q = self._tcp_state()
+        return {
+            "q": np.asarray(q, dtype=float),
+            "tcp": np.asarray(tcp, dtype=float),
+            "base_pose": None,
+            "robots": [],
+        }
+
+    def preview_reach(self, xyz, quat_xyzw=None, arm=None) -> dict[str, Any]:
+        """Whether the TCP can reach a pose (the motion primitives' frame) from the current
+        joints (IK only, the arm does not move); ``quat_xyzw`` None keeps the current
+        orientation."""
+        if self._reach is None:
+            return reach.no_service()
+        frame = self._arm_frame(arm)
+        return self._reach.preview(
+            frame["q"],
+            xyz,
+            frame["tcp"][3:] if quat_xyzw is None else quat_xyzw,
+            base_pose=frame["base_pose"],
+        )
+
+    def _reach_checked(
+        self, handler: Callable[..., Any], name: str
+    ) -> Callable[..., Any]:
+        """Refuse a move_delta / rotate_delta whose end pose the ik service cannot reach."""
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            delta = kwargs.get("delta_xyz" if name == "move_delta" else "delta_rpy")
+            if delta is None and args:
+                delta = args[0]
+            tcp, q = self._tcp_state()
+            pos, quat = reach.delta_target(
+                tcp,
+                delta_xyz=delta if name == "move_delta" else None,
+                delta_rpy=delta if name == "rotate_delta" else None,
+            )
+            reach.require_reachable(self._reach.preview(q, pos, quat), f"env.{name}")
+            return handler(*args, **kwargs)
+
+        return call
+
+    def _planned(self, name: str) -> Callable[..., Any]:
+        """move_delta / rotate_delta along a collision-free path (utils/motion.py): planned
+        to the end pose from the current joints, refused when no path exists, then followed
+        waypoint by waypoint with the backend's own move_delta / rotate_delta (each within
+        its per-call limits), the arm checked before each segment; predicted contact stops
+        the motion (``stopped: "contact"``)."""
+        key = "delta_xyz" if name == "move_delta" else "delta_rpy"
+
+        def move(*args: Any) -> Any:
+            return self._stoppable(self._backend.move_delta)(*args)
+
+        def rotate(*args: Any) -> Any:
+            return self._stoppable(self._backend.rotate_delta)(*args)
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            args = list(args)
+            arm = None
+            if self._ARMED:
+                arm = kwargs.pop("arm", None)
+                if arm is None and args:
+                    arm = args.pop(0)
+            delta = kwargs.pop(key, None)
+            if delta is None and args:
+                delta = args.pop(0)
+            if delta is None or args or kwargs:
+                raise ValueError(
+                    f"env.{name} takes {'arm, ' if self._ARMED else ''}{key}"
+                )
+            lead = [arm] if self._ARMED else []
+            frame = self._arm_frame(arm)
+            pos, quat = reach.delta_target(
+                frame["tcp"],
+                delta_xyz=delta if name == "move_delta" else None,
+                delta_rpy=delta if name == "rotate_delta" else None,
+            )
+            plan = motion.require_planned(
+                self._motion.plan(
+                    frame["q"],
+                    frame["tcp"][:3],
+                    pos,
+                    quat,
+                    self._world,
+                    base_pose=frame["base_pose"],
+                    robots=frame["robots"],
+                ),
+                f"env.{name}",
+            )
+            if plan["status"] != "planned":
+                return (move if name == "move_delta" else rotate)(*lead, delta)
+
+            def check(i: int) -> dict[str, Any]:
+                now = self._arm_frame(arm)
+                return self._motion.check(
+                    [now["q"], plan["q_path"][i]],
+                    self._world,
+                    base_pose=now["base_pose"],
+                    left_out=plan["left_out"],
+                    robots=now["robots"],
+                )
+
+            followed = motion.follow_waypoints(
+                plan["waypoints"],
+                tcp_pose=lambda: self._arm_frame(arm)["tcp"],
+                move=lambda d: move(*lead, d),
+                rotate=lambda r: rotate(*lead, r),
+                check=check,
+            )
+            results = followed["results"]
+            out = dict(results[-1]) if results else {}
+            out["ok"] = followed["stopped"] is None and all(
+                bool(r.get("ok", True)) for r in results
+            )
+            out["planned"] = {
+                "segments": len(plan["waypoints"]),
+                "segments_done": followed["segments"],
+                "path_m": plan["path_m"],
+                "backend": plan["backend"],
+            }
+            if followed["stopped"] == "cancelled":
+                out["cancelled"] = True
+            if followed["stopped"] == "contact":
+                out["stopped"] = "contact"
+                out["contact"] = followed["check"]["message"]
+            if followed["stopped"] == "stalled":
+                out["stopped"] = "stalled"
+                out["stalled"] = followed["stalled"]
+            return out
+
+        return call
+
+
+def rlinf_capabilities(eval_cfg: Any, action_scale: Any) -> dict[str, Any]:
+    """What this backend serves, in the shape franka_polymetis reports it.
+
+    RLinf clips each servo target into ``ee_pose_limit_min/max`` (it does not refuse)
+    and bounds no call's total motion (pi's --max-move does); ``servo_step_*`` is the
+    per-step ``action_scale``.
+    """
+    override = eval_cfg.get("override_cfg") or {}
+    lo = [float(v) for v in list(override.get("ee_pose_limit_min") or [])[:3]]
+    hi = [float(v) for v in list(override.get("ee_pose_limit_max") or [])[:3]]
+    main = eval_cfg.get("main_image_key")
+    names = sorted(str(n) for n in (override.get("camera_names") or {}).values())
+    return {
+        "backend": "rlinf",
+        "has_vla": True,
+        "cameras": {
+            "main": main,
+            **{f"extra_{i}": n for i, n in enumerate(n for n in names if n != main)},
+        },
+        "has_depth": bool(override.get("enable_camera_depth", False)),
+        "workspace": {"min": lo, "max": hi} if len(lo) == len(hi) == 3 else None,
+        "z_floor_m": lo[2] if len(lo) == 3 else None,
+        "table_z_m": None,
+        "max_move_m": None,
+        "max_rotate_rad": None,
+        "servo_step_m": float(action_scale[0]),
+        "servo_step_rad": float(action_scale[1]),
+        "empty_grasp_reopen_m": None,
+    }
+
+
+def _create_stop_flag() -> Any:
+    """Create a Ray actor holding the facade's latest stop generation.
+
+    The worker's servo loops run inside its own Ray actor (possibly on another
+    node), so the facade cannot share memory with them. RLinf's Franka stack
+    exposes no stop/hold call; instead each loop polls this actor between
+    steps and returns early.
+    """
+    import ray
+
+    @ray.remote(num_cpus=0)
+    class StopFlag:
+        def __init__(self) -> None:
+            self._generation = 0
+
+        def set(self, generation: int) -> int:
+            self._generation = max(self._generation, int(generation))
+            return self._generation
+
+        def get(self) -> int:
+            return self._generation
+
+    return StopFlag.remote()
+
+
+class _StopPoller:
+    """Worker-side view of the stop flag for the operation being executed."""
+
+    def __init__(self, stop_flag: Any) -> None:
+        self._flag = stop_flag
+        self._generation = 0
+
+    def begin(self, generation: int | None) -> None:
+        self._generation = int(generation or 0)
+
+    def requested(self) -> bool:
+        if self._flag is None:
+            return False
+        try:
+            import ray
+
+            return int(ray.get(self._flag.get.remote(), timeout=1.0)) > self._generation
+        except Exception as exc:  # a flag failure must not abort a motion
+            logger.warning("stop flag unreadable: %s", exc)
+            return False
+
+
+class _RayBackend:
+    """Turn RLinf Ray method handles into a synchronous facade backend."""
+
+    def __init__(self, worker: Any, stop_flag: Any = None) -> None:
+        self.worker = worker
+        self.stop_flag = stop_flag
+
+    def request_stop(self, generation: int) -> None:
+        """Publish a stop to the worker's loops (fire and forget)."""
+        if self.stop_flag is not None:
+            self.stop_flag.set.remote(generation)
+
+    def __getattr__(self, name: str):
+        remote_method = getattr(self.worker, name)
+
+        def invoke(*args, **kwargs):
+            return remote_method(*args, **kwargs).wait()[0]
+
+        return invoke
+
+
+def _create_worker_class():
+    """Build the Worker subclass only inside the RLinf server environment."""
+    from rlinf.envs.real.env import RealWorldEnv
+    from rlinf.scheduler import Worker
+    from scipy.spatial.transform import Rotation as Rotation
+
+    class FrankaEnvWorker(Worker):
+        """Ray worker that owns the physical Franka and camera resources."""
+
+        def __init__(
+            self, cfg: Any, controller_config: dict[str, Any], stop_flag: Any = None
+        ):
+            super().__init__()
+            from pi_embodied_services.robots.franka.franka_env import (
+                register_pi_franka_env,
+            )
+
+            self._stop = _StopPoller(stop_flag)
+
+            register_pi_franka_env()
+            self.cfg = cfg
+            self.controller = dict(controller_config)
+            self.env = RealWorldEnv(
+                cfg.env.eval,
+                num_envs=1,
+                seed_offset=0,
+                total_num_processes=1,
+                worker_info=self.worker_info,
+            )
+            self.action_dim = int(self.env.action_space.shape[-1])
+            env_config = self.env.env.call("get_wrapper_attr", "config")[0]
+            self.action_scale = np.asarray(env_config.action_scale, dtype=np.float32)
+            self.use_relative_frame = bool(cfg.env.eval.get("use_relative_frame", True))
+
+        def get_env_meta(self) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "action_dim": self.action_dim,
+                "action_scale": self.action_scale.tolist(),
+                "use_relative_frame": self.use_relative_frame,
+                "backend": "rlinf",
+                "capabilities": rlinf_capabilities(
+                    self.cfg.env.eval, self.action_scale
+                ),
+            }
+
+        def close_env(self) -> None:
+            try:
+                self.env.close()
+            except Exception:
+                pass
+
+        def begin_op(self, generation: int | None) -> None:
+            """Record the stop generation the next operation runs under."""
+            self._stop.begin(generation)
+
+        def reset(self) -> dict[str, Any]:
+            observation, info = self.env.reset()
+            return {
+                "ok": True,
+                "info": to_numpy_tree(info),
+                "robot_state": self.get_robot_state(),
+                "states": self._strip_batch(observation.get("states")),
+            }
+
+        @staticmethod
+        def _strip_batch(value: Any) -> Any:
+            array = to_numpy_tree(value)
+            if isinstance(array, np.ndarray) and array.ndim > 0 and array.shape[0] == 1:
+                return array[0]
+            if isinstance(array, list) and len(array) == 1:
+                return array[0]
+            return array
+
+        def _strip_observation(self, observation: dict[str, Any]) -> dict[str, Any]:
+            """Strip the leading batch dimension from a wrapped observation."""
+            output = {
+                key: self._strip_batch(value) for key, value in observation.items()
+            }
+            for key, ndim in (("extra_view_images", 5), ("extra_view_depths", 4)):
+                value = output.get(key)
+                if (
+                    isinstance(value, np.ndarray)
+                    and value.ndim == ndim
+                    and value.shape[0] == 1
+                ):
+                    output[key] = value[0]
+            return output
+
+        def _raw_rlinf_env(self) -> Any:
+            """Return the unwrapped RLinf environment compatibility layer."""
+            return self.env.env.envs[0].unwrapped
+
+        def get_observation(self) -> dict[str, Any]:
+            # Live camera read only; proprio state is supplied by the client cache.
+            try:
+                return self._read_live_frames()
+            except Exception as exc:
+                logger.warning("live camera refresh failed: %s", exc)
+                return {}
+
+        def _read_live_frames(self) -> dict[str, Any]:
+            """Re-read the cameras live and map them to policy image keys.
+
+            Frames pass through the observation wrappers unchanged, so re-reading
+            them without a robot step yields the same format as a stepped obs.
+            """
+            frames, depths = self._raw_rlinf_env().get_live_camera_observation()
+            main_key = self.cfg.env.eval.get("main_image_key")
+            output: dict[str, Any] = {"main_images": np.asarray(frames[main_key])}
+            extras = [
+                np.asarray(frames[name]) for name in sorted(frames) if name != main_key
+            ]
+            if extras:
+                output["extra_view_images"] = np.stack(extras, axis=0)
+            if depths:
+                if main_key in depths:
+                    output["main_depths"] = np.asarray(depths[main_key])
+                extra_depths = [
+                    np.asarray(depths[name])
+                    for name in sorted(depths)
+                    if name != main_key
+                ]
+                if extra_depths:
+                    output["extra_view_depths"] = np.stack(extra_depths, axis=0)
+            return output
+
+        def _raw_state(self) -> Any:
+            return self.env.env.call("get_wrapper_attr", "_franka_state")[0]
+
+        def _raw_tcp_pose(self) -> np.ndarray:
+            return np.asarray(self._raw_state().tcp_pose, dtype=np.float32)
+
+        def get_robot_state(self) -> dict[str, Any]:
+            return {
+                "raw_base_state": to_numpy_tree(self._raw_state()),
+                "action_dim": self.action_dim,
+                "action_scale": self.action_scale.tolist(),
+                "use_relative_frame": self.use_relative_frame,
+            }
+
+        def get_camera_meta(self) -> dict[str, Any] | None:
+            try:
+                metadata = self._raw_rlinf_env().get_camera_metadata()
+            except Exception as exc:
+                return {"error": str(exc), "error_type": type(exc).__name__}
+            metadata = to_numpy_tree(metadata)
+            main_key = self.cfg.env.eval.get("main_image_key")
+            names = sorted(metadata.get("cameras", {}))
+            extras = [name for name in names if name != main_key]
+            metadata["observation_camera_map"] = {
+                "main": main_key,
+                **{f"extra_{index}": name for index, name in enumerate(extras)},
+            }
+            return metadata
+
+        def _step_delta(
+            self,
+            delta_xyz: np.ndarray,
+            delta_rpy: np.ndarray,
+            *,
+            frame: str,
+            gripper: float | None = None,
+        ) -> Any:
+            action = np.zeros(self.action_dim, dtype=np.float32)
+            twist = np.zeros(6, dtype=np.float32)
+            twist[:3] = delta_xyz / max(float(self.action_scale[0]), 1e-6)
+            twist[3:6] = delta_rpy / max(float(self.action_scale[1]), 1e-6)
+            if frame == "base" and self.use_relative_frame:
+                from rlinf.envs.real.utils.pose import construct_adjoint_matrix
+
+                twist = (
+                    np.linalg.inv(construct_adjoint_matrix(self._raw_tcp_pose()))
+                    @ twist
+                )
+            elif frame not in {"base", "eef"}:
+                raise ValueError("frame must be 'base' or 'eef'")
+            action[: min(6, self.action_dim)] = twist[: min(6, self.action_dim)]
+            if self.action_dim >= 7:
+                if gripper is None:
+                    gripper_open = self._raw_state().gripper_open
+                    if gripper_open is None:
+                        raise ValueError(
+                            "Cannot preserve gripper: open/closed state unavailable"
+                        )
+                    gripper = 1.0 if gripper_open else -1.0
+                action[-1] = float(gripper)
+            result = self.env.step(action[None, :])
+            return self._strip_batch(result[0].get("states"))
+
+        def move_delta(self, delta_xyz: Any) -> dict[str, Any]:
+            requested = np.asarray(delta_xyz, dtype=np.float32)
+            start = self._raw_tcp_pose()
+            target = start[:3] + requested
+            deadline = time.time() + self.controller["move_timeout_s"]
+            max_iterations = max(
+                self.controller["min_iterations"],
+                int(np.ceil(np.max(np.abs(requested)) / self.action_scale[0]))
+                * self.controller["iteration_multiplier"],
+            )
+            iterations = 0
+            states: Any = None
+            cancelled = False
+            while iterations < max_iterations and time.time() < deadline:
+                if self._stop.requested():
+                    cancelled = True
+                    break
+                remaining = target - self._raw_tcp_pose()[:3]
+                if np.linalg.norm(remaining) <= self.controller["move_tolerance_m"]:
+                    break
+                step = np.clip(
+                    remaining,
+                    -float(self.action_scale[0]),
+                    float(self.action_scale[0]),
+                )
+                states = self._step_delta(
+                    step, np.zeros(3, dtype=np.float32), frame="base"
+                )
+                iterations += 1
+            final = self._raw_tcp_pose()
+            error = float(np.linalg.norm(target - final[:3]))
+            result = {
+                "ok": error <= self.controller["move_tolerance_m"],
+                "requested_delta_xyz_base": requested.tolist(),
+                "start_tcp_pose": start.tolist(),
+                "final_tcp_pose": final.tolist(),
+                "final_error_m": error,
+                "steps_used": iterations,
+                "states": states,
+            }
+            if cancelled:
+                result["cancelled"] = True
+            return result
+
+        def rotate_delta(self, delta_rpy: Any) -> dict[str, Any]:
+            requested = np.asarray(delta_rpy, dtype=np.float32)
+            start = self._raw_tcp_pose()
+            target_rotation = Rotation.from_euler(
+                "xyz", requested
+            ) * Rotation.from_quat(start[3:])
+            deadline = time.time() + self.controller["rotate_timeout_s"]
+            max_iterations = max(
+                self.controller["min_iterations"],
+                int(np.ceil(np.linalg.norm(requested) / self.action_scale[1]))
+                * self.controller["iteration_multiplier"],
+            )
+            iterations = 0
+            error = float("inf")
+            states: Any = None
+            cancelled = False
+            while iterations < max_iterations and time.time() < deadline:
+                if self._stop.requested():
+                    cancelled = True
+                    break
+                current = Rotation.from_quat(self._raw_tcp_pose()[3:])
+                error_eef = current.inv().apply(
+                    (target_rotation * current.inv()).as_rotvec()
+                )
+                error = float(np.linalg.norm(error_eef))
+                if error <= self.controller["rotate_tolerance_rad"]:
+                    break
+                max_step = float(self.action_scale[1])
+                if error > max_step:
+                    error_eef *= max_step / error
+                step_rpy = Rotation.from_rotvec(error_eef).as_euler("xyz")
+                states = self._step_delta(
+                    np.zeros(3, dtype=np.float32),
+                    step_rpy.astype(np.float32),
+                    frame="eef",
+                )
+                iterations += 1
+            final = self._raw_tcp_pose()
+            error = float(
+                (target_rotation * Rotation.from_quat(final[3:]).inv()).magnitude()
+            )
+            result = {
+                "ok": error <= self.controller["rotate_tolerance_rad"],
+                "requested_delta_rpy_base": requested.tolist(),
+                "start_tcp_pose": start.tolist(),
+                "final_tcp_pose": final.tolist(),
+                "final_error_rad": error,
+                "steps_used": iterations,
+                "states": states,
+            }
+            if cancelled:
+                result["cancelled"] = True
+            return result
+
+        def set_gripper(self, *, open: bool) -> dict[str, Any]:
+            if self.action_dim < 7:
+                return {"ok": False, "error": "action space has no gripper dimension"}
+            deadline = time.time() + self.controller["gripper_timeout_s"]
+            command = 1.0 if open else -1.0
+            iterations = 0
+            reached = False
+            states: Any = None
+            cancelled = False
+            while (
+                iterations < self.controller["gripper_max_iterations"]
+                and time.time() < deadline
+            ):
+                if self._stop.requested():
+                    cancelled = True
+                    break
+                states = self._step_delta(
+                    np.zeros(3, dtype=np.float32),
+                    np.zeros(3, dtype=np.float32),
+                    frame="base",
+                    gripper=command,
+                )
+                time.sleep(self.controller["gripper_settle_s"])
+                state = to_numpy_tree(self._raw_state())
+                reached = bool(state.get("gripper_open")) == bool(open)
+                iterations += 1
+                if reached:
+                    break
+            result = {
+                "ok": reached,
+                "target_gripper_open": bool(open),
+                "steps_used": iterations,
+                "robot_state": self.get_robot_state(),
+                "states": states,
+            }
+            if cancelled:
+                result["cancelled"] = True
+            return result
+
+        def chunk_step(
+            self,
+            actions: Any,
+            *,
+            return_all_frames: bool = False,
+        ) -> dict[str, Any]:
+            observations = []
+            terminated = False
+            truncated = False
+            last_info: Any = None
+            cancelled = False
+            for action in np.asarray(actions, dtype=np.float32):
+                observation, _reward, term, trunc, info = self.env.step(action[None, :])
+                observations.append(self._strip_observation(observation))
+                terminated = terminated or bool(np.asarray(to_numpy_tree(term)).any())
+                truncated = truncated or bool(np.asarray(to_numpy_tree(trunc)).any())
+                last_info = to_numpy_tree(info)
+                if terminated or truncated:
+                    break
+                # Checked after each action so at least one frame is returned.
+                if self._stop.requested():
+                    cancelled = True
+                    break
+            result = {
+                "observation": observations if return_all_frames else observations[-1],
+                "terminated": terminated,
+                "truncated": truncated,
+                "info": last_info,
+            }
+            if cancelled:
+                result["cancelled"] = True
+            return result
+
+    return FrankaEnvWorker
+
+
+def _launch_worker(
+    cfg: Any,
+    controller_config: dict[str, Any],
+    *,
+    create_worker_class: Callable[[], Any],
+):
+    from rlinf.scheduler import Cluster, ComponentPlacement
+
+    worker_class = create_worker_class()
+    cluster = Cluster(cluster_cfg=cfg.cluster)
+    placement = ComponentPlacement(cfg, cluster).get_strategy("env")
+    stop_flag = _create_stop_flag()
+    worker = worker_class.create_group(cfg, controller_config, stop_flag).launch(
+        cluster=cluster,
+        name="FrankaPiEnvGroup",
+        placement_strategy=placement,
+    )
+    worker.get_env_meta().wait()
+    return worker, stop_flag
+
+
+def main(
+    *,
+    create_worker_class: Callable[[], Any],
+    load_runtime_config: Callable[..., Any],
+    facade_class: type[FrankaEnvFacade] = FrankaEnvFacade,
+    argv: list[str] | None = None,
+) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--transport", choices=["http"], default="http")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--robot-config", default=None)
+    parser.add_argument("--task-description", required=True)
+    parser.add_argument("--parent-watch", action="store_true")
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        help="Print the resolved RLinf config and exit without launching.",
+    )
+    parser.add_argument(
+        "--sam3", default="", help="SAM3 server URL: adds env.segment and detection ids"
+    )
+    parser.add_argument(
+        "--unidepth", default="", help="UniDepth server URL: adds env.enhance_depth"
+    )
+    add_grasp_arguments(parser)
+    reach.add_ik_argument(parser)
+    motion.add_unplanned_argument(parser)
+    hardware_lock.add_lock_arguments(parser)
+    add_align_wrist_argument(parser)
+    add_code_argument(parser)
+    add_limit_arguments(parser, FrankaCodeMode._LIMIT_DEFAULTS)
+    parser.add_argument(
+        "--geometry",
+        action="store_true",
+        help="serve the geometric toolset: point-cloud views, marked points, grip-site targets",
+    )
+    args = parser.parse_args(argv)
+    # This process's planner and perception layout read the calibration and projection views
+    # from the robot config too (not only the Ray worker): the user's --robot-config.
+    set_robot_config_path(args.robot_config)
+    if args.geometry and facade_class is not FrankaEnvFacade:
+        parser.error("--geometry is only supported by the single-arm franka env server")
+
+    if args.ik and facade_class._ARMED:
+        # The arm-arm check needs the other arm as collision spheres, which only cuRobo has:
+        # the dual rig refuses to start rather than move its arms unchecked.
+        try:
+            backend_name = motion.ik_backend(args.ik)
+        except Exception as exc:  # noqa: BLE001 - any failure means it cannot be verified
+            parser.error(f"--ik {args.ik}: cannot read the ik backend ({exc})")
+        if backend_name != "curobo":
+            parser.error(
+                f"--ik on the dual rig needs the ik server's --backend curobo for the arm-arm "
+                f"collision check; {args.ik} runs {backend_name}"
+            )
+    runtime = load_runtime_config(
+        args.robot_config,
+        task_description=args.task_description,
+    )
+    if args.print_config:
+        from omegaconf import OmegaConf
+
+        print(OmegaConf.to_yaml(runtime.rlinf))
+        return 0
+    # One server per physical arm on this machine (utils/hardware_lock.py), before Ray touches it.
+    from omegaconf import OmegaConf
+
+    rlinf = OmegaConf.to_container(runtime.rlinf, resolve=True)
+    addresses = hardware_lock.config_arm_ids("franka", rlinf, keys=r"(\w+_)?robot_ip")
+    # The user YAML names the arm's serial (the same id a Polymetis server of this arm locks) and cameras.
+    raw = hardware_lock.read_config(
+        args.robot_config
+        or getattr(sys.modules[load_runtime_config.__module__], "DEFAULT_CONFIG", None)
+    )
+    ids = hardware_lock.hardware_ids("franka", raw, addresses)
+    _lock = hardware_lock.lock_from_args(args, ids, facade_class.SERVICE_NAME)
+    worker, stop_flag = _launch_worker(
+        runtime.rlinf, runtime.controller, create_worker_class=create_worker_class
+    )
+    backend = _RayBackend(worker, stop_flag)
+    cameras, intrinsics = facade_class.perception_layout(backend)
+    perception = Perception.from_urls(
+        sam3=args.sam3,
+        unidepth=args.unidepth,
+        cameras=cameras,
+        intrinsics=intrinsics,
+    )
+    facade = facade_class(
+        backend,
+        perception,
+        urls_from_args(args),
+        ik_reach=reach.reach_from_args(args, "panda"),
+        ik_motion=motion.planner_from_args(args, "panda"),
+        **({"geometry": True} if args.geometry else {}),
+        code=args.code,
+        limits=limits_from_args(args, FrankaCodeMode._LIMIT_DEFAULTS),
+        **({"align_wrist": True} if args.align_wrist else {}),
+    )
+    try:
+        facade.serve(
+            transport=args.transport,
+            host=args.host,
+            port=args.port,
+            parent_watch=args.parent_watch,
+        )
+    finally:
+        worker.close_env().wait()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(
+        main(
+            create_worker_class=_create_worker_class,
+            load_runtime_config=load_runtime_config,
+        )
+    )

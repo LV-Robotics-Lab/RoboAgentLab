@@ -1,0 +1,476 @@
+/**
+ * Layered memory as a pi extension helper. A robot calls `memory(pi, { cell, primitives, ... })`:
+ * the agent reads memory with pi's built-in read/ls/grep/find and writes with write, a tool_call guard
+ * enforces the memory access boundary, the published corpus is synced from Hugging Face, and the
+ * solved recipe is rebuilt from the session branch. Loaded on its own it only adds the command:
+ *
+ *   pi -e packages/embodied/src/capabilities/memory -p "/memory validate"   (local corpus: dirs.memory of the deployment config)
+ */
+
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { dir as cfgDir } from "../../infra/config.ts";
+import { branchProviders, plannerOf } from "../../planner/kind.ts";
+import { hasFiles, mergeMemory, rebuildIndex, str, validateMemory } from "./corpus.ts";
+import { syncMemory } from "./sync.ts";
+
+const READABLE = ["global", "suite", "task_only", "results"];
+/** The default memory section (see MemoryOptions.prompt). */
+const SECTION = readFileSync(new URL("./section.md", import.meta.url), "utf8").trim();
+/** What closes every memory section, the robot's own too: reading memory is required and reported. */
+const REQUIRED = readFileSync(new URL("./required.md", import.meta.url), "utf8").trim();
+const ACCESS: Record<string, Access> = {
+	read: "read",
+	ls: "read",
+	grep: "search",
+	find: "search",
+	write: "write",
+	edit: "write",
+};
+
+type Access = "read" | "search" | "write";
+type Details = { terminated?: unknown; error?: unknown; result?: { error?: unknown }; camera?: unknown } | undefined;
+/**
+ * Canonical roots: the memory corpus, every robot's memory home, the run's output dir and the cell tag, plus read-only
+ * dirs and, when exploring, the cell's inbox and its attempt archive (`<output>/attempts/<tag>`, see ../explore.ts).
+ */
+export type Guard = {
+	root: string;
+	home: string;
+	output: string;
+	tag: string;
+	inbox?: string;
+	attempts?: string;
+	readable?: string[];
+};
+export type MemoryOptions = {
+	/** Corpus name under the memory home, also the Hugging Face subdirectory (default "libero"). */
+	robot?: string;
+	/** Directory holding every robot's corpus (default $PI_EMBODIED_MEMORY, else ~/.pi/embodied/memory). */
+	home?: () => string;
+	/** The current cell; without it there is no guard, sync, recipe or prompt (maintenance only). */
+	cell?: () => { tag: string; reference: string } | undefined;
+	/** State-advancing tools that belong in a recipe (plus successful `segment` calls). */
+	primitives?: readonly string[];
+	/**
+	 * The robot's memory section, as a template (`{{memory_dir}}` ...); default ./section.md: read the
+	 * corpus, then the cell's reference and recipe. ../../robot.ts puts it in every evaluation prompt: at
+	 * the robot prompt's `{{memory}}`, else at its end, and after the mode's prompt when a mode replaces
+	 * the robot's (--units=true, --code=true). ./required.md closes it either way.
+	 */
+	prompt?: (profile: "hf" | "local") => string;
+	/**
+	 * The robot's own prompt already carries its memory instructions, with no `{{memory}}` slot (LIBERO's
+	 * RPent WORKFLOW step, its compact memory text): the section is added only where a mode replaces that prompt.
+	 */
+	inPrompt?: boolean;
+	/** Exploration run: local profile, the cell's inbox becomes writable. */
+	explore?: () => boolean;
+	/** Directories the agent may also read and search, e.g. the robot's saved state images. */
+	readable?: () => string[];
+	/**
+	 * The robot's prompt has a memory-free form, so `--memory-profile off` may turn memory off: no
+	 * memory section, no file tools, no sync, no recipe export. Without it `off` refuses the start.
+	 */
+	optional?: boolean;
+	/**
+	 * Whether the robot has a published corpus on Hugging Face (default true). Without one, runs
+	 * default to the local profile, and a local corpus exploration has not written yet is empty, not an error.
+	 */
+	published?: boolean;
+	/**
+	 * The cell's audit (`<output>/<tag>.json`, the task_only pair with the recipe) is written through the
+	 * `write_audit` tool, never free-written JSON: the model fills AUDIT_PARAMETERS, `facts` adds what the
+	 * runtime knows (the cell's identity, the final state, the environment's own solved flag).
+	 */
+	audit?: { facts: () => Record<string, unknown> };
+};
+
+/** What the model states in an audit; everything else in it is the robot's `audit.facts`. */
+export const AUDIT_PARAMETERS = Type.Object({
+	terminated: Type.Boolean({
+		description: "true only when the latest tool result reports terminated: true (the task is solved)",
+	}),
+	strategy_notes: Type.String({
+		description:
+			"How you localized, then what you did step by step in trace order with the parameters used; when unsolved, what you tried and where it stalled",
+	}),
+	memory_files_read: Type.Array(Type.String(), {
+		description: "The exact memory file names you read; empty when no matching task memory was found",
+	}),
+	pick_result: Type.Optional(
+		Type.Record(Type.String(), Type.Unknown(), {
+			description: "Per pick: keys name the recipe step it came from (e.g. bowl_pi0_pick_step3)",
+		}),
+	),
+	attempts: Type.Optional(Type.Integer({ minimum: 1, description: "Exploration: the attempts this cell took" })),
+});
+
+const defaultHome = () => process.env.PI_EMBODIED_MEMORY || join(homedir(), ".pi", "embodied", "memory");
+
+// ---------------------------------------------------------------------------
+// Access boundary and recipes (write_recipe_from_states)
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical path: pi's tool path normalization, then symlinks resolved on the existing prefix,
+ * dangling ones included (a write through them lands on their target). Throws on a symlink loop.
+ */
+export function canonicalPath(input: string | undefined, cwd: string): string {
+	let p = (input || ".").replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ");
+	if (p.startsWith("@")) p = p.slice(1);
+	if (p === "~" || p.startsWith("~/")) p = join(homedir(), p.slice(1));
+	if (p.startsWith("file://")) p = fileURLToPath(p);
+	let head = resolve(cwd, p);
+	const tail: string[] = [];
+	for (let hops = 0; hops <= 40; ) {
+		try {
+			return join(realpathSync(head), ...tail);
+		} catch {}
+		let link: string | undefined;
+		try {
+			link = readlinkSync(head);
+		} catch {}
+		if (link !== undefined) {
+			head = resolve(dirname(head), link);
+			hops++;
+		} else if (dirname(head) === head) return resolve(cwd, p);
+		else {
+			tail.unshift(basename(head));
+			head = dirname(head);
+		}
+	}
+	throw new Error(`too many symbolic links: ${input}`);
+}
+
+/**
+ * Why `path` (canonical) may not be accessed, or undefined. Deny by default: only the published memory
+ * (read), the cell's inbox and attempt archive (exploration) and the cell's files in the output dir (`<tag>*`) are reachable.
+ */
+export function denied(path: string, access: Access, g: Guard): string | undefined {
+	const inside = (base: string) => path === base || path.startsWith(base + sep);
+	if (access !== "write" && g.readable?.some(inside)) return undefined;
+	if (g.attempts && inside(g.attempts)) return undefined;
+	if (!inside(g.root)) {
+		if (inside(g.home)) return `access to another robot's memory is denied: ${path}`;
+		if (path === g.output && access === "read") return undefined;
+		const name = basename(path);
+		const own = name === g.tag || name.startsWith(`${g.tag}.`) || name.startsWith(`${g.tag}_`);
+		if (dirname(path) === g.output && own) return undefined;
+		return `only the memory and this cell's ${g.tag}.* / ${g.tag}_* files in ${g.output} are accessible: ${path}`;
+	}
+	const parts = relative(g.root, path).split(sep).filter(Boolean);
+	const ownInbox = g.inbox !== undefined && parts[0] === "_internal" && parts[1] === "inbox" && parts[2] === g.inbox;
+	if (access === "write") return ownInbox ? undefined : `writing to memory is denied in this mode: ${path}`;
+	if (!parts.length)
+		return access === "read"
+			? undefined
+			: `search global/, suite/ or task_only/ rather than the memory root: ${path}`;
+	if (READABLE.includes(parts[0]) || (parts.length === 1 && parts[0].endsWith(".md")) || ownInbox) return undefined;
+	return `reading this memory path is denied: ${path}`;
+}
+
+export type Call = { name: string; args: Record<string, unknown>; details: Details; isError: boolean };
+
+/** The session's tool calls in order, each with its arguments and its result's details (../flash/generate.ts reads them too). */
+export function toolCalls(entries: SessionEntry[]): Call[] {
+	const args = new Map<string, Record<string, unknown>>();
+	const calls: Call[] = [];
+	for (const entry of entries) {
+		if (entry.type !== "message") continue;
+		const m = entry.message;
+		if (m.role === "assistant")
+			for (const part of m.content) if (part.type === "toolCall") args.set(part.id, part.arguments);
+		if (m.role === "toolResult")
+			calls.push({
+				name: m.toolName,
+				args: args.get(m.toolCallId) ?? {},
+				details: m.details as unknown as Details,
+				isError: m.isError,
+			});
+	}
+	return calls;
+}
+
+/**
+ * The command sequence after the last successful `reset` if it reached `terminated`, else undefined.
+ * Contract: an executed primitive's result carries `details.terminated` (boolean); a failed call is
+ * `isError` or has `details.error` / `details.result.error` and is dropped. Lines are
+ * `{"action": name, ...args}`, plus successful `segment` calls as `{action, prompt | point, camera}`.
+ */
+export function recipe(
+	entries: SessionEntry[],
+	primitives: ReadonlySet<string>,
+): Record<string, unknown>[] | undefined {
+	const calls = toolCalls(entries);
+	const ok = (c: Call) => !c.isError && !c.details?.error && !c.details?.result?.error;
+	let start = 0;
+	calls.forEach((c, i) => {
+		if (c.name === "reset" && ok(c)) start = i + 1;
+	});
+	const episode = calls.slice(start);
+	if (!episode.some((c) => c.details?.terminated === true)) return undefined;
+	return episode
+		.filter(
+			(c) =>
+				ok(c) && (c.name === "segment" || (primitives.has(c.name) && typeof c.details?.terminated === "boolean")),
+		)
+		.map((c) => {
+			if (c.name !== "segment") return { action: c.name, ...c.args };
+			const camera = c.details?.camera ?? c.args.camera ?? "agentview";
+			const prompt = str(c.args.prompt).trim();
+			return prompt ? { action: "segment", prompt, camera } : { action: "segment", point: c.args.point, camera };
+		});
+}
+
+// ---------------------------------------------------------------------------
+// Extension wiring
+// ---------------------------------------------------------------------------
+
+function say(ctx: ExtensionContext, text: string, level: "info" | "warning" | "error" = "info") {
+	if (ctx.hasUI) ctx.ui.notify(text, level);
+	else console.error(`[memory] ${text}`);
+}
+
+export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
+	pi.registerFlag("memory-profile", {
+		type: "string",
+		description: "hf (evaluation default) | local | off (no memory: no section, file tools, sync or recipe)",
+	});
+	pi.registerFlag("auto-merge-memory", {
+		type: "boolean",
+		default: false,
+		description: "Merge the inbox after exploration",
+	});
+	let root = "";
+	let home = "";
+	let outputDir = "";
+	let profile: "hf" | "local" | "off" = "hf";
+	let cell: { tag: string; reference: string } | undefined;
+	let guard: Guard | undefined;
+	/** The memory files the agent read this episode: path under the corpus -> SHA-256 when read (../context-version.ts). */
+	let loaded: Record<string, string> = {};
+
+	function locate(ctx: ExtensionContext, hf = false) {
+		// dirs.memory is the local corpus; the hf profile always reads the synced published one.
+		const dir = hf ? "" : cfgDir(pi, "memory");
+		const out = cfgDir(pi, "memory_out") || ctx.sessionManager.getSessionDir();
+		home = canonicalPath(opts.home?.() || defaultHome(), ctx.cwd);
+		root = canonicalPath(dir || join(home, opts.robot ?? "libero"), ctx.cwd);
+		outputDir = out ? canonicalPath(out, ctx.cwd) : "";
+	}
+
+	/** Why this session cannot have memory (robot.ts refuses to start), else undefined. */
+	let problem: string | undefined;
+
+	// A failure here is a fail-closed start, not an extension error: pi would log a throwing
+	// handler and go on, and the robot's own session_start would run the episode memory-less
+	// (verify3 bug 38). The problem is recorded and robot.ts reads it before the robot boots.
+	pi.on("session_start", async (_event, ctx) => {
+		guard = undefined;
+		loaded = {};
+		problem = undefined;
+		try {
+			await establish(ctx);
+		} catch (err) {
+			guard = undefined;
+			problem = err instanceof Error ? err.message : String(err);
+		}
+	});
+
+	async function establish(ctx: ExtensionContext) {
+		locate(ctx);
+		cell = opts.cell?.();
+		if (!cell) return;
+		if (!/^[\w.-]+$/.test(cell.tag) || /^\.+$/.test(cell.tag))
+			throw new Error(`invalid memory cell tag: ${cell.tag}`);
+		const explore = opts.explore?.() ?? false;
+		const explicit = str(pi.getFlag("memory-profile"));
+		const requested = explicit || (explore || opts.published === false ? "local" : "hf");
+		if (requested !== "hf" && requested !== "local" && requested !== "off")
+			throw new Error(`unknown --memory-profile ${requested}`);
+		if (explore && requested === "hf") throw new Error("--explore cannot be used with --memory-profile hf");
+		if (requested === "off") {
+			if (explore) throw new Error("--explore writes memory: it cannot run with --memory-profile off");
+			if (!opts.optional)
+				throw new Error(
+					`--memory-profile off: ${opts.robot ?? "libero"}'s prompt reads memory and has no form without it`,
+				);
+			// No guard: a file tool is refused (none is active), and nothing is synced or exported.
+			profile = "off";
+			return;
+		}
+		profile = requested;
+		if (profile === "hf") locate(ctx, true);
+		guard = {
+			root,
+			home,
+			output: outputDir,
+			tag: cell.tag,
+			inbox: explore ? cell.tag : undefined,
+			attempts: explore && outputDir ? join(outputDir, "attempts", cell.tag) : undefined,
+		};
+		if (explore) return;
+		if (profile === "hf") await syncMemory(root, (m) => say(ctx, m, "warning"));
+		// A run that asks for memory (a published corpus, --memory-profile, or dirs.memory) refuses to start
+		// without one: the prompt would send the agent to files that do not exist.
+		else if (
+			(explicit || opts.published !== false || cfgDir(pi, "memory")) &&
+			!existsSync(join(root, "MEMORY.md")) &&
+			!["global", "suite", "task_only"].some((s) => hasFiles(join(root, s)))
+		)
+			throw new Error(`local memory corpus not found at ${root}; run exploration first or use --memory-profile hf`);
+	}
+
+	// A robot's file tools fail closed: until session_start has established every root, nothing is reachable.
+	pi.on("tool_call", (event, ctx) => {
+		const access = ACCESS[event.toolName];
+		if (!access || !opts.cell) return undefined;
+		const g = guard;
+		if (!g || ![g.root, g.home, g.output].every(isAbsolute) || !g.tag)
+			return { block: true, reason: "file access is disabled: the memory guard has no memory, output dir or cell" };
+		try {
+			const readable = (opts.readable?.() ?? []).filter(Boolean).map((d) => canonicalPath(d, ctx.cwd));
+			const reason = denied(
+				canonicalPath(str((event.input as unknown as { path?: unknown }).path), ctx.cwd),
+				access,
+				{ ...g, readable },
+			);
+			return reason ? { block: true, reason } : undefined;
+		} catch (e) {
+			return { block: true, reason: `file access denied: ${(e as Error).message}` };
+		}
+	});
+
+	pi.on("tool_result", (event, ctx) => {
+		if (event.toolName !== "read" || event.isError || !root) return;
+		try {
+			const path = canonicalPath(str((event.input as { path?: unknown }).path), ctx.cwd);
+			const rel = relative(root, path);
+			if (!rel || rel.startsWith("..") || isAbsolute(rel)) return;
+			loaded[rel.split(sep).join("/")] = createHash("sha256").update(readFileSync(path)).digest("hex");
+		} catch {}
+	});
+
+	// Once the run has settled (continuations such as DISTIL included): export the recipe, merge drafts.
+	pi.on("agent_settled", async (_event, ctx) => {
+		if (!cell || !outputDir || profile === "off") return;
+		const branch = ctx.sessionManager.getBranch();
+		const commands = recipe(branch, new Set(opts.primitives ?? []));
+		const path = join(outputDir, `${cell.tag}_recipe.jsonl`);
+		if (commands) {
+			mkdirSync(outputDir, { recursive: true });
+			writeFileSync(path, commands.map((c) => `${JSON.stringify(c)}\n`).join(""));
+			// Who solved it (../planner.ts): a person's or a replayed solve is not a model's recipe.
+			writeFileSync(
+				join(outputDir, `${cell.tag}_recipe.meta.json`),
+				`${JSON.stringify({ planner: plannerOf(branchProviders(branch)) })}\n`,
+			);
+		}
+		say(ctx, commands ? `recipe: ${path}` : "recipe: not written (cell unsolved)");
+		let failed = false;
+		for (const e of branch)
+			if (e.type === "message" && e.message.role === "assistant") failed = e.message.stopReason === "error";
+		// Exploration memory is the model's own: a run a person planned (human/operator) is not merged.
+		const human = plannerOf(branchProviders(branch)) === "human";
+		if (human && guard?.inbox) say(ctx, "memory not merged: a person planned this run (human/operator)");
+		if (guard?.inbox && pi.getFlag("auto-merge-memory") === true && !failed && !human)
+			say(ctx, `memory merged: ${JSON.stringify(await mergeMemory(root, cell.tag, outputDir, !!commands))}`);
+	});
+
+	if (opts.audit) {
+		const audit = opts.audit;
+		pi.registerTool({
+			name: "write_audit",
+			label: "write_audit",
+			description:
+				"Write this cell's audit (the task_only record paired with the exported recipe). The runtime adds the suite, task, seed, final state and its own solved flag; call it again to replace the audit. Call it before `finish`.",
+			parameters: AUDIT_PARAMETERS,
+			async execute(_id, params) {
+				if (!cell || !outputDir) throw new Error("write_audit: no cell or output dir this session");
+				const path = join(outputDir, `${cell.tag}.json`);
+				// The runtime's facts win over anything the model states under the same key.
+				const facts = audit.facts();
+				const doc = { ...facts, ...params, ...facts };
+				mkdirSync(outputDir, { recursive: true });
+				writeFileSync(path, `${JSON.stringify(doc, null, 2)}\n`);
+				return { content: [{ type: "text", text: `audit written: ${path}` }], details: { path, audit: doc } };
+			},
+		});
+	}
+
+	const usage = "usage: /memory sync | validate | index | merge <cell> [output-dir] [--solved]";
+	pi.registerCommand("memory", {
+		description: "Memory corpus maintenance: sync | validate | index | merge <cell> [output-dir] [--solved]",
+		handler: async (args, ctx) => {
+			if (!root) locate(ctx);
+			const [sub, ...rest] = args.trim().split(/\s+/);
+			if (sub === "sync") {
+				await syncMemory(root, (m) => say(ctx, m, "warning"));
+				say(ctx, `memory: ${root}`);
+			} else if (sub === "validate") {
+				const problems = validateMemory(root);
+				if (problems.length) process.exitCode = 1;
+				say(
+					ctx,
+					problems.length ? problems.join("\n") : "local memory is valid",
+					problems.length ? "error" : "info",
+				);
+			} else if (sub === "index") {
+				say(ctx, rebuildIndex(root) ?? "no indexable memory leaves; MEMORY.md not regenerated");
+			} else if (sub === "merge" && rest[0] && rest[0] !== "--solved") {
+				const [tag, dir] = rest.filter((a) => a !== "--solved");
+				const result = await mergeMemory(
+					root,
+					tag,
+					dir ? canonicalPath(dir, ctx.cwd) : outputDir,
+					rest.includes("--solved"),
+				);
+				say(ctx, JSON.stringify(result, null, 2));
+			} else say(ctx, usage, "error");
+		},
+	});
+
+	return {
+		/** Built-in tools the agent uses on memory; add them to setActiveTools (none with --memory-profile off). */
+		get tools(): string[] {
+			return profile === "off"
+				? []
+				: ["read", "ls", "grep", "find", "write", ...(opts.audit ? ["write_audit"] : [])];
+		},
+		/** Why memory could not be established this session (no corpus, a bad cell tag or profile); robot.ts fails the start with it. */
+		configError: () => problem,
+		/** The memory files the agent read this episode, with their SHA-256 at the time. */
+		loaded: () => ({ ...loaded }),
+		get profile() {
+			return profile;
+		},
+		/** The memory section of an evaluation prompt, rendered and closed by ./required.md; undefined without a cell (nothing to read) or with memory off. */
+		section(): string | undefined {
+			if (!cell || profile === "off") return undefined;
+			return this.render(`${(opts.prompt?.(profile) ?? SECTION).trim()}\n\n${REQUIRED}`, { task: "" });
+		},
+		/** Fill {{memory_dir}}, {{memory_inbox}}, {{memory_profile}}, {{output_dir}}, {{recipe_tag}}, {{reference_tag}} and `extra`. */
+		render(text: string, extra: Record<string, string | number> = {}): string {
+			const vars: Record<string, string | number> = {
+				memory_dir: root,
+				memory_inbox: join(root, "_internal", "inbox", cell?.tag ?? ""),
+				memory_profile: profile,
+				output_dir: outputDir,
+				recipe_tag: cell?.tag ?? "",
+				reference_tag: cell?.reference ?? "",
+				...extra,
+			};
+			return text.replace(/\{\{(\w+)\}\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m));
+		},
+	};
+}
+
+export default function (pi: ExtensionAPI) {
+	memory(pi);
+}

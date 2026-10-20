@@ -1,0 +1,1545 @@
+/**
+ * The robot base. `defineRobot(pi, spec)` gives every robot the same episode lifecycle and mounts
+ * the shared modules it asks for; the robot itself only registers its flags, tools and
+ * observations. Also the helpers robots use for the Python services (../../../services): RPC
+ * servers, the services' Python definitions, numpy payloads, camera frames, rigid transforms and
+ * tool results.
+ */
+
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { type ImageContent, validateToolArguments } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type Static, type TSchema, Type } from "typebox";
+import { explore } from "./capabilities/explore.ts";
+import { type FlashHook, flash } from "./capabilities/flash/index.ts";
+import { type FlywheelSpec, flywheel } from "./capabilities/flywheel.ts";
+import { type MemoryOptions, memory } from "./capabilities/memory/index.ts";
+import { objectMemory } from "./capabilities/objects.ts";
+import { approval, operator } from "./capabilities/operator.ts";
+import { probePerception, registerSkillFlags, type SkillState, withSkillsOff } from "./capabilities/skills.ts";
+import { webTools } from "./capabilities/web.ts";
+import { robotCheck } from "./infra/check.ts";
+import { auxModels, configProblem, deploymentRecord, registerConfig, servicesDir } from "./infra/config.ts";
+import { type ModelServicesSpec, modelServices } from "./infra/model-services.ts";
+import { params, paramsError, trackFlags } from "./infra/params.ts";
+import { forgetUnresponsive, NdArray, type RpcClient, RpcUnavailable } from "./infra/rpc.ts";
+import { type ServiceOptions, shutdown, startService } from "./infra/service-process.ts";
+import { tiers } from "./infra/tiers.ts";
+import { type CodeSpec, code } from "./modes/code/index.ts";
+import { type MotorMindSpec, motormind } from "./modes/motormind/index.ts";
+import { motormindProvider } from "./modes/motormind/provider.ts";
+import { type UnitsSpec, units } from "./modes/units/index.ts";
+import { VLM_COST_EVENT } from "./modes/units/vlm.ts";
+import { type VdmSpec, vdm } from "./observation/vdm.ts";
+import { episodeVideo } from "./observation/video.ts";
+import { type ViserSpec, viserView } from "./observation/viser.ts";
+import {
+	FLAG as CACHE_BREAKPOINTS,
+	cacheBreakpoints,
+	cacheBreakpointsError,
+	markBreakpoints,
+} from "./planner/cache-breakpoints.ts";
+import { CLOSED_LOOP, closedLoop, NON_MOTION, OBSERVE, RESETS } from "./planner/closed-loop.ts";
+import { CONTEXT_VERSION_ENTRY, gitCommit, gitDirty, sha256, usedTemplates } from "./planner/context-version.ts";
+import { ensemble } from "./planner/ensemble.ts";
+import { fallback } from "./planner/fallback.ts";
+import { human } from "./planner/human.ts";
+import { plannerOf } from "./planner/kind.ts";
+import {
+	dropReplayedThinking,
+	keepThinkingFrom,
+	FLAG as REPLAY_THINKING,
+	replayThinking,
+	replayThinkingError,
+} from "./planner/replay-thinking.ts";
+import {
+	available,
+	loadManifest,
+	type Manifest,
+	toolDescription,
+	toolEntry,
+	toolSchema,
+	type Vars,
+} from "./primitives/manifest.ts";
+import { EXTRAS, extrasInPureMode } from "./primitives/optional.ts";
+import { CODE_API_ENTRY, CODE_API_EVENT, type CodeApi, fetchCodeApi } from "./primitives/registry.ts";
+import { type XPolicySpec, xpolicy } from "./primitives/xpolicy.ts";
+
+export type Json = Record<string, any>;
+export type Mat = number[][];
+export type Rgb = { width: number; height: number; rgb: Buffer };
+export type Grid = { height: number; width: number; data: Float32Array };
+/** The repository's services/ directory (the `pi_embodied_services` package). */
+export const SERVICES = fileURLToPath(new URL("../../../services", import.meta.url));
+/** The services directory and the Python that has their dependencies. */
+export type { Services } from "./infra/service-process.ts";
+export { attach, servicesEnv, servicesJson, shutdown } from "./infra/service-process.ts";
+
+export const round = (v: number, d = 5) => Number(Number(v).toFixed(d));
+export const roundAll = (v: number[], d = 5) => v.map((x) => round(x, d));
+export const median = (v: number[]) => {
+	const s = [...v].sort((a, b) => a - b);
+	return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+};
+export const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** A failed start's message, naming the env server's log unless it already does. */
+export const withServerLog = (msg: string, log: string | undefined) =>
+	log && !msg.includes(log) ? `${msg} (env server log: ${log})` : msg;
+
+const TRACEBACK = "Traceback (most recent call last):";
+
+/**
+ * A tool error whose message carries a Python traceback (a service that sent the formatted stack
+ * as its error), as one line: what came before the traceback (the RPC method) and the exception's
+ * last line (`ValueError: delta moves 0.300 m; ...`). Undefined when there is no traceback (the
+ * error is already the server's message).
+ */
+export function serverError(err: unknown): Error | undefined {
+	if (err instanceof RpcUnavailable) return undefined;
+	const text = message(err);
+	const at = text.indexOf(TRACEBACK);
+	if (at < 0) return undefined;
+	const lines = text
+		.slice(at + TRACEBACK.length)
+		.split("\n")
+		.filter((l) => l.trim() && !/^\s/.test(l));
+	const last = lines.at(-1)?.trim() ?? "the server raised an error";
+	const before = text.slice(0, at).trim();
+	return new Error(`${before ? `${before.replace(/:$/, "")}: ` : ""}the server refused the call: ${last}`);
+}
+
+/**
+ * Keep every `[tool:name]...[/tool:name]` block of a robot's system prompt when that tool is
+ * active, drop it otherwise, so an excluded tool is not described. `[tool:a|b]` is kept when any of
+ * them is active, `[tool:!name]` when that tool is not (the fallback wording); nested blocks need
+ * all of theirs. Markers on their own lines wrap whole lines, markers within a line wrap that text.
+ * An unpaired marker, or a block nested in one of the same name, throws: the template is broken.
+ */
+export function toolSections(prompt: string, active: readonly string[]): string {
+	const re = /\[tool:([\w|!]+)\](\n?)([\s\S]*?)\[\/tool:\1\](\n?)/g;
+	const on = (n: string) => (n.startsWith("!") ? !active.includes(n.slice(1)) : active.includes(n));
+	let out = prompt;
+	for (let prev = ""; prev !== out; ) {
+		prev = out;
+		out = out.replace(re, (_, names: string, open: string, body: string, close: string) => {
+			if (body.includes(`[tool:${names}]`)) throw new Error(`[tool:${names}] nested in itself in the system prompt`);
+			return (names.split("|").some(on) ? body : "") + (open ? "" : close);
+		});
+	}
+	const left = out.match(/\[\/?tool:[^\]]*\]/);
+	if (left) throw new Error(`unpaired ${left[0]} in the system prompt`);
+	return out;
+}
+
+// ---------------------------------------------------------------------------
+// the robot base
+
+/** Session entry naming the episode: `{ robot, <task flag>: value, ... }`. */
+export const TASK_ENTRY = "robot_task";
+/** Session entry with the episode's outcome: `{ robot, ..., claimed, summary, env_error }`. */
+export const RESULT_ENTRY = "robot_result";
+/** Session entry with the system prompt the robot forced on the planner: `{ text }`, written when it changes. */
+export const SYSTEM_PROMPT_ENTRY = "robot_system_prompt";
+/** `pi.events` channel on which the robot publishes its `RobotStatus` (read by the dashboard). */
+export const STATUS_EVENT = "pi-embodied:robot";
+export type RobotStatus = {
+	robot: string;
+	/** The task flags in /robot-task order, and their values for this episode. */
+	fields: readonly string[];
+	task: Record<string, string>;
+	ready: boolean;
+	ended: boolean;
+	claimed: string | null;
+	summary: string | null;
+	language?: string;
+	step?: number;
+	solved?: boolean;
+	/** The --viser 3D view's page port (../viser.ts), while it runs. */
+	viser_port?: number;
+};
+type Result = AgentToolResult<unknown>;
+/** `pi.events` channel on which the robot publishes its tools each session, for an operator's manual calls (../dashboard). */
+export const PRIMITIVES_EVENT = "pi-embodied:primitives";
+export type PrimitivesHandle = {
+	robot: string;
+	/** The robot's own tools active this session, with their schemas. */
+	tools: () => { name: string; description: string; parameters: TSchema }[];
+	/**
+	 * Check one call as the agent's would be checked (an active tool, the robot's and the operator's gates,
+	 * the arguments against its schema; throws the reason) and return the call, which runs the tool's execute.
+	 */
+	prepare: (name: string, args: unknown) => (signal?: AbortSignal) => Promise<Result>;
+};
+/** What the agent claims in `finish`. */
+type Claim = { status: string; summary: string };
+
+/**
+ * The result's `motormind` block: the mode's (./modes/motormind/index.ts) with the mission's state
+ * (./modes/motormind/provider.ts) merged over it; the env's success keeps `status` (DESIGN §7.3).
+ */
+function motormindBlock(mode: Json | undefined, mission: Json | undefined): Json {
+	const block = mode?.motormind as Json | undefined;
+	if (!block) return {};
+	if (!mission) return { motormind: block };
+	const status = block.status === "env_success" ? "env_success" : (mission.status ?? block.status);
+	return { motormind: { ...block, ...mission, status } };
+}
+type Call = (params: unknown, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>;
+type Ended = "agent_end" | "shutdown";
+
+export type RobotSpec = {
+	/** `robot` in the task and result entries, the stderr prefix `[name]`, the memory corpus name. */
+	name: string;
+	/** Flags (registered by the robot) that name the episode; /robot-task takes their values in this order. */
+	task: readonly string[];
+	/** Default of --keep-images, and the text that replaces older camera frames. */
+	keepImages: number;
+	imageStub?: string;
+	/** Defaults of --max-turns and --time-limit (seconds from the first prompt); 0 = no limit. */
+	budget?: { turns: number; seconds: number };
+	/** Bring the robot up for this session and return the tools to activate. Throwing fails closed. */
+	start: (ctx: ExtensionContext) => Promise<string[]>;
+	/** Release what `start` acquired beyond the `serve`d env server (before a start and at shutdown). */
+	stop?: () => Promise<void> | void;
+	/** The system prompt, filled for this episode; its `[tool:name]` blocks follow the active tools (`toolSections`). */
+	prompt?: () => string | undefined;
+	/** The episode's outcome for the result entry; the base adds robot, claimed, summary, turns, budget, operator fields, env_error. */
+	result: (ended: Ended) => Json;
+	/** Live status for the dashboard, called only once the robot is up. */
+	status?: () => Pick<RobotStatus, "language" | "step" | "solved">;
+	/** The `finish` tool: status/summary parameters and the result text. It always ends the episode. */
+	finish: { description: string; parameters: TSchema; result: (params: Claim) => Result };
+	/** Mount memory (../memory): the cell and the primitives that make up its recipe. */
+	memory?: Omit<MemoryOptions, "robot" | "explore">;
+	/** Mount exploration (../explore.ts, needs memory): restart the episode, and the robot's exploration prompt. */
+	explore?: {
+		reset: (result: Json, ctx: ExtensionContext, signal?: AbortSignal) => Promise<Result>;
+		prompt: () => string;
+		distil?: string | (() => string);
+		rewrite?: [RegExp, string][];
+		budget?: { sessions: number; attempts: number };
+		/**
+		 * A real robot: `reset` is the operator's scene reset (so request_scene_reset is hidden), and an
+		 * attempt is solved by the operator's success verdict, which is marked `terminated` for exploration.
+		 */
+		operatorJudged?: boolean;
+	};
+	/** Mount the human-in-the-loop operator (../operator.ts). */
+	operator?: { step: () => number; reset?: () => Promise<Json> };
+	/** Mount code mode (../code, `--code`): the server's `code.run` over its primitive registry (`codeApi`), and how a run becomes an observation. */
+	code?: CodeSpec;
+	/** Mount the episode video (../video.ts). */
+	video?: boolean;
+	/**
+	 * Mount the Flywheel recorder (../flywheel.ts, --collect-flywheel-data): what the robot's VLA
+	 * observations and actions hold, and the default /flywheel-export selection (the current task).
+	 */
+	flywheel?: { spec: FlywheelSpec; select: () => string };
+	/** Mount Show-Harness action units (../units): --units=true leaves only `act`, `finish` and its plugins' tools; --units=both adds them. */
+	units?: UnitsSpec;
+	/**
+	 * Mount MotorMind mode (./modes/motormind, `--mm=true`): the env server's `mm_observe` and
+	 * `mm_run_step`. Both run only while a robot tool holds the robot lock; outside it they throw.
+	 */
+	motormind?: MotorMindSpec;
+	/** Mount Flash (../flash, `--model flash/replay`): the robot's plans and how it re-localizes them. */
+	flash?: FlashHook;
+	/**
+	 * Mount visual differencing (../vdm.ts, `--vdm`): how many camera images an observation result
+	 * carries, and the wrist one(s); a function when that depends on the robot's cameras (undefined: none yet).
+	 */
+	vdm?: VdmSpec | (() => VdmSpec | undefined);
+	/** Mount the live 3D view (../viser.ts, `--viser`): its source and the episode's env server. */
+	viser?: ViserSpec;
+	/**
+	 * Mount the XPolicyLab client (../xpolicy.ts, `--xpolicy <ws url>`): how the robot builds XPolicyLab's
+	 * observation and executes one action of a chunk; it adds `xpolicy_act`, which a robot with a
+	 * manifest declares there (`modules/xpolicy_act`, its `requires` gating the tool).
+	 */
+	xpolicy?: XPolicySpec | (() => XPolicySpec | undefined);
+	/**
+	 * Simulation only (CaP-X's S1 tier): the env call behind `ground_truth_poses` (the server's
+	 * `env.ground_truth_poses`). It registers `--privileged`; real robots leave it unset, so they have no such flag.
+	 */
+	groundTruth?: (names: string[] | undefined) => Promise<unknown>;
+	/**
+	 * The env server whose primitive registry (`code.api`, ./primitives/registry.ts) this robot runs
+	 * on, once `start` connected it. The base fetches the declaration for the episode's tier
+	 * (`privileged` under --privileged), records it and puts its digest in the result.
+	 */
+	codeApi?: () => RpcClient | undefined;
+	/** The model servers `--serve-models` may start before `start` attaches to them (../model-services.ts). */
+	services?: ModelServicesSpec;
+	/**
+	 * The robot's primitive manifest (./primitives/manifests/<manifest>.json): every tool registered
+	 * with `primitive` takes its schema and description from it, and code mode renders its prompt
+	 * from it. Without one the robot's tools carry their own schemas (`tool`).
+	 */
+	manifest?: string;
+	/** The manifest's `{{name}}` variables (descriptions, enums), read at load and at every session start. */
+	vars?: () => Vars;
+	/**
+	 * Whether this run has a capability a manifest entry `requires` (read after `start`); a tool whose
+	 * requirements are unmet is not activated. `privileged` is --privileged; anything else is the robot's.
+	 */
+	capabilities?: (capability: string) => boolean;
+};
+
+/**
+ * Define a robot on `pi`; call it before the robot registers its own handlers. The base owns:
+ * - The task: the latest `robot_task` entry (from /robot-task or the dashboard) overrides the task
+ *   flags; without one the flags are recorded as that entry. It is resolved before any mounted
+ *   module's session_start runs.
+ * - Startup, failing closed: every session starts with no active tools, and prompts and tool calls
+ *   are refused until `start` succeeds. A failed start is shown in the UI, or without one printed
+ *   to stderr as `[name] unavailable: ...` with exit code 1.
+ * - Finish rules: pi stops early only when every result in a batch terminates, so tools registered
+ *   with `tool` terminate when their batch also calls `finish`. `finish`, or a spent --max-turns /
+ *   --time-limit / --max-cost budget, ends the episode, after which only `finish` runs.
+ * - One `robot_result` entry per episode (and, without a UI, one `[name] {...}` stderr line): at the
+ *   first agent_end after the episode ended, otherwise at session_shutdown once an agent ran, or
+ *   `env_error: true` when the start failed. The robot breaking mid-episode (its env server exits,
+ *   or a service stops answering: `RpcUnavailable` from a tool) ends the episode with
+ *   `env_error: true` too. `planner_error` is set when the model's last reply was an error (or a tool call left unparsed in its text);
+ *   evaluations treat both as invalid episodes, whatever the outcome.
+ * - The env server started with `serve`, pruning of older camera frames, the system prompt, the
+ *   /robot-task and /robot-check (../check.ts) commands, the status published on `pi.events`, and
+ *   the mounted modules.
+ */
+/** A tool call the serving stack failed to parse, left as reply text (e.g. `<x:invoke>...</x:function_calls>`). */
+const LEAKED_CALL = /<\/?[\w-]*:?(?:function_calls|invoke|tool_call)\b|<[\w-]*:?parameter name=/;
+
+/**
+ * Why a reply with no tool calls is really a failed one: its text holds tool-call markup, so the model
+ * called a tool the server never parsed and pi ends the run on a text reply (an unparsed call, not a
+ * decision). Undefined for a reply with tool calls or plain text.
+ */
+export function leakedToolCall(content: readonly { type: string; text?: string }[]): string | undefined {
+	if (content.some((c) => c.type === "toolCall")) return undefined;
+	const text = content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("");
+	return LEAKED_CALL.test(text) ? "unparsed tool call in the reply text" : undefined;
+}
+
+export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
+	const { name } = spec;
+	// Flags the base and its modules register from here on are tracked too (a robot starts it earlier).
+	const tracked = trackFlags(pi);
+	registerConfig(pi);
+	const manifest: Manifest | undefined = spec.manifest ? loadManifest(spec.manifest) : undefined;
+	// --tier / --preset (./infra/tiers.ts) read as the flags they expand to from here on.
+	const tr = tiers(pi, {
+		robot: name,
+		code: spec.code !== undefined,
+		units: spec.units !== undefined,
+		motormind: spec.motormind !== undefined,
+		vdm: spec.vdm !== undefined,
+		groundTruth: spec.groundTruth !== undefined,
+		memory: spec.memory !== undefined,
+		xpolicy: spec.xpolicy !== undefined,
+		vla: manifest?.primitives.some((e) => e.name === "pi0_pick") ?? false,
+		codeTiers: () =>
+			["high", "low", "raw"].filter((t) =>
+				manifest?.primitives.some((e) => e.side !== "ts" && e.doc.code && e.tier === t),
+			),
+	});
+	let task: Record<string, string> = {};
+	let ready = false;
+	let failed: string | undefined;
+	/** The perception servers that were off at this session's start (capabilities/skills.ts). */
+	let perceptionOff: Record<string, SkillState> = {};
+	/** The episode's primitive registry, when the robot declares `codeApi` and its server serves one. */
+	let api: CodeApi | undefined;
+	/** The robot broke during the episode: its env server exited, or a service stopped answering. */
+	let broken: string | undefined;
+	let ran = false;
+	let ended = false;
+	let reported = false;
+	let finishing = false;
+	let claimed: Claim | undefined;
+	let signal: AbortSignal | undefined;
+	/** The `serve`d env server; `log` once it is up (its output goes there). */
+	let server: { proc: ChildProcess; rpc: RpcClient; log?: string } | undefined;
+	let turns = 0;
+	let started: number | undefined;
+	let outOfBudget: "turns" | "time" | "cost" | "tool_calls" | "tokens" | undefined;
+	/** Planner tool calls that passed the budget gate, and the planner's tokens (input with cache reads and writes, output). */
+	let toolCalls = 0;
+	let tokens = { input: 0, output: 0 };
+	/** SHA-256 of each distinct system prompt the episode's agent starts ran with (./context-version.ts). */
+	let prompts: string[] = [];
+	/** "provider/id" of each model that answered the planner this episode. */
+	const plannerModels = new Set<string>();
+	/** USD of this episode's model replies, as pi prices them from models.json. */
+	let cost = 0;
+	let plannerError: string | undefined;
+	/** The --time-limit deadline aborted the run: the reply it cut off is not a planner failure. */
+	let timedOut = false;
+	/** The provider of each assistant message this episode (./planner.ts). */
+	let providers: string[] = [];
+	/** Ends the episode when the --time-limit wall-clock budget runs out, even mid-call. */
+	let deadline: ReturnType<typeof setTimeout> | undefined;
+	pi.registerFlag("keep-images", {
+		type: "string",
+		default: String(spec.keepImages),
+		description: "Camera frames kept in context",
+	});
+	pi.registerFlag("image-trim-every", {
+		type: "string",
+		default: "0",
+		description:
+			"Stub older camera frames N at a time (0 = every turn; 8 on the selfhost provider): between cuts each request starts with the previous one's prompt, which an endpoint's prefix cache reuses; --keep-images to --keep-images+N-1 frames stay",
+	});
+	// One auxiliary VLM for VDM, the units verifier and check_attached (PARAMS.md 2.4); a role that needs
+	// another model names it in the deployment's aux.<role> (./infra/config.ts).
+	pi.registerFlag("aux-model", {
+		type: "string",
+		default: "",
+		description:
+			"Model (provider/id) of the auxiliary VLM calls: VDM, the units verifier and video_ref, check_attached (default: the session's model)",
+	});
+	// One owner for the flag units and code mode both read (PARAMS.md 2.5).
+	pi.registerFlag("stateless", {
+		type: "boolean",
+		default: false,
+		description: "Units / code mode: keep only the task and the latest observation turn in context",
+	});
+	pi.registerFlag("anchor-image", {
+		type: "boolean",
+		default: false,
+		description: "Also keep the episode's first camera frame (OpenETA's visual-history anchor) beyond --keep-images",
+	});
+	const anchored = () => pi.getFlag("anchor-image") === true;
+	// A string flag (true / false) like --units: pi keeps a boolean flag's given value verbatim, so `=false` would read true.
+	pi.registerFlag(REPLAY_THINKING, {
+		type: "string",
+		default: "false",
+		description:
+			"Send earlier turns' thinking back with every request (true / false / none / frames; false keeps only the latest turn's, none not even that, frames until the camera frames before it are stubbed; pi's own behaviour is true; none on the selfhost provider)",
+	});
+	pi.registerFlag(CACHE_BREAKPOINTS, {
+		type: "string",
+		default: "false",
+		description:
+			"Mark the task message and the newest message as explicit prompt-cache breakpoints, for an OpenAI-compatible server that caches prompt prefixes at marked points (true / false, true on the selfhost provider; servers without such caching ignore the marker; ./planner/cache-breakpoints.ts)",
+	});
+	pi.registerFlag("max-turns", {
+		type: "string",
+		default: String(spec.budget?.turns ?? 0),
+		description: "Planner turn budget (0 = none)",
+	});
+	pi.registerFlag("time-limit", {
+		type: "string",
+		default: String(spec.budget?.seconds ?? 0),
+		description: "Planner wall-time budget from the first prompt, s (0 = none)",
+	});
+	pi.registerFlag("max-tool-calls", {
+		type: "string",
+		default: "0",
+		description: "Planner tool-call budget, finish excluded (0 = none)",
+	});
+	pi.registerFlag("max-tokens", {
+		type: "string",
+		default: "0",
+		description:
+			"Planner token budget: input (cache reads and writes included) plus output, as pi reports usage (0 = none)",
+	});
+	pi.registerFlag("max-cost", {
+		type: "string",
+		default: "0",
+		description:
+			"Planner cost budget in USD (the planner's replies and the side VLM calls), as pi prices them from models.json (0 = none)",
+	});
+	if (spec.groundTruth)
+		pi.registerFlag("privileged", {
+			type: "boolean",
+			default: false,
+			description: "Simulation only: add ground_truth_poses (object poses from the simulator) and mark the result",
+		});
+	const privileged = () => spec.groundTruth !== undefined && pi.getFlag("privileged") === true;
+
+	// Registered before the modules, so the task is resolved before memory's session_start reads it.
+	// --require-skills: the optional skill and perception servers a run insists on (capabilities/skills.ts).
+	registerSkillFlags(pi);
+	pi.on("session_start", (_event, ctx) => {
+		// The session's planner provider: its PROVIDER_DEFAULTS (./infra/params.ts) stand in for the
+		// registered defaults of the flags they name, unless given (a fallback/ or ensemble/ model is its own provider).
+		tracked.provider = ctx.model?.provider;
+		perceptionOff = {};
+		ready = ran = ended = reported = finishing = false;
+		failed = broken = claimed = started = plannerError = outOfBudget = undefined;
+		timedOut = false;
+		clearTimeout(deadline);
+		deadline = undefined;
+		// A service that stopped answering ended the last episode; this one may find it restarted.
+		forgetUnresponsive();
+		turns = cost = toolCalls = 0;
+		providers = [];
+		tokens = { input: 0, output: 0 };
+		prompts = [];
+		plannerModels.clear();
+		pi.setActiveTools([]);
+		const picked = ctx.sessionManager
+			.getBranch()
+			.filter((e) => e.type === "custom" && e.customType === TASK_ENTRY && (e.data as Json)?.robot === name)
+			.pop();
+		const data = picked?.type === "custom" ? (picked.data as Json) : undefined;
+		task = Object.fromEntries(spec.task.map((k) => [k, String(data ? data[k] : (pi.getFlag(k) ?? ""))]));
+		if (!picked) pi.appendEntry(TASK_ENTRY, { robot: name, ...task });
+	});
+
+	const mem = spec.memory
+		? memory(pi, {
+				robot: name,
+				...spec.memory,
+				explore: spec.explore ? () => pi.getFlag("explore") === true : undefined,
+			})
+		: undefined;
+	const video = spec.video ? episodeVideo(pi) : { frame: (_image: NdArray) => {} };
+	const fly = spec.flywheel ? flywheel(pi, spec.flywheel.spec, spec.flywheel.select) : undefined;
+	// A replay with no program is a configuration error: the episode is invalid, like a failed start.
+	if (spec.flash) flash(pi, spec.flash, { invalid: (why) => fail(why) });
+	// The `fallback/<primary>` planner (../fallback.ts), only when `--fallback-model` is on the command line.
+	const fb = fallback(pi);
+	// The `ensemble/<base>` planner (../ensemble.ts), only with `--model ensemble/...` on the command line.
+	const en = ensemble(pi);
+	// The `motormind/<base>` mission player (./modes/motormind/provider.ts), only with --model motormind/... on the
+	// command line; its agent_end wrap-up is registered here, before the result's (DESIGN §1.2).
+	const mp = motormindProvider(pi);
+	// The `human/operator` model (../human.ts), only when a human/... model is on the command line.
+	human(pi);
+	// --web-tools keeps the pi packages' web_search / web_fetch active (./web.ts); --object-memory (./objects.ts).
+	const web = webTools(pi);
+	const objs = objectMemory(pi, {
+		robot: name,
+		scene: () => task,
+		step: () => (ready ? spec.status?.().step : undefined),
+	});
+	const models = spec.services ? modelServices(pi, spec.services) : undefined;
+	/** A successful scene reset also restarts the units state (accumulated yaw, gripper, plan). */
+	const resetsUnits =
+		<A extends unknown[], R>(reset: (...args: A) => Promise<R>) =>
+		async (...args: A) => {
+			const r = await reset(...args);
+			un?.reset();
+			mm?.reset();
+			return r;
+		};
+	const operatorReset = spec.operator?.reset;
+	const op = spec.operator
+		? operator(pi, { ...spec.operator, ...(operatorReset ? { reset: resetsUnits(operatorReset) } : {}) })
+		: {
+				tools: () => [],
+				check: () => {},
+				result: () => ({}),
+				sceneReset: async (..._args: unknown[]) => ({ error: "no operator is mounted" }),
+				refuse: (_name: string): string | undefined => undefined,
+			};
+
+	const vz = spec.viser ? viserView(pi, spec.viser) : undefined;
+	const status = (): RobotStatus => ({
+		robot: name,
+		fields: spec.task,
+		task,
+		ready,
+		ended,
+		claimed: claimed?.status ?? null,
+		summary: claimed?.summary ?? null,
+		...(ready ? spec.status?.() : {}),
+		...(vz?.port ? { viser_port: vz.port } : {}),
+	});
+
+	/** Every tool registered with `tool` (the robot's own and the units'): ../gumi holds them all during a takeover. */
+	const robotTools: string[] = [];
+	const defs = new Map<string, { description: string; parameters: TSchema; call: Call }>();
+	let sessionCtx: ExtensionContext | undefined;
+	/**
+	 * One robot call at a time, the agent's or an operator's manual one (../dashboard): each waits for
+	 * the one before it (an abort gives up the wait), so neither overwrites the other's `signal`.
+	 */
+	let robotQueue: Promise<void> = Promise.resolve();
+	/** Robot calls running or waiting their turn. */
+	let robotCalls = 0;
+	/**
+	 * The lock a call inside `exclusive` holds, `held` until it releases it: what `spec.motormind`'s
+	 * callbacks assert. The async context alone would also admit a timer or promise the call created
+	 * that runs after the release.
+	 */
+	const holding = new AsyncLocalStorage<{ held: boolean }>();
+	async function exclusive<T>(sig: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
+		const before = robotQueue;
+		const waits = robotCalls > 0;
+		robotCalls++;
+		let release = () => {};
+		const mine = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		robotQueue = before.then(() => mine);
+		try {
+			// Only a call that has to wait may give up (an abort); with the robot free it runs, and handles its signal itself.
+			if (waits)
+				await new Promise<void>((resolve, reject) => {
+					const abort = () => reject(new Error("aborted while another robot call ran"));
+					if (sig?.aborted) return abort();
+					sig?.addEventListener("abort", abort, { once: true });
+					before.then(() => {
+						sig?.removeEventListener("abort", abort);
+						resolve();
+					});
+				});
+			const lock = { held: true };
+			try {
+				return await holding.run(lock, run);
+			} finally {
+				lock.held = false;
+			}
+		} finally {
+			robotCalls--;
+			release();
+		}
+	}
+	/** Register a sequential robot tool; its result terminates the batch when the batch also calls `finish`. */
+	/** The manifest's tool entry for `toolName`; under --privileged its privileged variant when it has one. */
+	function manifestTool(toolName: string) {
+		const all = manifest?.primitives.filter((e) => e.name === toolName && e.side !== "code" && e.doc.tool) ?? [];
+		const priv = all.find((e) => e.tier === "privileged");
+		return (privileged() && priv) || all.find((e) => e.tier !== "privileged") || priv;
+	}
+	type PrimitiveRun = (params: any, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>;
+	/** Tools whose schema and description come from the manifest, with what they were registered with. */
+	const declared = new Map<string, { run: PrimitiveRun; registered: string }>();
+	function tool<P extends TSchema>(
+		toolName: string,
+		description: string,
+		parameters: P,
+		run: (params: Static<P>, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>,
+	) {
+		// A robot with a manifest: the manifest's schema and description win (a module-owned entry keeps the module's).
+		const declaredEntry = manifestTool(toolName);
+		if (manifest && !declaredEntry)
+			throw new Error(`${name}: tool ${toolName} is not declared in manifests/${spec.manifest}.json`);
+		if (declaredEntry && !declaredEntry.module) {
+			const vars = spec.vars?.() ?? {};
+			description = toolDescription(declaredEntry, vars);
+			parameters = toolSchema(declaredEntry, vars) as unknown as P;
+			declared.set(toolName, {
+				run: run as unknown as PrimitiveRun,
+				registered: JSON.stringify([description, parameters]),
+			});
+		}
+		if (!robotTools.includes(toolName)) robotTools.push(toolName);
+		const call: Call = async (params, sig, ctx) => {
+			signal = sig;
+			try {
+				return { ...(await run(params as Static<P>, sig, ctx)), terminate: finishing };
+			} catch (err) {
+				if (err instanceof RpcUnavailable) fail(err.message);
+				// A server error reaches the model as one line with the server's message, never a traceback.
+				const clean = serverError(err);
+				if (clean !== undefined) throw clean;
+				throw err;
+			} finally {
+				signal = undefined;
+			}
+		};
+		const locked: Call = (params, sig, ctx) => exclusive(sig, () => call(params, sig, ctx));
+		defs.set(toolName, { description, parameters, call });
+		pi.registerTool({
+			name: toolName,
+			label: toolName,
+			description,
+			parameters,
+			executionMode: "sequential",
+			execute: (_id, params, sig, _onUpdate, ctx) => locked(params, sig, ctx),
+		});
+	}
+	/** Register the manifest's tool `toolName` (its schema and description from the manifest) with `run`. */
+	function primitive(toolName: string, run: PrimitiveRun) {
+		if (!manifest) throw new Error(`${name}: primitive(${toolName}) needs a manifest in the robot spec`);
+		const e = manifestTool(toolName) ?? toolEntry(manifest, toolName);
+		const vars = spec.vars?.() ?? {};
+		tool(toolName, toolDescription(e, vars), toolSchema(e, vars), run);
+	}
+	/** At session start: re-register the manifest tools whose variables changed with the flags. */
+	function refreshPrimitives() {
+		if (!manifest) return;
+		const vars = spec.vars?.() ?? {};
+		for (const [toolName, d] of [...declared]) {
+			const e = manifestTool(toolName) ?? toolEntry(manifest, toolName);
+			if (JSON.stringify([toolDescription(e, vars), toolSchema(e, vars)]) !== d.registered)
+				tool(toolName, "", Type.Object({}), d.run);
+		}
+	}
+	/** Whether the run has a capability (`requires` of a manifest entry). */
+	const has = (capability: string): boolean =>
+		capability === "privileged"
+			? privileged()
+			: capability === "motormind"
+				? mm?.on() === true
+				: (spec.capabilities?.(capability) ?? false);
+	/** Drop the tools whose manifest entry this run cannot serve (unmet `requires`). */
+	const servable = (names: string[]) =>
+		manifest
+			? names.filter((n) => {
+					const e = manifest.primitives.find((p) => p.name === n && p.side !== "code");
+					return !e || available(e, has);
+				})
+			: names;
+	// An operator's unit (../gumi) passes the gates an `act` call passes, without counting as a planner turn.
+	const un = spec.units
+		? units(pi, spec.units, tool, () => task, {
+				// Exploration's `reset` and the operator's `request_scene_reset` move the robot too.
+				tools: () => [...robotTools, "reset", "request_scene_reset"],
+				refuse: () => refusal("act") ?? op.refuse("act"),
+				// The observation's images and its wrist views (../finetuned checks --ft-cameras against them).
+				views: () => (typeof spec.vdm === "function" ? spec.vdm() : spec.vdm),
+			})
+		: undefined;
+	const co = spec.code
+		? code(pi, spec.code, tool, () => task, {
+				unitsOn: () => un?.mode() !== undefined,
+				privileged,
+				// --approval already asked the operator about run_code: one prompt, not two.
+				confirmed: (program) => ap.consumeApproved(program),
+				robot: name,
+				ready: () => ready && broken === undefined,
+				// --code-oracle ran a reference program instead of the model: the episode ran and is over.
+				oracleRan: () => {
+					ran = ended = true;
+				},
+				manifest,
+				has,
+				vars: () => spec.vars?.() ?? {},
+			})
+		: undefined;
+	/** `spec.motormind`'s callbacks as the mode gets them: they refuse to run outside the robot lock. */
+	const underLock =
+		<A extends unknown[], R>(what: string, fn: (...args: A) => Promise<R>) =>
+		async (...args: A): Promise<R> => {
+			if (holding.getStore()?.held !== true)
+				throw new Error(
+					`${name}: spec.motormind.${what} runs only under the robot lock (inside a robot tool call)`,
+				);
+			return fn(...args);
+		};
+	const mm = spec.motormind
+		? motormind(
+				pi,
+				{
+					observe: underLock("observe", spec.motormind.observe),
+					runStep: underLock("runStep", spec.motormind.runStep),
+					endpoint: spec.motormind.endpoint,
+					truth: spec.motormind.truth,
+					expect: spec.motormind.expect,
+					task: spec.motormind.task,
+				},
+				tool,
+				{
+					robot: name,
+					otherMode: (): string | undefined => (un?.mode() ? "--units" : co?.mode() ? "--code" : undefined),
+				},
+			)
+		: undefined;
+	const vd = spec.vdm
+		? vdm(
+				pi,
+				spec.vdm,
+				() => [...robotTools, "reset", "request_scene_reset"],
+				() =>
+					spec.status?.().language ||
+					Object.entries(task)
+						.map(([k, v]) => `${k} ${v}`)
+						.join(", "),
+			)
+		: undefined;
+	const xp = spec.xpolicy ? xpolicy(pi, spec.xpolicy, tool, name, () => task) : undefined;
+	let groundTruthRegistered = false;
+	/** `--privileged`: register `ground_truth_poses` at the first start that asks for it (off registers nothing), and name it. */
+	function groundTruth(): string[] {
+		const poses = spec.groundTruth;
+		if (!poses || !privileged()) return [];
+		if (!groundTruthRegistered) {
+			groundTruthRegistered = true;
+			tool(
+				"ground_truth_poses",
+				"Privileged simulator ground truth: world-frame poses of the scene's objects, as pos [x, y, z] in m and quat_xyzw. Omit names for every object; names must come from that list.",
+				Type.Object({
+					names: Type.Optional(Type.Array(Type.String(), { description: "Object names (default: all)" })),
+				}),
+				async ({ names }) => toolResult((await poses(names)) as Record<string, unknown>),
+			);
+		}
+		return ["ground_truth_poses"];
+	}
+	const publish = () => pi.events.emit(STATUS_EVENT, status());
+
+	async function stop() {
+		const s = server;
+		server = undefined;
+		if (s) await shutdown(s.proc, s.rpc);
+		await xp?.stop();
+		await spec.stop?.();
+		await models?.stop();
+	}
+
+	pi.on("session_start", async (_event, ctx) => {
+		sessionCtx = ctx;
+		await stop();
+		try {
+			// A flag the robot cannot honour fails closed, before the robot boots.
+			const misconfigured =
+				configProblem(pi) ??
+				paramsError(pi) ??
+				replayThinkingError(pi) ??
+				cacheBreakpointsError(pi) ??
+				mem?.configError() ??
+				tr.configError() ??
+				un?.configError() ??
+				co?.configError() ??
+				mm?.configError(ctx) ??
+				ap.configError(ctx.hasUI) ??
+				extrasInPureMode(pi);
+			if (misconfigured) throw new Error(misconfigured);
+			api = undefined;
+			await models?.start();
+			// A perception tool whose server does not answer stays inactive (capabilities/skills.ts).
+			const probed = await probePerception(pi, servable(await spec.start(ctx)));
+			const tools = probed.keep;
+			perceptionOff = probed.off;
+			refreshPrimitives();
+			// The robot's configuration (its cameras) is known now: the units read its wrist view again.
+			un?.started(ctx);
+			await vz?.start(ctx, servicesDir(pi));
+			const client = spec.codeApi?.();
+			if (client) {
+				api = await fetchCodeApi(client, privileged() ? "privileged" : undefined);
+				if (api) pi.appendEntry(CODE_API_ENTRY, api);
+			}
+			pi.events.emit(CODE_API_EVENT, api);
+			// Code mode fetches its tier of the registry once the robot is up and registers run_code.
+			const coded = (await co?.start()) ?? [];
+			// --xpolicy connects the policy server for this episode (fails closed) and adds xpolicy_act,
+			// as far as the manifest's `requires` for it are met.
+			const xpTools = servable((await xp?.start()) ?? []);
+			// MotorMind mode: one observation under the robot lock proves the env server's mm RPCs and base frame.
+			const mmOn = mm?.on() === true;
+			if (mm && mmOn) await exclusive(undefined, () => mm.started());
+			// Pure units, code or MotorMind mode hides the robot's own tools and memory's (Show-Harness's pure mode).
+			const mode = mmOn ? "pure" : (un?.mode() ?? co?.mode());
+			// The units' tools only when units mode is on (a robot mounts units and code mode both).
+			const unitTools = un?.mode() ? un.tools() : [];
+			// A mode with its own prompt keeps memory: its section is appended (before_agent_start) and the
+			// file tools stay, so --units=true / --code=true still read the corpus. MotorMind's does not.
+			const memTools = mode === "pure" && !mmOn && mem?.section() !== undefined ? mem.tools : [];
+			const own = mmOn
+				? [...servable(mm?.tools() ?? []), "finish"]
+				: mode === "pure"
+					? [...unitTools, ...coded, ...memTools, "finish"]
+					: [...tools, ...(mem?.tools ?? []), ...(mode === "both" ? [...unitTools, ...coded] : [])];
+			// MotorMind mode activates its two tools and finish, nothing else.
+			pi.setActiveTools(
+				mmOn
+					? own
+					: [...new Set([...own, ...xpTools, ...op.tools(), ...groundTruth(), ...web.tools(), ...objs.tools()])],
+			);
+			ready = true;
+		} catch (err) {
+			// Without a robot there is nothing to act on: no tools, and a non-interactive run exits. The env
+			// server's own error (a traceback behind an RPC error) is in its log: the message names it.
+			failed = withServerLog(message(err), server?.log);
+			pi.setActiveTools([]);
+			if (ctx.hasUI) ctx.ui.notify(`${name} unavailable: ${failed}`, "error");
+			else {
+				console.error(`[${name}] unavailable: ${failed}`);
+				process.exitCode = 1;
+				ctx.shutdown();
+			}
+		}
+		pi.events.emit(PRIMITIVES_EVENT, primitives);
+		publish();
+	});
+
+	const primitives: PrimitivesHandle = {
+		robot: name,
+		tools: () =>
+			pi
+				.getActiveTools()
+				.filter((t) => defs.has(t))
+				.map((t) => {
+					const { description, parameters } = defs.get(t) as { description: string; parameters: TSchema };
+					return { name: t, description, parameters };
+				}),
+		prepare(toolName, args) {
+			const def = defs.get(toolName);
+			if (!def || !sessionCtx || !pi.getActiveTools().includes(toolName))
+				throw new Error(`${toolName} is not an active ${name} tool`);
+			const why = refusal(toolName) ?? op.refuse(toolName);
+			if (why) throw new Error(why);
+			const tool = { name: toolName, description: def.description, parameters: def.parameters };
+			const params = validateToolArguments(tool, {
+				type: "toolCall",
+				id: "operator",
+				name: toolName,
+				arguments: args as Json,
+			});
+			const ctx = sessionCtx;
+			// After waiting its turn the gates are checked again: the episode may have ended meanwhile.
+			return (sig) =>
+				exclusive(sig, () => {
+					const late = refusal(toolName) ?? op.refuse(toolName);
+					if (late) throw new Error(late);
+					return def.call(params, sig, ctx);
+				});
+		},
+	};
+
+	/** The robot broke mid-episode: end the episode; its result is an env_error. */
+	function fail(why: string) {
+		broken ??= why;
+		ended = true;
+		publish();
+	}
+
+	let recordedPrompt: string | undefined;
+	let forcing = false;
+	pi.on("session_start", () => {
+		recordedPrompt = undefined;
+		forcing = false;
+	});
+	pi.on("before_agent_start", (_event, ctx) => {
+		if (started === undefined) {
+			started = Date.now();
+			// The budget is wall-clock: a hung model or tool call must not outlive it. Aborting stops the
+			// running tool (its RPC gets `stop`), and the result records a planner timeout.
+			const limit = Number(pi.getFlag("time-limit"));
+			if (limit > 0) {
+				deadline = setTimeout(() => {
+					deadline = undefined;
+					if (ended) return;
+					outOfBudget = "time";
+					ended = true;
+					timedOut = true;
+					publish();
+					ctx.abort();
+				}, limit * 1000);
+				deadline.unref();
+			}
+		}
+		// Units, code and MotorMind mode are mutually exclusive (configError): at most one of them shapes the prompt.
+		const mod = mm?.on() ? mm : un?.mode() ? un : co?.mode() ? co : undefined;
+		const mode = mod?.mode();
+		// The prompt (the robot's and the mode's) describes only the tools left active by --tools/--exclude-tools and --units/--code.
+		// Every evaluation prompt reads memory once, in memory's section (./capabilities/memory): at the robot
+		// prompt's `{{memory}}`, else at its end (not when the robot's prompt has its own, memory.inPrompt),
+		// and after the mode's prompt when the mode replaces the robot's. Exploration's prompt has its own.
+		const section = exploring() ? undefined : mem?.section();
+		const memoryBlock = section ? `[tool:read]\n${section}\n[/tool:read]` : "";
+		const robotPrompt = spec.prompt?.();
+		const own = robotPrompt?.includes("{{memory}}")
+			? robotPrompt.replaceAll("{{memory}}", memoryBlock)
+			: robotPrompt !== undefined && memoryBlock && !spec.memory?.inPrompt
+				? `${robotPrompt}\n\n${memoryBlock}`
+				: robotPrompt;
+		const systemPrompt =
+			mode === "pure"
+				? [mod?.prompt(), memoryBlock].filter(Boolean).join("\n\n")
+				: mode === "both"
+					? `${own ?? ""}\n\n${mod?.prompt()}`.trim()
+					: own;
+		forcing = systemPrompt !== undefined;
+		if (!forcing) return undefined;
+		// OpenETA's closed-loop rules (./closed-loop.md) close every robot's prompt, in every mode.
+		return { systemPrompt: toolSections(`${systemPrompt}\n\n${CLOSED_LOOP}`, pi.getActiveTools()) };
+	});
+	// pi sends a forced prompt without recording it; the entry keeps what the planner saw
+	// (planner_export.py). Read at turn start, after every before_agent_start handler (explore's
+	// rewrite included) has run.
+	pi.on("turn_start", (_event, ctx) => {
+		const text = forcing ? ctx.getSystemPrompt?.() : undefined;
+		if (text === undefined || text === recordedPrompt) return;
+		pi.appendEntry(SYSTEM_PROMPT_ENTRY, { text });
+		recordedPrompt = text;
+	});
+	pi.on("message_end", (event) => {
+		const m = event.message;
+		if (m.role !== "assistant") return;
+		cost += m.usage?.cost?.total ?? 0;
+		// The model that actually answered (a fallback or a switch mid-episode shows here).
+		// responseModel: the concrete model the provider reports when it differs from the requested one.
+		if (m.provider && m.model) plannerModels.add(`${m.provider}/${m.responseModel ?? m.model}`);
+		providers.push(m.provider);
+		tokens.input += (m.usage?.input ?? 0) + (m.usage?.cacheRead ?? 0) + (m.usage?.cacheWrite ?? 0);
+		tokens.output += m.usage?.output ?? 0;
+		finishing = m.content.some((c) => c.type === "toolCall" && c.name === "finish");
+		// The model failing (after pi's own retries) makes the episode's outcome meaningless, whatever it is;
+		// a reply the time-limit abort cut off (some providers report it as an error, "This operation was
+		// aborted") is the budget ending the episode, not the model failing. A reply whose text holds an
+		// unparsed tool call is a failed one too (leakedToolCall).
+		plannerError =
+			m.stopReason === "error"
+				? timedOut
+					? undefined
+					: (m.errorMessage ?? "model error")
+				: leakedToolCall(m.content);
+	});
+	pi.on("turn_end", () => {
+		turns++;
+	});
+	// Side VLM calls (the units verifier and video_ref, ../vdm.ts) spend from the same budget.
+	pi.events.on(VLM_COST_EVENT, (usd) => {
+		cost += Number(usd) || 0;
+	});
+	/** Why `toolName` may not run now (robot not up or broken, episode over, budget spent), else undefined. */
+	function refusal(toolName: string): string | undefined {
+		if (!ready) return `${name} is not available.`;
+		if (broken !== undefined) return `The robot failed: ${broken}. The episode is over.`;
+		if (toolName === "finish") return undefined;
+		if (ended) return "The episode is finished.";
+		const maxTurns = Number(pi.getFlag("max-turns"));
+		const limit = Number(pi.getFlag("time-limit"));
+		const late = limit > 0 && started !== undefined && Date.now() - started > limit * 1000;
+		const maxCost = Number(pi.getFlag("max-cost"));
+		const spent = maxCost > 0 && cost >= maxCost;
+		const maxCalls = Number(pi.getFlag("max-tool-calls"));
+		const called = maxCalls > 0 && toolCalls >= maxCalls;
+		const maxTokens = Number(pi.getFlag("max-tokens"));
+		const talked = maxTokens > 0 && tokens.input + tokens.output >= maxTokens;
+		if (!(maxTurns > 0 && turns >= maxTurns) && !late && !spent && !called && !talked) return undefined;
+		outOfBudget = late ? "time" : spent ? "cost" : called ? "tool_calls" : talked ? "tokens" : "turns";
+		ended = true;
+		return `Planner ${outOfBudget} budget exhausted; the episode is over.`;
+	}
+	pi.on("tool_call", (event) => {
+		const reason = refusal(event.toolName);
+		if (reason !== undefined) return { block: true, reason, terminate: true };
+		if (event.toolName !== "finish") toolCalls++;
+		return undefined;
+	});
+	/** Whether a tool moves the robot: the robot's own (units and code mode included) and the scene resets, less NON_MOTION. */
+	const moves = (t: string) =>
+		(robotTools.includes(t) || (RESETS as readonly string[]).includes(t)) && !NON_MOTION.has(t);
+	// After the budget gate: re-observe after a motion of unknown outcome (./closed-loop.ts).
+	const loop = closedLoop(pi, moves);
+	// --approval (./operator.ts): its gate joins the tool_call chain last, at the first session start that needs it.
+	const ap = approval(pi, {
+		moves,
+		observes: (t) => (OBSERVE as readonly string[]).includes(t),
+		real: () => spec.code?.real === true || spec.explore?.operatorJudged === true,
+		// No tool result carries a frame yet (units mode starts text-only): the reviewer gets a fresh
+		// observation from the robot's own look-only tool, called directly (the planner does not see it).
+		observe: async (sig, ctx) => {
+			const look = (OBSERVE as readonly string[]).map((t) => defs.get(t)).find((d) => d !== undefined);
+			if (!look || !ready || broken !== undefined) return [];
+			const r = await exclusive(sig, () => look.call({}, sig, ctx));
+			return r.content.filter((c): c is ImageContent => c.type === "image");
+		},
+		task: () =>
+			spec.status?.().language ||
+			Object.entries(task)
+				.map(([k, v]) => `${k} ${v}`)
+				.join(", "),
+	});
+	/**
+	 * Older camera frames are replaced by a stub, keeping the latest --keep-images. With --anchor-image
+	 * the episode's first frame stays too (OpenETA's bounded visual history): the first image of the
+	 * earliest tool result that carries one, which is the robot's first observation, main view first.
+	 * With --image-trim-every N the number of stubbed frames is a multiple of N, so the cut moves once
+	 * every N new frames instead of every turn (a moving cut rewrites the history at the oldest kept frame,
+	 * and a prefix cache cannot reuse anything past a rewrite).
+	 */
+	const stubText = spec.imageStub ?? "[older camera frame omitted]";
+	pi.on("context", (event) => {
+		let keep = Number(pi.getFlag("keep-images"));
+		const anchor = anchored()
+			? event.messages.find((m) => m.role === "toolResult" && m.content.some((p) => p.type === "image"))
+			: undefined;
+		const every = Number(pi.getFlag("image-trim-every"));
+		if (every > 0) {
+			let frames = 0;
+			for (const m of event.messages)
+				if (m.role === "toolResult") frames += m.content.filter((p) => p.type === "image").length;
+			if (anchor) frames--;
+			keep = frames - every * Math.floor(Math.max(0, frames - keep) / every);
+		}
+		let pruned = false;
+		const messages = [...event.messages].reverse().map((m) => {
+			if (m.role !== "toolResult") return m;
+			let first = m === anchor;
+			const content = m.content.map((part) => {
+				if (part.type !== "image") return part;
+				if (first) {
+					first = false;
+					return part;
+				}
+				if (keep-- > 0) return part;
+				pruned = true;
+				return { type: "text" as const, text: stubText };
+			});
+			return { ...m, content };
+		});
+		return pruned ? { messages: messages.reverse() } : undefined;
+	});
+	// Earlier turns' thinking leaves the request unless --replay-thinking=true; none and frames: ./planner/replay-thinking.ts.
+	pi.on("context", (event) =>
+		replayThinking(pi)
+			? undefined
+			: dropReplayedThinking(event.messages, keepThinkingFrom(pi, event.messages, stubText)),
+	);
+	// Prefixes the endpoint should keep for the next turn (./planner/cache-breakpoints.ts).
+	pi.on("before_provider_request", (event, ctx) =>
+		cacheBreakpoints(pi) && ctx.model?.api === "openai-completions" ? markBreakpoints(event.payload) : undefined,
+	);
+	pi.on("input", (_event, ctx) => {
+		if (ready) return undefined;
+		if (ctx.hasUI) ctx.ui.notify(`${name} is not available; nothing was sent to the model.`, "error");
+		return { action: "handled" as const };
+	});
+
+	function report(hasUI: boolean, when: Ended) {
+		if (reported || (failed === undefined && !(ready && ran))) return;
+		reported = true;
+		// Ground truth was on offer (--privileged): not comparable with a run without it.
+		// The OpenETA extras that were on (flags of ./primitives, ./objects.ts, ./web.ts): not comparable with a run without them.
+		const extras = EXTRAS.filter((f) => pi.getFlag(f) === true);
+		const mark = {
+			...(privileged() ? { privileged: true } : {}),
+			...(anchored() ? { anchor_image: true } : {}),
+			...(extras.length ? { extras } : {}),
+		};
+		// What the planner's context was built from (./context-version.ts): data, not configuration.
+		const context_version = {
+			system_prompt_sha256: prompts[0] ?? null,
+			...(prompts.length > 1 ? { system_prompts_sha256: prompts } : {}),
+			templates: usedTemplates({
+				explore: exploring(),
+				memoryProfile: mem && spec.memory?.cell?.() && mem.profile !== "off" ? mem.profile : undefined,
+				code: co?.mode() !== undefined,
+				units: un?.mode() !== undefined,
+			}),
+			memory_files: mem?.loaded() ?? {},
+			code_api_digest: api?.digest ?? null,
+			git_commit: gitCommit(),
+			git_dirty: gitDirty(),
+			planner_models: [...plannerModels],
+		};
+		const r =
+			failed !== undefined
+				? { robot: name, ...task, ...mark, env_error: true, error: failed }
+				: {
+						robot: name,
+						...withSkillsOff(spec.result(when), perceptionOff),
+						...mark,
+						// --tier / --preset and the axes they expanded to (./infra/tiers.ts).
+						...tr.result(),
+						// The units verifier: whether the success finish was checked, and the call's error.
+						...un?.result(),
+						// MotorMind mode: the `motormind` block, computed now from the mode's state and the mission's
+						// (the provider's); the env's success wins over the mission's own status (DESIGN §7.3).
+						...motormindBlock(
+							mm?.result({
+								budget: outOfBudget,
+								finished: claimed !== undefined,
+								solved: spec.status?.().solved,
+								error: broken ?? plannerError,
+							}),
+							mp?.result(),
+						),
+						// Code mode (../code): `code` and `code_api`, so evaluations never mix it with tool runs.
+						...co?.result(),
+						...vd?.result(),
+						...xp?.result(),
+						// With --fallback-model: the turns each planner model planned (../fallback.ts).
+						...fb?.result(),
+						...en?.result(),
+						// Which primitive API (code.api) the episode ran with.
+						...(api ? { code_api_digest: api.digest, code_api_tier: api.tier } : {}),
+						...ap.result(),
+						...loop.result(),
+						tool_calls: toolCalls,
+						planner_tokens: { ...tokens },
+						max_tool_calls: Number(pi.getFlag("max-tool-calls")) || 0,
+						max_tokens: Number(pi.getFlag("max-tokens")) || 0,
+						context_version,
+						claimed: claimed?.status ?? null,
+						summary: claimed?.summary ?? null,
+						turns,
+						// Which budget ended the episode: "turns", "time" (a planner timeout), "cost", "tool_calls", "tokens", or null.
+						planner_budget_exhausted: outOfBudget ?? null,
+						// Who planned: model, human (a person answered as the model), ensemble, fallback, finetuned, flash, replay.
+						planner: plannerOf(providers),
+						// Every experiment flag's effective value and default (./infra/params.ts): the eval scripts compare them.
+						...params(pi),
+						...deploymentRecord(pi),
+						aux_models: auxModels(pi),
+						cost_usd: Number(cost.toFixed(6)),
+						// An operator verdict (/success /failure /abort) aborts the model mid-request; that ends the run, it is not a planner failure.
+						planner_error: (op.result() as Json).operator_finished === true ? null : (plannerError ?? null),
+						...op.result(),
+						// A robot that broke mid-episode makes its outcome meaningless, like a failed start.
+						env_error: broken !== undefined,
+						...(broken !== undefined ? { error: broken } : {}),
+					};
+		try {
+			if (failed === undefined) pi.appendEntry(CONTEXT_VERSION_ENTRY, context_version);
+			pi.appendEntry(RESULT_ENTRY, r);
+		} catch {}
+		if (!hasUI) console.error(`[${name}] ${JSON.stringify(r)}`);
+	}
+	pi.on("agent_start", (_event, ctx) => {
+		ran = true;
+		// The system prompt pi sends, after every extension's before_agent_start (exploration's included).
+		const prompt = ctx.getSystemPrompt?.();
+		if (typeof prompt === "string") {
+			const digest = sha256(prompt);
+			if (!prompts.includes(digest)) prompts.push(digest);
+		}
+	});
+	pi.on("tool_execution_end", publish);
+	pi.on("agent_end", (_event, ctx) => {
+		if (ended) report(ctx.hasUI, "agent_end");
+		publish();
+	});
+	// The result first: stopping the env server can take a while.
+	pi.on("session_shutdown", (_event, ctx) => report(ctx.hasUI, "shutdown"));
+	pi.on("session_shutdown", () => {
+		clearTimeout(deadline);
+		deadline = undefined;
+	});
+	pi.on("session_shutdown", stop);
+
+	// After the robot's before_agent_start and tool_call gate: exploration rewrites that prompt and guards `finish`.
+	if (spec.explore && mem)
+		explore(pi, {
+			...spec.explore,
+			reset: resetsUnits(spec.explore.reset),
+			render: mem.render,
+			tools: mem.tools,
+			aborted: () => (op.result() as Json).operator_aborted === true,
+		});
+	const exploring = () => spec.explore !== undefined && pi.getFlag("explore") === true;
+	if (spec.explore?.operatorJudged) {
+		// Exploration's success signal is `terminated` (../explore.ts, the memory recipe); here it is the operator's success verdict.
+		pi.on("tool_result", (event) => {
+			if (!exploring() || event.toolName !== "request_operator_verdict" || event.isError) return undefined;
+			const details = event.details as Json | undefined;
+			if (details?.status !== "success") return undefined;
+			const marked = { ...details, terminated: true };
+			return { details: marked, content: [{ type: "text" as const, text: JSON.stringify(marked) }] };
+		});
+		// In exploration `reset` is the scene reset: it counts attempts and bounds the recipe.
+		pi.on("before_agent_start", () => {
+			if (exploring()) pi.setActiveTools(pi.getActiveTools().filter((t) => t !== "request_scene_reset"));
+		});
+	}
+
+	pi.registerTool({
+		name: "finish",
+		label: "finish",
+		description: spec.finish.description,
+		parameters: spec.finish.parameters,
+		executionMode: "sequential",
+		async execute(_id, params) {
+			claimed = params as Claim;
+			ended = true;
+			return { ...spec.finish.result(claimed), terminate: true };
+		},
+	});
+
+	const usage = `/robot-task ${spec.task.map((k) => `<${k}>`).join(" ")}`;
+	pi.registerCommand("robot-task", {
+		description: `Start a new ${name} episode in a new session: ${usage}`,
+		handler: async (args, ctx) => {
+			const values = args.trim().split(/\s+/).filter(Boolean);
+			if (values.length !== spec.task.length) {
+				ctx.ui.notify(`Usage: ${usage}`, "error");
+				return;
+			}
+			await ctx.newSession({
+				setup: async (sm) => {
+					sm.appendCustomEntry(TASK_ENTRY, {
+						robot: name,
+						...Object.fromEntries(spec.task.map((k, i) => [k, values[i]])),
+					});
+				},
+				withSession: async (next) => {
+					next.sendUserMessage("Solve the task.").catch((err) => next.ui.notify(String(err), "error"));
+				},
+			});
+		},
+	});
+
+	robotCheck(pi, name);
+
+	return {
+		/** This episode's task flag values (the /robot-task entry, else the flags). */
+		get task() {
+			return task;
+		},
+		/** The running tool's abort signal; pass it to every robot RPC so an abort stops motion between calls. */
+		get signal() {
+			return signal;
+		},
+		/** Register a sequential robot tool; its result terminates the batch when the batch also calls `finish`. */
+		tool,
+		/** Register a manifest tool (`manifest` in the spec): schema and description from the manifest, `run` hand-written. */
+		primitive,
+		/** The robot's manifest (`manifest` in the spec), if any. */
+		manifest,
+		/** The episode's primitive registry (`codeApi`), once the robot is up; undefined without one. */
+		get codeApi() {
+			return api;
+		},
+		/**
+		 * A real robot, the moment its env server answers and before it asks the operator to confirm
+		 * anything or resets the arm: code mode's `code.preflight` (../modes/code), so a server that
+		 * would refuse every program fails the start first. No-op when code mode is off; `start` of
+		 * a robot that did not call it runs the same check after the robot is up.
+		 */
+		async codePreflight(rpc: RpcClient): Promise<void> {
+			await co?.preflight(rpc);
+		},
+		/**
+		 * Start `python ...args --transport http --host 127.0.0.1 --port 0 --parent-watch` (a service RPC
+		 * server; it picks its port and exits with pi) and wait for healthz. It is stopped at the next start and at shutdown.
+		 */
+		async serve(o: ServiceOptions): Promise<RpcClient> {
+			const owned = startService(o);
+			server = owned;
+			const log = await owned.ready;
+			if (server?.proc === owned.proc) server.log = log;
+			// Stopping clears ownership first; any other exit breaks this episode.
+			owned.proc.once("exit", (code, sig) => {
+				if (server?.proc === owned.proc) fail(`env server exited (${code ?? sig}); see ${log}`);
+			});
+			return owned.rpc;
+		},
+		video,
+		fly,
+		op,
+		mem,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// service processes
+
+/**
+ * Refuse a real-robot `move_delta` larger than one call may move, in meters. The services clip each
+ * servo step on the server (0.02 m) but bound no call's total; their tasks document the per-call
+ * limit only in the prompt ("Keep translation commands at or below 0.02 m per call"). The
+ * tighter of that and `cap` applies.
+ */
+export function checkMove(delta: number[], cap: number, constraints: string[] = []) {
+	const limit = moveLimit(cap, constraints);
+	const norm = Math.hypot(...delta);
+	if (!(norm <= limit))
+		throw new Error(
+			`delta_xyz moves ${round(norm, 4)} m; the limit is ${limit} m per call. Split the motion into smaller calls.`,
+		);
+}
+
+/**
+ * The --workspace-xy box (off when empty) and the required --z-floor, validated: a malformed box or a
+ * missing or non-finite floor throws (the robot does not start, and no move runs without a floor).
+ */
+export function workspaceLimits(xy: string, zFloor: string): { box?: number[]; floor: number } {
+	const box = xy.trim() ? xy.split(",").map((v) => (v.trim() ? Number(v) : Number.NaN)) : undefined;
+	if (box && (box.length !== 4 || !box.every(Number.isFinite) || !(box[0] < box[1] && box[2] < box[3])))
+		throw new Error(`--workspace-xy must be "xmin,xmax,ymin,ymax" (finite, min < max), got "${xy}"`);
+	const floor = zFloor.trim() ? Number(zFloor) : Number.NaN;
+	if (!Number.isFinite(floor))
+		throw new Error(
+			`--z-floor must be the lowest safe TCP z in m (e.g. Show-Harness's empty-table 0.14), got "${zFloor}"`,
+		);
+	return { ...(box ? { box } : {}), floor };
+}
+
+/** The per-call translation limit `checkMove` applies: the tighter of `cap` and the task's documented limit. */
+export function moveLimit(cap: number, constraints: string[] = []) {
+	const documented = constraints.map((c) => /translation commands at or below ([\d.]+) m per call/i.exec(c)?.[1]);
+	return Math.min(cap, ...documented.filter((v) => v !== undefined).map(Number));
+}
+
+// ---------------------------------------------------------------------------
+// numpy payloads
+
+/** Elements of an array of any numeric or bool dtype, in C order. */
+export function numbers(a: NdArray): number[] {
+	const b = new Uint8Array(a.data).buffer;
+	switch (a.dtype) {
+		case "float32":
+			return Array.from(new Float32Array(b));
+		case "float64":
+			return Array.from(new Float64Array(b));
+		case "int8":
+			return Array.from(new Int8Array(b));
+		case "int16":
+			return Array.from(new Int16Array(b));
+		case "int32":
+			return Array.from(new Int32Array(b));
+		case "int64":
+			return Array.from(new BigInt64Array(b), Number);
+		case "uint16":
+			return Array.from(new Uint16Array(b));
+		case "uint32":
+			return Array.from(new Uint32Array(b));
+		case "uint64":
+			return Array.from(new BigUint64Array(b), Number);
+		case "uint8":
+		case "bool":
+			return Array.from(new Uint8Array(b));
+		default:
+			throw new Error(`unsupported dtype ${a.dtype}`);
+	}
+}
+
+/** A list, NdArray or scalar as plain numbers (for poses and state vectors). */
+export function vec(v: unknown): number[] {
+	if (v instanceof NdArray) return numbers(v);
+	if (Array.isArray(v)) return v.map(Number);
+	return v === null || v === undefined ? [] : [Number(v)];
+}
+
+export const size = (a: NdArray) => a.shape.reduce((x, y) => x * y, 1);
+export const f32 = (a: NdArray) => (a.dtype === "float32" ? a : NdArray.f32(numbers(a), a.shape));
+export const u8 = (a: NdArray) =>
+	a.dtype === "uint8" ? a : new NdArray("uint8", a.shape, Buffer.from(Uint8Array.from(numbers(a))));
+
+/** Element `i` along the first axis. */
+export function sub(a: NdArray, i: number): NdArray {
+	const n = a.data.length / a.shape[0];
+	return new NdArray(a.dtype, a.shape.slice(1), a.data.subarray(i * n, (i + 1) * n));
+}
+
+function nest(flat: unknown[], shape: number[]): unknown {
+	if (shape.length === 0) return flat[0];
+	if (shape.length === 1) return flat;
+	const n = flat.length / shape[0];
+	return Array.from({ length: shape[0] }, (_, i) => nest(flat.slice(i * n, (i + 1) * n), shape.slice(1)));
+}
+
+/** JSON-safe copy: small arrays become nested lists (numpy `tolist`), large ones a shape stub. */
+export function plain(v: unknown): unknown {
+	if (v instanceof NdArray) {
+		if (size(v) > 256) return { ndarray: v.dtype, shape: v.shape };
+		const flat = v.dtype === "bool" ? numbers(v).map(Boolean) : numbers(v);
+		return nest(flat, v.shape);
+	}
+	if (Buffer.isBuffer(v)) return `<${v.length} bytes>`;
+	if (Array.isArray(v)) return v.map(plain);
+	if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x)]));
+	return v;
+}
+
+// ---------------------------------------------------------------------------
+// camera frames
+
+/** An `[H, W, C>=3]` image as 8-bit RGB. */
+export function rgbOf(a: NdArray): Rgb {
+	if (a.shape.length !== 3 || a.shape[2] < 3) throw new Error(`expected an [H,W,3] image, got [${a.shape}]`);
+	const [height, width, c] = a.shape;
+	const src = u8(a).data;
+	if (c === 3) return { width, height, rgb: Buffer.from(src) };
+	const rgb = Buffer.alloc(width * height * 3);
+	for (let i = 0; i < width * height; i++) src.copy(rgb, i * 3, i * c, i * c + 3);
+	return { width, height, rgb };
+}
+
+/** An `[H, W, C>=3]` image as the `[H, W, 3]` uint8 frame the episode video (../video.ts) takes. */
+export function frameOf(a: NdArray): NdArray {
+	const { width, height, rgb } = rgbOf(a);
+	return new NdArray("uint8", [height, width, 3], rgb);
+}
+
+/** A depth map with singleton axes squeezed, as float32 meters. */
+export function gridOf(a: NdArray): Grid {
+	const shape = a.shape.filter((d) => d !== 1);
+	if (shape.length !== 2) throw new Error(`expected 2D depth, got [${a.shape}]`);
+	return { height: shape[0], width: shape[1], data: Float32Array.from(numbers(a)) };
+}
+
+/** Copy of `img` with a crosshair and ring at pixel (row, col). */
+export function mark(img: Rgb, row: number, col: number, color: [number, number, number]): Buffer {
+	const out = Buffer.from(img.rgb);
+	const { width: w, height: h } = img;
+	const x = Math.max(0, Math.min(w - 1, col));
+	const y = Math.max(0, Math.min(h - 1, row));
+	const put = (px: number, py: number) => {
+		if (px < 0 || py < 0 || px >= w || py >= h) return;
+		out[(py * w + px) * 3] = color[0];
+		out[(py * w + px) * 3 + 1] = color[1];
+		out[(py * w + px) * 3 + 2] = color[2];
+	};
+	for (let d = -15; d <= 15; d++)
+		for (let t = 0; t < 2; t++) {
+			put(x + d, y + t);
+			put(x + t, y + d);
+		}
+	for (let dy = -13; dy <= 13; dy++)
+		for (let dx = -13; dx <= 13; dx++) {
+			const r = Math.hypot(dx, dy);
+			if (r >= 11 && r <= 13) put(x + dx, y + dy);
+		}
+	return out;
+}
+
+// ---------------------------------------------------------------------------
+// rigid transforms
+
+/** Rotation matrix of an xyzw quaternion (normalized first). */
+export function quatMat(q: number[]): Mat {
+	const n = Math.hypot(q[0], q[1], q[2], q[3]);
+	if (!(n > 0)) throw new Error("zero-norm quaternion");
+	const [x, y, z, w] = q.map((v) => v / n);
+	return [
+		[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+		[2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+		[2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+	];
+}
+
+/** Homogeneous transform of an `[x, y, z, qx, qy, qz, qw]` pose. */
+export function pose7(p: number[]): Mat {
+	if (p.length !== 7) throw new Error(`expected tcp_pose shape (7,), got (${p.length},)`);
+	const r = quatMat(p.slice(3));
+	return [
+		[...r[0], p[0]],
+		[...r[1], p[1]],
+		[...r[2], p[2]],
+		[0, 0, 0, 1],
+	];
+}
+
+/** First three rows of `t @ [p, 1]` (or `t @ p` for a 3x3 `t`). */
+export const apply = (t: Mat, p: number[]): number[] =>
+	[0, 1, 2].map((i) => t[i][0] * p[0] + t[i][1] * p[1] + t[i][2] * p[2] + (t[i][3] ?? 0));
+
+export function inv3(m: Mat): Mat {
+	const [[a, b, c], [d, e, f], [g, h, i]] = m;
+	const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+	if (!det) throw new Error("singular intrinsic_K");
+	return [
+		[(e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det],
+		[(f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det],
+		[(d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det],
+	];
+}
+
+// ---------------------------------------------------------------------------
+// pi plumbing
+
+/** Tool result: JSON text (capped at 60 kB) followed by PNG images. */
+export function toolResult(out: Record<string, unknown>, pngs: Buffer[] = []) {
+	const details = plain(out) as Json;
+	let text = JSON.stringify(details, null, 2) ?? "null";
+	if (Buffer.byteLength(text) > 60_000) text = `${Buffer.from(text).subarray(0, 60_000).toString()}\n[truncated]`;
+	return {
+		content: [
+			{ type: "text" as const, text },
+			...pngs.map((png) => ({ type: "image" as const, data: png.toString("base64"), mimeType: "image/png" })),
+		],
+		details,
+	};
+}

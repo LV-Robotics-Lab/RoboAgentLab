@@ -1,0 +1,422 @@
+import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SPECS } from "../src/infra/check.ts";
+import setup, { BUDGET, COMMAND, NO_MODEL, NOTICE, NOTICE_ENTRY, PKG, ROBOTS } from "../src/infra/setup/index.ts";
+
+type Handler = (event: unknown, ctx: unknown) => unknown;
+type Answers = { select?: string[]; input?: (string | undefined)[]; confirm?: boolean[] };
+
+/** One pi runtime with the setup extension and a faux UI answering from `answers`. */
+function fakePi(
+	o: {
+		robot?: boolean;
+		sessionDir?: string;
+		answers?: Answers;
+		cwd?: string;
+		model?: { provider: string; id: string };
+		available?: { provider: string; id: string }[];
+	} = {},
+) {
+	const handlers = new Map<string, Handler[]>();
+	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+	const entries: { type: string; customType: string; data: unknown }[] = [];
+	const sent: { text: string; options: unknown }[] = [];
+	const notes: string[] = [];
+	const asked: string[] = [];
+	const confirms: string[] = [];
+	const offered: Record<string, string[]> = {};
+	const a = {
+		select: [...(o.answers?.select ?? [])],
+		input: [...(o.answers?.input ?? [])],
+		confirm: [...(o.answers?.confirm ?? [])],
+	};
+	const pi = {
+		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
+		registerCommand: (name: string, c: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
+			commands.set(name, c),
+		getCommands: () => [
+			...[...commands.keys()].map((name) => ({
+				name,
+				source: "extension",
+				sourceInfo: { path: "", source: "../../pi/packages/embodied", scope: "user", origin: "package" },
+			})),
+			...(o.robot ? [{ name: "robot-task", source: "extension" }] : []),
+		],
+		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+		sendUserMessage: (text: string, options: unknown) => sent.push({ text, options }),
+	} as unknown as ExtensionAPI;
+	const ctx = {
+		mode: "tui",
+		hasUI: true,
+		cwd: o.cwd ?? tmpdir(),
+		model: o.model ?? { provider: "anthropic", id: "claude-opus-5" },
+		modelRegistry: { getAvailable: () => o.available ?? [{ provider: "openai", id: "gpt-6" }] },
+		sessionManager: { getEntries: () => entries, getSessionDir: () => o.sessionDir ?? "/nonexistent" },
+		isIdle: () => true,
+		ui: {
+			notify: (m: string) => notes.push(m),
+			select: async (title: string, options: string[]) => {
+				asked.push(title);
+				offered[title] = options;
+				const want = a.select.shift();
+				return options.find((x) => want !== undefined && x.startsWith(want));
+			},
+			input: async (title: string) => {
+				asked.push(title);
+				return a.input.shift();
+			},
+			confirm: async (title: string, message: string) => {
+				asked.push(title);
+				confirms.push(message);
+				return a.confirm.shift() ?? false;
+			},
+		},
+	};
+	setup(pi);
+	return {
+		entries,
+		sent,
+		notes,
+		asked,
+		confirms,
+		offered,
+		commands,
+		start: async () => {
+			for (const fn of handlers.get("session_start") ?? [])
+				await fn({ type: "session_start", reason: "startup" }, ctx);
+		},
+		run: () => commands.get(COMMAND)?.handler("", ctx) ?? Promise.resolve(),
+	};
+}
+
+test("the notice shows once per session and records a session entry", async () => {
+	const p = fakePi();
+	await p.start();
+	assert.deepEqual(p.notes, [NOTICE]);
+	assert.equal(p.entries[0]?.customType, NOTICE_ENTRY);
+	await p.start();
+	assert.equal(p.notes.length, 1);
+});
+
+test("another session of the project that recorded the notice suppresses it", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-embodied-sessions-"));
+	writeFileSync(join(dir, "old.jsonl"), `${JSON.stringify({ type: "custom", customType: NOTICE_ENTRY, data: {} })}\n`);
+	const p = fakePi({ sessionDir: dir });
+	await p.start();
+	assert.deepEqual(p.notes, []);
+	assert.deepEqual(p.entries, []);
+});
+
+test("with a robot extension active nothing is shown, recorded or configured", async () => {
+	const p = fakePi({ robot: true, answers: { select: ["LIBERO"], confirm: [true] } });
+	await p.start();
+	assert.deepEqual(p.entries, []);
+	assert.deepEqual(p.notes, []);
+	await p.run();
+	assert.deepEqual(p.asked, []);
+	assert.deepEqual(p.sent, []);
+	assert.equal(p.notes.length, 1);
+});
+
+test("/embodied-setup writes the experiment settings and hands the install to the agent", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+	const dir = join(cwd, "exp");
+	mkdirSync(join(dir, ".pi"), { recursive: true });
+	writeFileSync(
+		join(dir, ".pi/settings.json"),
+		JSON.stringify({ theme: "dark", extensions: [`${PKG}/src/maniskill/index.ts`, "/other/ext.ts"] }),
+	);
+	const p = fakePi({
+		cwd,
+		answers: {
+			select: ["LIBERO-PRO", "units", "here", "openai/gpt-6"],
+			input: [dir],
+			confirm: [true],
+		},
+	});
+	await p.run();
+	assert.deepEqual(p.asked, [
+		"Robot or benchmark",
+		"Mode",
+		"Where do the services run?",
+		"Planner model",
+		`Experiment directory (empty: ${join(cwd, "embodied-libero-pro")})`,
+		"Set up pi-embodied?",
+	]);
+	const settings = JSON.parse(readFileSync(join(dir, ".pi/settings.json"), "utf8"));
+	assert.deepEqual(settings, {
+		theme: "dark",
+		packages: [{ source: PKG, autoload: false, extensions: ["-src/infra/setup/index.ts"] }],
+		extensions: ["/other/ext.ts", `${PKG}/src/robots/libero/index.ts`, `${PKG}/src/capabilities/dashboard/index.ts`],
+		defaultProvider: "openai",
+		defaultModel: "gpt-6",
+	});
+	assert.equal(p.sent.length, 1);
+	const { text, options } = p.sent[0];
+	assert.deepEqual(options, { expandPromptTemplates: true });
+	assert.match(text, /^\/skill:embodied-quickstart /);
+	assert.match(text, /setup\.sh libero-pro`/);
+	assert.match(
+		text,
+		/`cd \S+\/exp && source \S+\/services\/\.venv-libero-pro\/pi-embodied\.env && pi --libero-type pro --suite libero_10 --task 0 --seed 0 --units=true --max-turns 40 --time-limit 900 --dashboard=true`/,
+	);
+	assert.match(text, /trust the project/);
+	assert.doesNotMatch(text, /adapter|serve\.sh/, "units mode serves no adapter");
+	// The confirmation says what happens: one confirmation, then the agent runs the whole install.
+	const summary = p.confirms.at(-1) ?? "";
+	assert.match(summary, /the agent runs it after this confirmation \(pi does not ask per step\)/);
+	// The confirmation's launch line is the agent's: the environment setup.sh writes, and the episode budget.
+	assert.match(
+		summary,
+		/^launch: cd \S+ && source \S+\/\.venv-libero-pro\/pi-embodied\.env && pi .* --max-turns 40 --time-limit 900 /m,
+	);
+	// Only the settings it describes, not the paths in it (a checkout's path may contain any word).
+	const described = summary
+		.split("\n")
+		.filter((line) => !/^(services at|writes|install:)/.test(line))
+		.map((line) => line.replace(/(^|\s)\/\S+/g, "$1<path>"));
+	assert.doesNotMatch(described.join("\n"), /approval/);
+});
+
+test("without a configured model /embodied-setup says how to add one and offers nothing", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+	// pi's placeholder when no model is configured.
+	const p = fakePi({
+		cwd,
+		model: { provider: "unknown", id: "unknown" },
+		available: [],
+		answers: { select: ["LIBERO", "units", "here", "unknown/unknown"], input: [""], confirm: [true] },
+	});
+	await p.run();
+	assert.deepEqual(p.asked, []);
+	assert.deepEqual(p.sent, []);
+	assert.deepEqual(p.notes, [NO_MODEL]);
+	assert.match(NO_MODEL, /no model is configured.*\/login.*models\.json/);
+	assert.throws(() => readFileSync(join(cwd, "embodied-libero/.pi/settings.json")));
+});
+
+test("the placeholder model is never offered as the planner", async () => {
+	const p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		model: { provider: "unknown", id: "unknown" },
+		answers: { select: ["LIBERO", "units", "here", "openai/gpt-6"], input: [""], confirm: [false] },
+	});
+	await p.run();
+	assert.deepEqual(p.offered["Planner model"], ["openai/gpt-6"]);
+	assert.match(p.confirms.at(-1) ?? "", /planner openai\/gpt-6/);
+	assert.ok(BUDGET.includes("--max-turns 40") && BUDGET.includes("--time-limit 900"));
+});
+
+test("tools mode asks about weights; a declined confirmation writes and sends nothing", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+	const p = fakePi({
+		cwd,
+		answers: {
+			select: ["RoboCasa", "tools", "here", "anthropic/claude-opus-5"],
+			input: [""],
+			confirm: [true, false],
+		},
+	});
+	await p.run();
+	assert.ok(p.asked.includes("Model weights"));
+	assert.deepEqual(p.sent, []);
+	assert.throws(() => readFileSync(join(cwd, "embodied-robocasa/.pi/settings.json")));
+	assert.match(p.notes.at(-1) ?? "", /Nothing written/);
+});
+
+test("a remote box writes nothing locally and gives the agent the settings for the box", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+	const p = fakePi({
+		cwd,
+		answers: {
+			select: ["ManiSkill", "fine-tuned", "a remote"],
+			input: ["me@gpu", "/data/pi-embodied", ""],
+			confirm: [true],
+		},
+	});
+	await p.run();
+	assert.ok(!p.asked.includes("Planner model"));
+	assert.throws(() => readFileSync(join(cwd, "embodied-maniskill/.pi/settings.json")));
+	const text = p.sent[0]?.text ?? "";
+	assert.match(text, /ssh me@gpu/);
+	assert.match(text, /\/data\/pi-embodied\/services\/setup\.sh maniskill`/);
+	assert.match(text, /"\/data\/pi-embodied\/packages\/embodied\/src\/modes\/finetuned\/index\.ts"/);
+	assert.match(text, /--units=true --model finetuned\/qwen3_5_2b_showharness_sim/);
+	// Fine-tuned mode: the adapter download and the vLLM server are part of the handoff.
+	assert.match(text, /FT_ADAPTER=qwen3_5_2b_sim \/data\/pi-embodied\/services\/setup\.sh finetuned/);
+	assert.match(text, /\/data\/pi-embodied\/services\/pi_embodied_services\/finetuned\/serve\.sh/);
+	assert.match(text, /services\.finetuned defaults to http:\/\/127\.0\.0\.1:8010\/v1/);
+	assert.match(
+		p.confirms.at(-1) ?? "",
+		/the adapter download and the vLLM server; the agent runs it after this confirmation/,
+	);
+});
+
+test("setup.sh parses and its dry run prints the plan without running it", async () => {
+	const script = join(PKG, "../../services/setup.sh");
+	execFileSync("bash", ["-n", script]);
+	const home = mkdtempSync(join(tmpdir(), "pi-embodied-home-"));
+	const out = execFileSync("bash", [script, "libero-pro", "--weights", "--dry-run", "--venv", join(home, "venv")], {
+		env: { ...process.env, HOME: home, PI_EMBODIED_WEIGHTS: join(home, "w") },
+		encoding: "utf8",
+	});
+	assert.match(out, /pip install .*services\\\[libero-pro\\\]/);
+	assert.match(out, /liberopro-download-assets --skip-existing/);
+	assert.match(out, /hf download facebook\/sam3 sam3\.pt/);
+	assert.match(out, /export PI05_CHECKPOINT_PATH=/);
+	assert.throws(() => readFileSync(join(home, "venv/pi-embodied.env")));
+	assert.throws(() => execFileSync("bash", [script, "nope", "--dry-run"], { stdio: "pipe" }));
+});
+
+test("setup.sh libero links LIBERO's scene assets; libero-pro links its own tree for standard LIBERO too", () => {
+	const script = join(PKG, "../../services/setup.sh");
+	const home = mkdtempSync(join(tmpdir(), "pi-embodied-home-"));
+	const dry = (...args: string[]) =>
+		execFileSync("bash", [script, ...args, "--dry-run", "--venv", join(home, "v")], {
+			env: { ...process.env, HOME: home, PI_EMBODIED_WEIGHTS: join(home, "w") },
+			encoding: "utf8",
+		});
+	assert.match(dry("libero"), /\/v\/bin\/python -m pi_embodied_services\.robots\.libero\.assets$/m);
+	assert.doesNotMatch(dry("libero", "--no-assets"), /robots\.libero\.assets/);
+	assert.match(
+		dry("libero-pro"),
+		/liberopro-download-assets --skip-existing\n.*-m pi_embodied_services\.robots\.libero\.assets --from-package liberopro\.liberopro$/m,
+	);
+});
+
+test("setup.sh writes absolute paths for a relative --venv and --weights-dir", () => {
+	const script = join(PKG, "../../services/setup.sh");
+	const home = mkdtempSync(join(tmpdir(), "pi-embodied-home-"));
+	const out = execFileSync(
+		"bash",
+		[script, "libero", "--weights", "--dry-run", "--venv", "rel/venv", "--weights-dir=w"],
+		{
+			cwd: home,
+			env: { ...process.env, HOME: home },
+			encoding: "utf8",
+		},
+	);
+	const here = realpathSync(home);
+	assert.match(out, new RegExp(`^export PI_EMBODIED_PYTHON=${here}/rel/venv/bin/python$`, "m"));
+	assert.match(out, new RegExp(`^export PI05_CHECKPOINT_PATH=${here}/w/RLinf-Pi05-LIBERO-130-fullshot-SFT$`, "m"));
+	assert.match(out, new RegExp(`preflight: source ${here}/rel/venv/pi-embodied\\.env `));
+	const tilde = execFileSync("bash", [script, "libero", "--dry-run", "--venv=~/v2"], {
+		cwd: home,
+		env: { ...process.env, HOME: home },
+		encoding: "utf8",
+	});
+	assert.match(tilde, new RegExp(`^export PI_EMBODIED_PYTHON=${home}/v2/bin/python$`, "m"));
+});
+
+test("setup.sh writes pi-embodied.env once the venv is installed: a failed asset step leaves it and says how to resume", () => {
+	const script = join(PKG, "../../services/setup.sh");
+	const home = mkdtempSync(join(tmpdir(), "pi-embodied-home-"));
+	const venv = join(home, "v");
+	const bin = join(home, "bin");
+	mkdirSync(join(venv, "bin"), { recursive: true });
+	mkdirSync(bin);
+	// An installed venv whose asset step fails (a mirror answering 429), and a uv whose installs succeed.
+	const python = (assets: string) =>
+		writeFileSync(
+			join(venv, "bin/python"),
+			`#!/bin/sh\ncase "$*" in -V) echo Python 3.11.0 ;; *robots.libero.assets*) ${assets} ;; esac\n`,
+			{ mode: 0o755 },
+		);
+	python('echo "LIBERO assets: HTTP 429" >&2; exit 1');
+	writeFileSync(join(bin, "uv"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+	writeFileSync(join(venv, "bin/hf"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+	const setupSh = (...args: string[]) =>
+		spawnSync("bash", [script, "libero", "--venv", venv, ...args], {
+			env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, PI_EMBODIED_WEIGHTS: join(home, "w") },
+			encoding: "utf8",
+		});
+	const failed = setupSh("--weights");
+	assert.equal(failed.status, 1, failed.stderr);
+	const early = readFileSync(join(venv, "pi-embodied.env"), "utf8");
+	assert.match(early, new RegExp(`^export PI_EMBODIED_PYTHON=${venv}/bin/python$`, "m"));
+	assert.match(early, /^export PI_EMBODIED_SERVICES=\//m);
+	assert.doesNotMatch(early, /PI05_CHECKPOINT_PATH/);
+	assert.match(
+		failed.stderr,
+		/LIBERO scene assets are not complete .*unset HF_ENDPOINT to fetch from huggingface\.co/,
+	);
+	assert.match(
+		failed.stderr,
+		/stopped \(exit 1\) after its venv was installed: \S+\/pi-embodied\.env holds the venv's environment/,
+	);
+	assert.match(failed.stderr, /rerun the same command to resume/);
+	// The rerun gets past the assets: the file gains the later steps' lines and nothing asks to resume.
+	python("exit 0");
+	const ok = setupSh("--weights");
+	assert.equal(ok.status, 0, ok.stderr);
+	const full = readFileSync(join(venv, "pi-embodied.env"), "utf8");
+	assert.match(full, /^export PI05_CHECKPOINT_PATH=/m);
+	assert.equal(full.match(/^export PI_EMBODIED_PYTHON=/gm)?.length, 1);
+	assert.doesNotMatch(ok.stderr, /resume/);
+});
+
+test("every robot has a setup.sh target, a check.ts spec and a /embodied-setup entry", () => {
+	const script = join(PKG, "../../services/setup.sh");
+	const home = mkdtempSync(join(tmpdir(), "pi-embodied-home-"));
+	const robots = readdirSync(join(PKG, "src/robots"), { withFileTypes: true })
+		.filter((d) => d.isDirectory())
+		.map((d) => d.name);
+	// piper's venv is the system python3 with its site packages: its dry run needs one on PATH.
+	const python3 = spawnSync("python3", ["-V"]).status === 0;
+	for (const robot of robots) {
+		const target = robot.replace(/_/g, "-");
+		if (target === "piper" && !python3) continue;
+		const out = execFileSync("bash", [script, target, "--dry-run", "--venv", join(home, target)], {
+			env: { ...process.env, HOME: home, PI_EMBODIED_WEIGHTS: join(home, "w") },
+			encoding: "utf8",
+		});
+		assert.equal(out.match(/^export PI_EMBODIED_PYTHON=/gm)?.length, 1, `${target}: one PI_EMBODIED_PYTHON`);
+		const checked = /preflight: .*check\.ts (\S+)$/m.exec(out)?.[1];
+		assert.equal(checked, robot, `${target}: preflight robot`);
+		assert.ok(SPECS[robot], `${robot}: check.ts spec`);
+		assert.ok(
+			ROBOTS.some((r) => r.extension === `src/robots/${robot}/index.ts`),
+			`${robot}: offered by /embodied-setup`,
+		);
+	}
+	// /embodied-setup's ids are setup.sh targets.
+	for (const r of ROBOTS.filter((r) => python3 || r.id !== "piper"))
+		execFileSync("bash", [script, r.id, "--dry-run", "--venv", join(home, r.id)], {
+			env: { ...process.env, HOME: home, PI_EMBODIED_WEIGHTS: join(home, "w") },
+			stdio: "pipe",
+		});
+});
+
+test("setup.sh flywheel installs the LeRobot v3.0 export venv and names it for --flywheel-python", () => {
+	const script = join(PKG, "../../services/setup.sh");
+	const home = mkdtempSync(join(tmpdir(), "pi-embodied-home-"));
+	const out = execFileSync("bash", [script, "flywheel", "--dry-run", "--venv", join(home, "fly")], {
+		env: { ...process.env, HOME: home, PI_EMBODIED_WEIGHTS: join(home, "w") },
+		encoding: "utf8",
+	});
+	assert.match(out, /pip install .*services\\\[flywheel\\\]/);
+	assert.match(out, /export PI_EMBODIED_FLYWHEEL_PYTHON=/);
+	// Not a robot venv: no PI_EMBODIED_PYTHON and no robot preflight.
+	assert.doesNotMatch(out, /export PI_EMBODIED_PYTHON=/);
+	assert.doesNotMatch(out, /preflight:/);
+});
+
+test("setup.sh behavior builds the Isaac Sim 6.1 stack unless B1K_STACK=isaac51 asks for OmniGibson's own", () => {
+	const script = join(PKG, "../../services/setup.sh");
+	const home = mkdtempSync(join(tmpdir(), "pi-embodied-home-"));
+	const run = (env: Record<string, string>) =>
+		execFileSync("bash", [script, "behavior", "--dry-run", "--venv", join(home, "b1k")], {
+			env: { ...process.env, HOME: home, PI_EMBODIED_WEIGHTS: join(home, "w"), ...env },
+			encoding: "utf8",
+		});
+	const out = run({});
+	assert.match(out, /robots\/behavior\/install_isaac61\.sh \S*\/b1k \S*\/BEHAVIOR-1K/);
+	assert.doesNotMatch(out, /robots\/behavior\/install\.sh /);
+	assert.match(out, /export OMNIGIBSON_DATA_PATH=/);
+	assert.match(run({ B1K_STACK: "isaac51" }), /robots\/behavior\/install\.sh \S*\/b1k \S*\/BEHAVIOR-1K/);
+});

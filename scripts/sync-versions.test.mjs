@@ -64,8 +64,18 @@ test("pins published and private dependencies without touching registry aliases,
 			},
 		});
 
+		// A public package outside @earendil-works is versioned on its own: no lockstep failure.
+		await writeManifest(root, "packages/embodied", {
+			name: "@lv-robotics/pi-embodied",
+			version: "0.0.1",
+			peerDependencies: { "@earendil-works/pi-coding-agent": "*" },
+		});
+
 		const result = runSyncVersions(root);
 		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual((await readManifest(root, "packages/embodied")).peerDependencies, {
+			"@earendil-works/pi-coding-agent": "*",
+		});
 
 		const agentManifest = await readManifest(root, "packages/coding-agent");
 		for (const section of ["dependencies", "devDependencies", "optionalDependencies"]) {

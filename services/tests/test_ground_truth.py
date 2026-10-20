@@ -1,0 +1,285 @@
+# Copyright 2026 The pi-embodied Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""``env.ground_truth_poses`` (pi's --privileged) on LIBERO, RoboCasa, ManiSkill, RoboTwin and
+RoboLab, with mock simulators: names come from the sim's own object list, poses are xyzw."""
+
+from __future__ import annotations
+
+import importlib
+import sys
+import threading
+from types import ModuleType, SimpleNamespace
+
+import numpy as np
+import pytest
+
+from pi_embodied_services.robots.libero import env_server as libero
+from pi_embodied_services.robots.maniskill import env_server as maniskill
+from pi_embodied_services.robots.robocasa.env_server import RoboCasaEnvFacade
+from pi_embodied_services.robots.robolab import env_server as robolab
+from pi_embodied_services.robots.robolab import sim as robolab_sim
+from pi_embodied_services.utils import ground_truth
+
+#: wxyz of a 90 deg turn about z, and the xyzw the result carries.
+WXYZ = [0.70711, 0.0, 0.0, 0.70711]
+XYZW = [0.0, 0.0, 0.70711, 0.70711]
+
+
+def _sim(bodies: dict[str, int]):
+    """A robosuite-like sim whose body i sits at (i, 2i, 3i) turned 90 deg about z."""
+    n = max(bodies.values()) + 1
+    xpos = np.array([[i, 2 * i, 3 * i] for i in range(n)], dtype=np.float64)
+    xquat = np.tile(WXYZ, (n, 1))
+
+    def body_name2id(name):
+        if name not in bodies:
+            raise ValueError(f'No "body" with name {name} exists.')
+        return bodies[name]
+
+    return SimpleNamespace(
+        data=SimpleNamespace(body_xpos=xpos, body_xquat=xquat),
+        model=SimpleNamespace(body_name2id=body_name2id),
+    )
+
+
+def test_respond_selects_names_and_refuses_unknown_ones():
+    poses = {
+        "b": ground_truth.pose([1, 2, 3], WXYZ),
+        "a": ground_truth.pose([0, 0, 0], [1, 0, 0, 0]),
+    }
+    assert list(ground_truth.respond(poses)["poses"]) == ["a", "b"]
+    assert ground_truth.respond(poses, [])["frame"] == "world"
+    assert ground_truth.respond(poses, ["b"])["poses"] == {
+        "b": {"pos": [1.0, 2.0, 3.0], "quat_xyzw": XYZW}
+    }
+    with pytest.raises(
+        ValueError, match=r"unknown objects \['c'\]; the scene has \['a', 'b'\]"
+    ):
+        ground_truth.respond(poses, ["b", "c"])
+
+
+class _Worker:
+    """RLinf's libero worker: ``env_call(method, target="self")`` calls the env the wrapped
+    ``env_fn`` built, as the worker process would."""
+
+    def __init__(self, env):
+        self.env = env
+        self.calls = 0
+
+    def env_call(self, method, args=None, kwargs=None, target="robosuite"):
+        assert target == "self"
+        self.calls += 1
+        return getattr(self.env, method)(*(args or []), **(kwargs or {}))
+
+
+def test_libero_reads_obj_body_id_in_the_worker():
+    """The worker env (OffScreenRenderEnv -> BDDL domain) answers with every body in LIBERO's
+    ``obj_body_id``, movable objects and fixtures alike."""
+    domain = SimpleNamespace(
+        sim=_sim({"akita_black_bowl_1": 3, "wooden_cabinet_1": 5}),
+        obj_body_id={"akita_black_bowl_1": 3, "wooden_cabinet_1": 5},
+    )
+    env = libero._exposing_poses(lambda: SimpleNamespace(env=domain))()
+    worker = _Worker(env)
+    facade = object.__new__(libero.LiberoEnvFacade)
+    facade._env = SimpleNamespace(env=SimpleNamespace(workers=[worker]))
+    facade._env_idx = 0
+    out = facade.ground_truth_poses()
+    assert out == {
+        "frame": "world",
+        "poses": {
+            "akita_black_bowl_1": {"pos": [3.0, 6.0, 9.0], "quat_xyzw": XYZW},
+            "wooden_cabinet_1": {"pos": [5.0, 10.0, 15.0], "quat_xyzw": XYZW},
+        },
+    }
+    assert list(facade.ground_truth_poses(["wooden_cabinet_1"])["poses"]) == [
+        "wooden_cabinet_1"
+    ]
+    # An unknown name is refused by the facade: the worker only ever returns the full list
+    # (an exception in the worker loop would kill the env).
+    with pytest.raises(ValueError, match="plate"):
+        facade.ground_truth_poses(["plate"])
+    assert worker.calls == 3
+
+
+def test_libero_worker_failure_comes_back_as_an_error_not_a_dead_worker():
+    """The worker loop has no try/except: an exception in ``poses()`` would kill the worker,
+    so it answers ``{"error": ...}`` and the facade raises it."""
+    # No obj_body_id yet (before the first reset).
+    domain = SimpleNamespace(sim=_sim({"a": 1}))
+    env = libero._exposing_poses(lambda: SimpleNamespace(env=domain))()
+    assert env.ground_truth_poses() == {
+        "error": "AttributeError: 'types.SimpleNamespace' object has no attribute 'obj_body_id'"
+    }
+    facade = object.__new__(libero.LiberoEnvFacade)
+    facade._env = SimpleNamespace(env=SimpleNamespace(workers=[_Worker(env)]))
+    facade._env_idx = 0
+    with pytest.raises(RuntimeError, match="failed in the worker: AttributeError"):
+        facade.ground_truth_poses()
+
+
+def test_libero_registers_the_method():
+    facade = libero.LiberoEnvFacade(SimpleNamespace(), meta={})
+    assert facade._rpc["env.ground_truth_poses"] == facade.ground_truth_poses
+
+
+def test_robocasa_lists_objects_then_fixtures():
+    facade = object.__new__(RoboCasaEnvFacade)
+    facade.env = SimpleNamespace(
+        sim=_sim({"obj_main": 1, "sink_main_group_main": 2}),
+        obj_body_id={"obj": 1},
+        fixtures={
+            "sink_main_group": SimpleNamespace(root_body="sink_main_group_main"),
+            # A fixture without a body of its own is left out.
+            "wall": SimpleNamespace(root_body="wall_missing"),
+        },
+    )
+    out = facade.ground_truth_poses()
+    assert list(out["poses"]) == ["obj", "sink_main_group"]
+    assert out["poses"]["sink_main_group"] == {
+        "pos": [2.0, 4.0, 6.0],
+        "quat_xyzw": XYZW,
+    }
+    with pytest.raises(ValueError, match="wall"):
+        facade.ground_truth_poses(["wall"])
+
+
+def test_maniskill_lists_actors_and_articulations_but_not_the_robot():
+    def body(p):
+        return SimpleNamespace(
+            pose=SimpleNamespace(p=np.array([p]), q=np.array([WXYZ]))
+        )
+
+    robot = body([0.0, 0.0, 0.0])
+    env = SimpleNamespace(
+        scene=SimpleNamespace(
+            actors={"cube": body([0.1, 0.2, 0.02]), "goal_site": body([0.0, 0.1, 0.3])},
+            articulations={"panda_wristcam": robot, "drawer": body([0.5, 0.0, 0.0])},
+        ),
+        agent=SimpleNamespace(robot=robot),
+    )
+    facade = object.__new__(maniskill.ManiskillEnvFacade)
+    facade._env = SimpleNamespace(unwrapped=env)
+    out = facade.ground_truth_poses()
+    assert list(out["poses"]) == ["cube", "drawer", "goal_site"]
+    assert out["poses"]["cube"] == {"pos": [0.1, 0.2, 0.02], "quat_xyzw": XYZW}
+    with pytest.raises(ValueError, match="panda_wristcam"):
+        facade.ground_truth_poses(["panda_wristcam"])
+
+
+@pytest.fixture
+def robotwin_env(monkeypatch):
+    """``rlinf_env`` imported over stand-ins for torch and RLinf's ``RoboTwinEnv`` (neither is
+    installed where the services' unit tests run)."""
+    rlinf = ModuleType("rlinf.envs.robotwin.robotwin_env")
+    rlinf.RoboTwinEnv = type("RoboTwinEnv", (), {})
+    monkeypatch.setitem(sys.modules, "rlinf.envs.robotwin.robotwin_env", rlinf)
+    if "torch" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "torch", ModuleType("torch"))
+    monkeypatch.delitem(
+        sys.modules, "pi_embodied_services.robots.robotwin.rlinf_env", raising=False
+    )
+    return importlib.import_module("pi_embodied_services.robots.robotwin.rlinf_env")
+
+
+def test_robotwin_lists_named_actors_and_numbers_repeats(robotwin_env):
+    def actor(name, p):
+        pose = SimpleNamespace(p=np.array(p), q=np.array(WXYZ))
+        return SimpleNamespace(get_name=lambda: name, get_pose=lambda: pose)
+
+    scene = SimpleNamespace(
+        get_all_actors=lambda: [
+            actor("table", [0.0, 0.0, 0.74]),
+            actor("hammer", [0.1, -0.1, 0.76]),
+            actor("", [9.0, 9.0, 9.0]),  # unnamed: left out
+            actor("block", [0.2, 0.0, 0.76]),
+            actor("block", [0.3, 0.0, 0.76]),
+        ]
+    )
+    env = object.__new__(robotwin_env.RoboTwinAgentEnv)
+    env.venv = SimpleNamespace(
+        envs=[SimpleNamespace(lock=threading.Lock(), task=SimpleNamespace(scene=scene))]
+    )
+    poses = env.object_poses(0)
+    assert list(poses) == ["table", "hammer", "block", "block#1"]
+    assert poses["hammer"] == {"pos": [0.1, -0.1, 0.76], "quat_xyzw": XYZW}
+    assert ground_truth.respond(poses, ["block#1"])["poses"]["block#1"]["pos"] == [
+        0.3,
+        0.0,
+        0.76,
+    ]
+
+
+@pytest.mark.parametrize("xyzw", [True, False])
+def test_robolab_lists_objects_and_articulations_in_the_eef_frame(monkeypatch, xyzw):
+    monkeypatch.setattr(robolab_sim, "isaaclab_xyzw", lambda: xyzw)
+    lab = XYZW if xyzw else WXYZ
+
+    def body(p):
+        return SimpleNamespace(
+            data=SimpleNamespace(root_pos_w=np.array([p]), root_quat_w=np.array([lab]))
+        )
+
+    env = SimpleNamespace(
+        scene=SimpleNamespace(
+            env_origins=np.array([[1.0, 0.0, 0.0]]),
+            rigid_objects={"banana": body([1.4, 0.1, 0.05])},
+            articulations={"robot": body([1.0, 0.0, 0.0]), "drawer": body([1.6, 0, 0])},
+        )
+    )
+    facade = object.__new__(robolab.RobolabEnvFacade)
+    facade._env = env
+    out = facade.ground_truth_poses()
+    assert list(out["poses"]) == ["banana", "drawer"]
+    assert out["poses"]["banana"]["pos"] == pytest.approx([0.4, 0.1, 0.05])
+    assert out["poses"]["banana"]["quat_xyzw"] == XYZW
+    with pytest.raises(ValueError, match="robot"):
+        facade.ground_truth_poses(["robot"])
+
+
+def test_robotwin_policy_frame_is_what_lingbot_reads(robotwin_env):
+    """The Flywheel observation: the three cameras LingBot reads and the eef16 state, and the
+    joint state in XPolicyLab's order (measured ``qpos``, commanded ``qpos_target``)."""
+    rgb = {k: np.full((2, 3, 3), i, np.uint8) for i, k in enumerate(("head", "l", "r"))}
+    robot = SimpleNamespace(
+        get_left_ee_pose=lambda: [0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0],
+        get_right_ee_pose=lambda: [0.4, 0.5, 0.6, 1.0, 0.0, 0.0, 0.0],
+        get_left_gripper_val=lambda: 1.0,
+        get_right_gripper_val=lambda: 0.0,
+        # RoboTwin's joint lists end with the gripper value.
+        get_left_arm_real_jointState=lambda: [0.0, 1, 2, 3, 4, 5, 1.0],
+        get_right_arm_real_jointState=lambda: [6.0, 7, 8, 9, 10, 11, 0.0],
+        get_left_arm_jointState=lambda: [0.5, 1, 2, 3, 4, 5, 1.0],
+        get_right_arm_jointState=lambda: [6.5, 7, 8, 9, 10, 11, 0.0],
+    )
+    native = {
+        "head_camera": {"rgb": rgb["head"]},
+        "left_camera": {"rgb": rgb["l"]},
+        "right_camera": {"rgb": rgb["r"]},
+    }
+    task = SimpleNamespace(robot=robot, get_obs=lambda: {"observation": native})
+    env = object.__new__(robotwin_env.RoboTwinAgentEnv)
+    env.venv = SimpleNamespace(envs=[SimpleNamespace(lock=threading.Lock(), task=task)])
+    frame = env.policy_frame(0)
+    assert frame["left_wrist"] is rgb["l"] and frame["right_wrist"] is rgb["r"]
+    assert frame["state"].tolist() == [
+        *(0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0, 1.0),
+        *(0.4, 0.5, 0.6, 1.0, 0.0, 0.0, 0.0, 0.0),
+    ]
+    assert frame["qpos"].tolist() == [0, 1, 2, 3, 4, 5, 1, 6, 7, 8, 9, 10, 11, 0]
+    assert frame["qpos_target"].tolist() == [
+        *(0.5, 1, 2, 3, 4, 5, 1),
+        *(6.5, 7, 8, 9, 10, 11, 0),
+    ]

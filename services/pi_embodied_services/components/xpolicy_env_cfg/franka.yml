@@ -1,0 +1,6 @@
+# pi-embodied's dual Franka rig; XPolicyLab's utils/robot/_robot_info.json franka (two 7-DoF arms).
+config:
+  robot: franka
+
+observation:
+  collect_freq: 25

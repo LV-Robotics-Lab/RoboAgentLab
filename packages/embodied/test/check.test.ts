@@ -1,0 +1,410 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
+import { type AddressInfo, createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import {
+	ENV_CALLS,
+	formatTable,
+	liberoAssets,
+	llmCheck,
+	parseFlags,
+	pathRows,
+	plannerRow,
+	portRow,
+	probeEndpoint,
+	type RobotCheckSpec,
+	runChecks,
+	SPECS,
+} from "../src/infra/check.ts";
+import { parseEndpoint } from "../src/infra/rpc.ts";
+import { useDeployment } from "./helpers/deployment.ts";
+
+/** A services-style RPC server answering healthz with `ok`. */
+async function rpcServer(ok: boolean) {
+	const server = createHttpServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			if (req.url === "/models") return res.writeHead(401).end("{}");
+			if (req.url === "/chat/completions") {
+				const auth = req.headers.authorization;
+				const b = JSON.parse(body) as { max_tokens?: number };
+				if (auth !== "Bearer sk-test") return res.writeHead(401).end('{"error":"bad key"}');
+				return res
+					.writeHead(200, { "Content-Type": "application/json" })
+					.end(JSON.stringify({ choices: [{ message: { content: "OK" } }], max_tokens: b.max_tokens }));
+			}
+			const { method } = JSON.parse(body) as { method: string };
+			res.writeHead(ok ? 200 : 500, { "Content-Type": "application/json" });
+			res.end(JSON.stringify(ok ? { ok: true, result: { method } } : { ok: false, error: "model not loaded" }));
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	return {
+		url,
+		close: () => {
+			server.closeAllConnections();
+			server.close();
+		},
+	};
+}
+
+async function closedPort() {
+	const srv = createServer();
+	await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+	const { port } = srv.address() as AddressInfo;
+	await new Promise((r) => srv.close(r));
+	return port;
+}
+
+const python = (() => {
+	for (const p of ["python3", "python"])
+		try {
+			execFileSync(p, ["-c", "import sys; assert sys.version_info >= (3, 10)"], { stdio: "ignore" });
+			return p;
+		} catch {}
+	return undefined;
+})();
+
+test("parseFlags reads --k v, --k=v and bare booleans, skipping positionals and short flags", () => {
+	const f = parseFlags([
+		"libero",
+		"-e",
+		"x",
+		"--units",
+		"--python=/v/bin/python",
+		"--vla",
+		"http://h:1",
+		"--dashboard",
+	]);
+	assert.deepEqual(f, { units: true, python: "/v/bin/python", vla: "http://h:1", dashboard: true });
+});
+
+test("pathRows: required paths fail, optional ones warn, flags override the variable", () => {
+	const dir = mkdtempSync(join(tmpdir(), "check-"));
+	mkdirSync(join(dir, "robolab"));
+	writeFileSync(join(dir, "ckpt.pt"), "x");
+	const rows = pathRows(
+		[
+			{ env: "A_DIR", kind: "dir", required: true, why: "a", contains: "robolab" },
+			{ env: "B_FILE", kind: "file", required: false, why: "b" },
+			{ env: "C_DIR", kind: "dir", required: true, why: "c" },
+			{ env: "D_DIR", flag: "assets", kind: "dir", required: true, why: "d" },
+			{ env: "E_FILE", kind: "file", required: true, why: "e" },
+		],
+		{ assets: dir },
+		{ A_DIR: dir, B_FILE: join(dir, "missing.pt"), E_FILE: dir },
+	);
+	assert.deepEqual(
+		rows.map((r) => [r.check, r.status]),
+		[
+			["$A_DIR", "PASS"],
+			["$B_FILE", "WARN"],
+			["$C_DIR", "FAIL"],
+			["--assets", "PASS"],
+			["$E_FILE", "FAIL"],
+		],
+	);
+	assert.match(rows[2].detail, /not set/);
+	assert.match(rows[4].detail, /is not a file/);
+});
+
+test("probeEndpoint: healthz ok, a server error, a closed port, and ws:// by TCP connect", async () => {
+	const up = await rpcServer(true);
+	const sick = await rpcServer(false);
+	try {
+		assert.equal((await probeEndpoint(up.url)).ok, true);
+		const bad = await probeEndpoint(sick.url);
+		assert.equal(bad.ok, false);
+		assert.match(bad.detail, /HTTP 500 model not loaded/);
+		const port = await closedPort();
+		const down = await probeEndpoint(`http://127.0.0.1:${port}`);
+		assert.deepEqual(down, { ok: false, detail: "ECONNREFUSED" });
+		assert.equal((await probeEndpoint(up.url.replace("http:", "ws:"))).ok, true);
+		assert.equal((await probeEndpoint(`ws://127.0.0.1:${port}`)).ok, false);
+	} finally {
+		up.close();
+		sick.close();
+	}
+});
+
+test("portRow reports a port in use", async () => {
+	const srv = createServer();
+	await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+	const { port } = srv.address() as AddressInfo;
+	try {
+		assert.equal((await portRow(port)).status, "FAIL");
+	} finally {
+		srv.close();
+	}
+	assert.equal((await portRow(port)).status, "PASS");
+	assert.equal((await portRow(0)).status, "SKIP");
+});
+
+test("the env check asks an env server by its served method name, env.get_env_meta", async () => {
+	// Like the services' RPC server: healthz is built in, the facade's methods are under `env.`.
+	const server = createHttpServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			const { method } = JSON.parse(body) as { method: string };
+			const known = method === "healthz" || method === "env.get_env_meta";
+			res.writeHead(known ? 200 : 404, { "Content-Type": "application/json" });
+			res.end(
+				JSON.stringify(known ? { ok: true, result: { method } } : { ok: false, error: `unknown method ${method}` }),
+			);
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	try {
+		for (const robot of ["franka", "dual_franka", "piper", "ur5e"])
+			assert.deepEqual(SPECS[robot].endpoints?.find((e) => e.flag === "env-url")?.calls, ENV_CALLS);
+		const ok = await probeEndpoint(url, 3000, ENV_CALLS);
+		assert.equal(ok.ok, true, ok.detail);
+		assert.match(ok.detail, /env\.get_env_meta ok/);
+		const bare = await probeEndpoint(url, 3000, ["get_env_meta"]);
+		assert.equal(bare.ok, false);
+	} finally {
+		server.closeAllConnections();
+		server.close();
+	}
+});
+
+test("probeEndpoint sends an env server a real read-only request after healthz", async () => {
+	const up = await rpcServer(true);
+	const sick = await rpcServer(false);
+	try {
+		const ok = await probeEndpoint(up.url, 3000, ["get_env_meta"]);
+		assert.equal(ok.ok, true);
+		assert.match(ok.detail, /healthz ok .*; get_env_meta ok in \d+ ms \{"method":"get_env_meta"\}/);
+		assert.equal((await probeEndpoint(sick.url, 3000, ["get_env_meta"])).ok, false);
+	} finally {
+		up.close();
+		sick.close();
+	}
+});
+
+test("plannerRow: a real 1-token completion when the key resolves, pi's registry in pi", async () => {
+	const gw = await rpcServer(true);
+	const dir = mkdtempSync(join(tmpdir(), "check-"));
+	const models = join(dir, "models.json");
+	writeFileSync(
+		models,
+		JSON.stringify({
+			providers: {
+				keyed: { baseUrl: gw.url, apiKey: "PLANNER_KEY" },
+				wrong: { baseUrl: gw.url, apiKey: "sk-wrong" },
+			},
+		}),
+	);
+	try {
+		const ok = await plannerRow("keyed/m", undefined, models, undefined, { PLANNER_KEY: "sk-test" });
+		assert.equal(ok.status, "PASS", ok.detail);
+		assert.match(ok.detail, /1-token completion in \d+ ms/);
+		const bad = await plannerRow("wrong/m", undefined, models, undefined, {});
+		assert.equal(bad.status, "FAIL");
+		assert.match(bad.detail, /HTTP 401/);
+		const inPi = await plannerRow("x/y", undefined, models, async () => ({
+			ok: false,
+			model: "x/y",
+			ms: 3,
+			detail: "no credits",
+		}));
+		assert.deepEqual(inPi, { status: "FAIL", check: "planner", detail: "x/y: no credits" });
+		const registry = {
+			streamSimple: (_m: unknown, _c: unknown, o: { maxTokens?: number }) => ({
+				result: async () => ({ stopReason: o.maxTokens === 1 ? "length" : "error", content: [] }),
+			}),
+		};
+		const r = await llmCheck(registry as never, { provider: "p", id: "m" } as never);
+		assert.equal(r.ok, true);
+		assert.equal(r.model, "p/m");
+	} finally {
+		gw.close();
+	}
+});
+
+test("plannerRow looks the provider up in models.json; 401 still means the gateway is up", async () => {
+	const gw = await rpcServer(true);
+	const dir = mkdtempSync(join(tmpdir(), "check-"));
+	const models = join(dir, "models.json");
+	const port = await closedPort();
+	writeFileSync(
+		models,
+		JSON.stringify({ providers: { relay: { baseUrl: gw.url }, dead: { baseUrl: `http://127.0.0.1:${port}/v1` } } }),
+	);
+	try {
+		const ok = await plannerRow("relay/m", undefined, models);
+		assert.equal(ok.status, "PASS");
+		assert.match(ok.detail, /HTTP 401 \(up; needs the key\)/);
+		assert.equal((await plannerRow("dead/m", undefined, models)).status, "FAIL");
+		assert.equal((await plannerRow("nobody/m", undefined, models)).status, "SKIP");
+		assert.equal((await plannerRow(undefined)).status, "SKIP");
+	} finally {
+		gw.close();
+	}
+});
+
+test(
+	"runChecks: imports through the services Python, tools-only servers soften with --units",
+	{ skip: !python },
+	async () => {
+		const spec: RobotCheckSpec = {
+			python: { venv: "fake", env: [] },
+			imports: ["json", "pi_embodied_services", "no_such_module_xyz"],
+			find: ["os", "no_such_package_xyz"],
+			endpoints: [
+				{ service: "vla", why: "VLA", toolsOnly: true },
+				{ service: "anyplace", why: "AnyPlace" },
+			],
+			gpu: false,
+		};
+		useDeployment({
+			python: { default: python as string },
+			services: { vla: `http://127.0.0.1:${await closedPort()}` },
+		});
+		const rows = await runChecks("fake", { units: "true" }, { spec, timeoutMs: 60_000 });
+		const status = Object.fromEntries(rows.map((r) => [r.check, r.status]));
+		assert.equal(status.services, "PASS");
+		assert.equal(status.python, "PASS");
+		assert.equal(status["import json"], "PASS");
+		assert.equal(status["import pi_embodied_services"], "PASS");
+		assert.equal(status["import no_such_module_xyz"], "FAIL");
+		assert.equal(status["find os"], "PASS");
+		assert.equal(status["find no_such_package_xyz"], "FAIL");
+		assert.equal(status["services.vla"], "WARN");
+		assert.equal(status["services.anyplace"], "SKIP");
+		assert.equal(status.planner, "SKIP");
+		const table = formatTable(rows);
+		assert.match(table, /^NOT READY: \d+ pass, 1 warn, 2 fail, \d+ skip$/m);
+
+		const vla = `http://127.0.0.1:${await closedPort()}`;
+		useDeployment({ python: { default: "/nonexistent/python" }, services: { vla } });
+		const missing = await runChecks("fake", {}, { spec, timeoutMs: 10_000 });
+		assert.match(missing.find((r) => r.check === "python")?.detail ?? "", /not found/);
+		assert.equal(missing.find((r) => r.check === "services.vla")?.status, "FAIL");
+	},
+);
+
+test("LIBERO's preflight fails on a package without its scene assets", { skip: !python }, async () => {
+	const site = mkdtempSync(join(tmpdir(), "check-site-"));
+	const pkg = (name: string, scene: boolean) => {
+		mkdirSync(join(site, name, name, "assets", "scenes"), { recursive: true });
+		writeFileSync(join(site, name, "__init__.py"), "");
+		writeFileSync(join(site, name, name, "__init__.py"), "");
+		if (scene)
+			writeFileSync(join(site, name, name, "assets/scenes/libero_living_room_tabletop_base_style.xml"), "<mujoco/>");
+	};
+	pkg("libero", false); // the [libero] install: no assets
+	pkg("liberopro", true);
+	useDeployment({ python: { default: python as string } });
+	const spec: RobotCheckSpec = {
+		python: { venv: "libero", env: [] },
+		imports: [],
+		gpu: false,
+		packageFiles: liberoAssets,
+	};
+	const old = process.env.PYTHONPATH;
+	process.env.PYTHONPATH = site;
+	try {
+		const rows = async (flags: Record<string, string>) =>
+			(await runChecks("libero", flags, { spec, dashboard: "skip", timeoutMs: 60_000 })).filter((r) =>
+				r.check.startsWith("files "),
+			);
+		// No --libero-type: every installed LIBERO package (liberoplus is not installed here: no row).
+		const all = await rows({});
+		assert.deepEqual(
+			all.map((r) => [r.check, r.status]),
+			[
+				["files libero.libero", "FAIL"],
+				["files liberopro.liberopro", "PASS"],
+			],
+		);
+		assert.match(
+			all[0].detail,
+			/libero_living_room_tabletop_base_style\.xml is missing .*run services\/setup\.sh libero\)/,
+		);
+		assert.deepEqual(
+			(await rows({ "libero-type": "pro" })).map((r) => r.status),
+			["PASS"],
+		);
+		// The type the run names must be installed.
+		const plus = await rows({ "libero-type": "plus" });
+		assert.equal(plus[0].status, "FAIL");
+		assert.match(plus[0].detail, /liberoplus\.liberoplus is not installed .*setup\.sh libero-plus/);
+		assert.equal(SPECS.libero.packageFiles, liberoAssets);
+	} finally {
+		if (old === undefined) delete process.env.PYTHONPATH;
+		else process.env.PYTHONPATH = old;
+	}
+});
+
+test("every robot extension has a preflight spec (setup.sh prints check.ts <robot>, /robot-check runs it)", () => {
+	const robots = readdirSync(new URL("../src/robots/", import.meta.url), { withFileTypes: true })
+		.filter((d) => d.isDirectory())
+		.map((d) => d.name);
+	assert.deepEqual(
+		robots.filter((r) => !SPECS[r]),
+		[],
+	);
+});
+
+test("runChecks refuses an unknown robot", async () => {
+	const rows = await runChecks("nosuchrobot", {});
+	assert.equal(rows[0].status, "FAIL");
+	assert.match(rows[0].detail, /unknown robot/);
+});
+
+test("/robot-check sends a URL#token=HEX endpoint's token, as attach() does, and never prints it", async () => {
+	const server = createHttpServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			const { method, token } = JSON.parse(body) as { method: string; token?: string };
+			const ok = token === "abc123";
+			res.writeHead(ok ? 200 : 403, { "Content-Type": "application/json" });
+			res.end(JSON.stringify(ok ? { ok: true, result: { method } } : { ok: false, error: "bad token" }));
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	try {
+		assert.deepEqual(parseEndpoint(`${url}#token=abc123`), { url, token: "abc123" });
+		assert.deepEqual(parseEndpoint(url), { url });
+		assert.equal((await probeEndpoint(url, 3000, ENV_CALLS)).ok, false);
+		const ok = await probeEndpoint(`${url}#token=abc123`, 3000, ENV_CALLS);
+		assert.equal(ok.ok, true, ok.detail);
+		const rows = await runChecks(
+			"x",
+			{ "env-url": `${url}#token=abc123` },
+			{
+				spec: {
+					python: { venv: "x", env: [] },
+					imports: [],
+					gpu: false,
+					endpoints: [{ flag: "env-url", why: "env", calls: ENV_CALLS }],
+				},
+				dashboard: "skip",
+				timeoutMs: 1,
+			},
+		);
+		const env = rows.find((r) => r.check === "--env-url");
+		assert.equal(env?.status, "PASS", env?.detail);
+		assert.ok(!rows.some((r) => r.detail.includes("abc123")));
+	} finally {
+		server.closeAllConnections();
+		server.close();
+	}
+});

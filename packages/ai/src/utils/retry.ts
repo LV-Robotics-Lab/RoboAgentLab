@@ -34,6 +34,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"servers are currently busy",
 	"currently experiencing high demand",
 	"model is at capacity",
+	// NInfer drops a request queued too long for KV-cache admission (HTTP 503
+	// request_queue_timeout); mid-stream, the SSE error carries only this text.
+	"expired while waiting for admission",
 	"rate.?limit",
 	"too many requests",
 	"429",

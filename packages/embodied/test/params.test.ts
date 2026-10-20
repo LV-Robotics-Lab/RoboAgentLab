@@ -1,0 +1,315 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	argvFlags,
+	DEPLOYMENT,
+	INTRODUCED,
+	NUMERIC,
+	numberError,
+	PROVIDER_DEFAULTS,
+	params,
+	providerDefault,
+	trackedFlags,
+	trackFlags,
+} from "../src/infra/params.ts";
+import { deployFlags } from "./helpers/deployment.ts";
+
+/** Every robot extension, loaded into a stub pi (flags at their defaults). */
+const ROBOTS: Record<string, () => Promise<{ default: (pi: ExtensionAPI) => unknown }>> = {
+	behavior: () => import("../src/robots/behavior/index.ts"),
+	dual_franka: () => import("../src/robots/dual_franka/index.ts"),
+	franka: () => import("../src/robots/franka/index.ts"),
+	genesis: () => import("../src/robots/genesis/index.ts"),
+	humanclaw: () => import("../src/robots/humanclaw/index.ts"),
+	libero: () => import("../src/robots/libero/index.ts"),
+	maniskill: () => import("../src/robots/maniskill/index.ts"),
+	metaworld: () => import("../src/robots/metaworld/index.ts"),
+	piper: () => import("../src/robots/piper/index.ts"),
+	piper_dual: () => import("../src/robots/piper/dual.ts"),
+	robocasa: () => import("../src/robots/robocasa/index.ts"),
+	robodojo: () => import("../src/robots/robodojo/index.ts"),
+	robolab: () => import("../src/robots/robolab/index.ts"),
+	robosuite: () => import("../src/robots/robosuite/index.ts"),
+	robotwin: () => import("../src/robots/robotwin/index.ts"),
+	ur5e: () => import("../src/robots/ur5e/index.ts"),
+};
+
+function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
+	const flags: Record<string, unknown> = {};
+	const pi = {
+		on: () => {},
+		registerFlag: (name: string, o: { default?: unknown }) => {
+			flags[name] = name in values ? values[name] : o.default;
+		},
+		getFlag: (name: string) => flags[name],
+		registerTool: () => {},
+		registerCommand: () => {},
+		registerProvider: () => {},
+		registerMessageRenderer: () => {},
+		registerShortcut: () => {},
+		setActiveTools: () => {},
+		getActiveTools: () => [],
+		appendEntry: () => {},
+		events: { emit: () => {}, on: () => () => {} },
+	} as unknown as ExtensionAPI;
+	return { pi, flags };
+}
+
+for (const [robot, load] of Object.entries(ROBOTS))
+	test(`${robot}: every flag has one owner, the numeric ones parse at their defaults, and params names them`, async () => {
+		const { pi } = stubPi();
+		(await load()).default(pi);
+		const t = trackedFlags(pi);
+		assert.ok(t, `${robot} tracks its flags (trackFlags first in its extension)`);
+		assert.deepEqual(t.duplicates, [], `${robot} registers a flag twice`);
+		for (const name of t.names.keys()) assert.equal(numberError(name, pi.getFlag(name)), undefined, name);
+		const p = params(pi);
+		assert.ok(Object.keys(p.params).length > 5);
+		for (const k of Object.keys(p.params)) assert.ok(!DEPLOYMENT.has(k), `${k} is deployment, not a parameter`);
+		assert.deepEqual(Object.keys(p.params), Object.keys(p.params_default));
+	});
+
+// Audit 92245e3 G3: --grasp-max-tilt (and the grasp / place backends) decide which grasps and places
+// run, so they are experiment parameters: recorded in params and compared by params-match.mjs.
+for (const robot of ["libero", "robosuite", "metaworld", "genesis", "franka", "dual_franka"])
+	test(`${robot}: the grasp backends, the place backend and --grasp-max-tilt are recorded params`, async () => {
+		const { pi } = stubPi({ grasp: "contact_graspnet", place: "anyplace", "grasp-max-tilt": "60" });
+		(await ROBOTS[robot]()).default(pi);
+		const p = params(pi);
+		assert.deepEqual(
+			[p.params.grasp, p.params.place, p.params["grasp-max-tilt"]],
+			["contact_graspnet", "anyplace", "60"],
+		);
+		assert.deepEqual(
+			[p.params_default.grasp, p.params_default.place, p.params_default["grasp-max-tilt"]],
+			["", "", ""],
+		);
+		assert.match(String(numberError("grasp-max-tilt", "abc")), /must be a number/);
+		assert.match(String(numberError("grasp-max-tilt", "95")), /at most 90/);
+		assert.equal(numberError("grasp-max-tilt", "30"), undefined);
+	});
+
+test("a number that does not parse or is out of range is refused, never defaulted", () => {
+	assert.match(String(numberError("max-turns", "abc")), /must be a number/);
+	assert.match(String(numberError("max-turns", "1.5")), /must be an integer/);
+	assert.match(String(numberError("max-turns", "-1")), /at least 0/);
+	assert.match(String(numberError("gumi-operator-confidence", "2")), /at most 1/);
+	assert.equal(numberError("max-turns", "12"), undefined);
+	assert.equal(numberError("max-turns", ""), undefined, "unset keeps the default");
+	assert.equal(numberError("not-numeric", "abc"), undefined);
+	assert.ok(Object.keys(NUMERIC).includes("code-max-calls"));
+});
+
+test("the result records the extras that were on, every experiment flag (params) and their defaults", async () => {
+	const { defineRobot, RESULT_ENTRY } = await import("../src/robot.ts");
+	const { Type } = await import("typebox");
+	const handlers = new Map<string, ((e: unknown, c: unknown) => unknown)[]>();
+	const entries: { type: string; data: any }[] = [];
+	const values: Record<string, unknown> = { "object-memory": true, "max-turns": "7" };
+	const flags: Record<string, unknown> = {};
+	const pi = {
+		on: (n: string, fn: (e: unknown, c: unknown) => unknown) => handlers.set(n, [...(handlers.get(n) ?? []), fn]),
+		registerFlag: (n: string, o: { default?: unknown }) => {
+			flags[n] = n in values ? values[n] : o.default;
+		},
+		getFlag: (n: string) => flags[n],
+		registerTool: () => {},
+		registerCommand: () => {},
+		setActiveTools: () => {},
+		getActiveTools: () => [],
+		appendEntry: (type: string, data: any) => entries.push({ type, data }),
+		events: { emit: () => {}, on: () => () => {} },
+	} as unknown as ExtensionAPI;
+	pi.registerFlag("object-memory", { type: "boolean", default: false });
+	defineRobot(pi, {
+		name: "toy",
+		task: [],
+		keepImages: 2,
+		start: async () => [],
+		result: () => ({}),
+		finish: { description: "f", parameters: Type.Object({}), result: () => ({ content: [], details: {} }) },
+	});
+	const ctx = { hasUI: true, ui: { notify: () => {} }, sessionManager: { getBranch: () => [] }, shutdown: () => {} };
+	for (const n of ["session_start", "agent_start", "session_shutdown"])
+		for (const fn of handlers.get(n) ?? []) await fn({ type: n }, ctx);
+	const r = entries.find((e) => e.type === RESULT_ENTRY)?.data;
+	assert.deepEqual(r.extras, ["object-memory"]);
+	assert.equal(r.params["max-turns"], "7");
+	assert.equal(r.params_default["max-turns"], "0");
+	assert.equal(r.params["object-memory"], true);
+	assert.equal(r.params_default["object-memory"], false);
+	// INTRODUCED names the registered default now: a flipped default must be recorded there too.
+	for (const [name, { default: now }] of Object.entries(INTRODUCED)) assert.equal(r.params_default[name], now, name);
+});
+
+test("a flag PROVIDER_DEFAULTS names reads as the session provider's value unless given; params records it, params_default the registration", async () => {
+	assert.deepEqual(Object.keys(PROVIDER_DEFAULTS), ["selfhost"]);
+	for (const name of Object.keys(PROVIDER_DEFAULTS.selfhost))
+		assert.ok(name in INTRODUCED, `${name} is a flipped default: listed in INTRODUCED`);
+	assert.equal(providerDefault("replay-thinking", "selfhost"), "none");
+	assert.equal(providerDefault("replay-thinking", "relay"), undefined);
+	assert.equal(providerDefault("replay-thinking", undefined), undefined);
+	assert.equal(providerDefault("max-turns", "selfhost"), undefined);
+	const { defineRobot, RESULT_ENTRY } = await import("../src/robot.ts");
+	const { Type } = await import("typebox");
+	// `values` is what pi hands getFlag (the command line's value, else the default); `argv` names the flags given.
+	const run = async (provider: string | undefined, values: Record<string, unknown>, argv: string[] = []) => {
+		const handlers = new Map<string, ((e: unknown, c: unknown) => unknown)[]>();
+		const entries: { type: string; data: any }[] = [];
+		const flags: Record<string, unknown> = {};
+		const pi = {
+			on: (n: string, fn: (e: unknown, c: unknown) => unknown) => handlers.set(n, [...(handlers.get(n) ?? []), fn]),
+			registerFlag: (n: string, o: { default?: unknown }) => {
+				flags[n] = n in values ? values[n] : o.default;
+			},
+			getFlag: (n: string) => flags[n],
+			registerTool: () => {},
+			registerCommand: () => {},
+			setActiveTools: () => {},
+			getActiveTools: () => [],
+			appendEntry: (type: string, data: any) => entries.push({ type, data }),
+			events: { emit: () => {}, on: () => () => {} },
+		} as unknown as ExtensionAPI;
+		const saved = process.argv;
+		process.argv = [...saved, ...argv];
+		try {
+			defineRobot(pi, {
+				name: "toy",
+				task: [],
+				keepImages: 2,
+				start: async () => [],
+				result: () => ({}),
+				finish: { description: "f", parameters: Type.Object({}), result: () => ({ content: [], details: {} }) },
+			});
+			const ctx = {
+				hasUI: true,
+				ui: { notify: () => {} },
+				sessionManager: { getBranch: () => [] },
+				shutdown: () => {},
+				model: provider === undefined ? undefined : { provider, api: "openai-completions" },
+			};
+			for (const n of ["session_start", "agent_start", "session_shutdown"])
+				for (const fn of handlers.get(n) ?? []) await fn({ type: n }, ctx);
+		} finally {
+			process.argv = saved;
+		}
+		const r = entries.find((e) => e.type === RESULT_ENTRY)?.data;
+		const pick = (o: Record<string, unknown>) => [
+			o["replay-thinking"],
+			o["image-trim-every"],
+			o["cache-breakpoints"],
+		];
+		return {
+			ran: pick(r.params),
+			def: pick(r.params_default),
+			read: pick({
+				...Object.fromEntries(
+					["replay-thinking", "image-trim-every", "cache-breakpoints"].map((n) => [n, pi.getFlag(n)]),
+				),
+			}),
+		};
+	};
+	const self = await run("selfhost", {});
+	assert.deepEqual(self.read, ["none", "8", "true"], "the robot reads the selfhost defaults");
+	assert.deepEqual(self.ran, ["none", "8", "true"], "params records what ran");
+	assert.deepEqual(self.def, ["false", "0", "false"], "params_default stays the registered default (INTRODUCED's)");
+	assert.deepEqual(
+		(await run("relay", {})).ran,
+		["false", "0", "false"],
+		"another provider keeps the registered defaults",
+	);
+	assert.deepEqual((await run(undefined, {})).ran, ["false", "0", "false"], "no model: the registered defaults");
+	// Given at another value: kept. Given at the registered default: known from the command line, kept too.
+	assert.deepEqual((await run("selfhost", { "replay-thinking": "true", "image-trim-every": "4" })).ran, [
+		"true",
+		"4",
+		"true",
+	]);
+	assert.deepEqual(
+		(
+			await run("selfhost", { "replay-thinking": "false", "cache-breakpoints": "false" }, [
+				"--replay-thinking",
+				"false",
+				"--cache-breakpoints=false",
+			])
+		).ran,
+		["false", "8", "false"],
+	);
+});
+
+test("argvFlags parses pi's --name[=value] rules; the tracker's given() reads the process's own argv", () => {
+	const args = ["--tier=S3", "--max-turns", "0", "--vdm", "--task", "@notes.md", "--", "--code=true"];
+	assert.deepEqual(
+		[...argvFlags(args)],
+		[
+			["tier", "S3"],
+			["max-turns", "0"],
+			["vdm", true],
+			["task", true],
+		],
+	);
+	assert.deepEqual([...argvFlags(["-p", "hello", "--privileged", "-c"])], [["privileged", true]]);
+	// A stub pi as pi behaves: a value for a flag given on the command line, else the registered default.
+	const values: Record<string, unknown> = { "max-turns": "0", "keep-images": "4" };
+	const flags: Record<string, unknown> = {};
+	const pi = {
+		registerFlag: (n: string, o: { default?: unknown }) => {
+			flags[n] = n in values ? values[n] : o.default;
+		},
+		getFlag: (n: string) => flags[n],
+	} as unknown as ExtensionAPI;
+	const argv = process.argv;
+	process.argv = [...argv, "--max-turns", "0"];
+	try {
+		const t = trackFlags(pi);
+		pi.registerFlag("max-turns", { type: "string", default: "0" });
+		pi.registerFlag("keep-images", { type: "string", default: "2" });
+		pi.registerFlag("vdm", { type: "boolean", default: false });
+		assert.equal(t.given("max-turns"), true, "named on the command line, at its default");
+		assert.equal(t.given("keep-images"), true, "not its default: set another way");
+		assert.equal(t.given("vdm"), false, "neither named nor changed");
+		assert.equal(t.given("seed"), false, "not a tracked flag");
+		assert.equal(pi.getFlag("max-turns"), "0");
+	} finally {
+		process.argv = argv;
+	}
+});
+
+test("a robot refuses to start on a number that does not parse", async () => {
+	const { defineRobot } = await import("../src/robot.ts");
+	const { Type } = await import("typebox");
+	const handlers = new Map<string, ((e: unknown, c: unknown) => unknown)[]>();
+	const flags: Record<string, unknown> = {};
+	const notes: string[] = [];
+	const pi = {
+		on: (n: string, fn: (e: unknown, c: unknown) => unknown) => handlers.set(n, [...(handlers.get(n) ?? []), fn]),
+		registerFlag: (n: string, o: { default?: unknown }) => {
+			flags[n] = n === "max-turns" ? "ten" : o.default;
+		},
+		getFlag: (n: string) => flags[n],
+		registerTool: () => {},
+		registerCommand: () => {},
+		setActiveTools: () => {},
+		getActiveTools: () => [],
+		appendEntry: () => {},
+		events: { emit: () => {}, on: () => () => {} },
+	} as unknown as ExtensionAPI;
+	let started = false;
+	defineRobot(pi, {
+		name: "toy",
+		task: [],
+		keepImages: 2,
+		start: async () => {
+			started = true;
+			return [];
+		},
+		result: () => ({}),
+		finish: { description: "f", parameters: Type.Object({}), result: () => ({ content: [], details: {} }) },
+	});
+	const ctx = { hasUI: true, ui: { notify: (m: string) => notes.push(m) }, sessionManager: { getBranch: () => [] } };
+	for (const fn of handlers.get("session_start") ?? []) await fn({ type: "session_start" }, ctx);
+	assert.equal(started, false);
+	assert.match(notes.join("\n"), /--max-turns must be a number, got "ten"/);
+});

@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="__LANG__">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>pi-embodied</title>
+<style>
+:root { --bg: #fafaf9; --panel: #fff; --fg: #1c1917; --muted: #78716c; --line: #e7e5e4; --accent: #2563eb; --ok: #15803d; --bad: #b91c1c; --warn: #b45309; --code: #f5f5f4; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0c0a09; --panel: #1c1917; --fg: #e7e5e4; --muted: #a8a29e; --line: #292524; --accent: #60a5fa; --ok: #4ade80; --bad: #f87171; --warn: #fbbf24; --code: #292524; } }
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font: 13px/1.45 system-ui, sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 14px; margin: 0; }
+.meta { color: var(--muted); }
+.grow { flex: 1; }
+.badge { padding: 1px 8px; border-radius: 10px; border: 1px solid currentColor; font-size: 12px; }
+.ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); } .run { color: var(--accent); }
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; grid-auto-rows: minmax(60vh, auto); } body { height: auto; } }
+.col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+.title { display: flex; gap: 10px; align-items: center; padding: 6px 12px; font-weight: 600; border-bottom: 1px solid var(--line); background: var(--panel); }
+.title label { font-weight: 400; color: var(--muted); }
+.scroll { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px; }
+.ev { margin: 6px 0; white-space: pre-wrap; word-break: break-word; }
+.ev.user { border-left: 3px solid var(--accent); padding-left: 8px; }
+.ev.user::before { content: attr(data-who); display: block; font-size: 11px; color: var(--muted); }
+.ev.thinking { color: var(--muted); font-style: italic; }
+.ev.thinking summary { font-style: normal; cursor: pointer; }
+.ev.meta { color: var(--muted); font-size: 12px; }
+.ev.tool_call, .ev.tool_result { font-family: ui-monospace, monospace; font-size: 12px; }
+.ev.tool_call { color: var(--accent); }
+.ev.tool_result { cursor: pointer; }
+.ev.tool_result.err { color: var(--bad); }
+pre { margin: 4px 0; padding: 6px; background: var(--code); border-radius: 4px; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+form, .composer { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+textarea { flex: 1; min-width: 200px; resize: vertical; font: inherit; padding: 6px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
+input { font: inherit; padding: 4px 6px; width: 90px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
+button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); cursor: pointer; }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.status { width: 100%; font-size: 12px; color: var(--muted); }
+.camera { display: flex; flex-direction: column; min-height: 0; flex: 0 0 60%; border-bottom: 1px solid var(--line); }
+.frames { flex: 1; min-height: 0; display: flex; gap: 6px; padding: 6px; justify-content: center; align-items: center; }
+.frames a { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; align-items: center; }
+.frames img { max-width: 100%; max-height: calc(100% - 18px); object-fit: contain; background: #000; }
+.frames span { font-size: 11px; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+td { padding: 3px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.m { font-family: ui-monospace, monospace; word-break: break-word; }
+tr.step { cursor: pointer; }
+tr.step.sel { background: var(--code); }
+.empty { color: var(--muted); padding: 12px; }
+.teleop { border-top: 1px solid var(--line); }
+.tp-body { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: flex-start; padding: 6px 12px; }
+.pad { display: grid; grid-template-columns: repeat(4, auto); gap: 3px; align-items: center; }
+.pad b { grid-column: 1 / -1; font-size: 11px; color: var(--muted); font-weight: 600; }
+.pad button { padding: 3px 6px; font-size: 12px; min-width: 64px; }
+.pad button kbd { font-size: 10px; color: var(--muted); margin-left: 3px; }
+.pad button.held { background: var(--accent); color: #fff; border-color: var(--accent); }
+.tp-side { display: flex; flex-direction: column; gap: 6px; }
+.tp-side form, .tp-row { display: flex; gap: 6px; align-items: center; padding: 0; border: 0; background: none; flex-wrap: wrap; }
+.tp-side input[type=text] { width: 160px; }
+.badge.rec { color: var(--bad); }
+.queued { width: 100%; display: flex; flex-direction: column; gap: 3px; }
+.queued div { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.queued span.t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+details.ops { border-top: 1px solid var(--line); background: var(--panel); }
+details.ops > summary { padding: 6px 12px; font-weight: 600; cursor: pointer; }
+.ops-body { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 8px; }
+.ops-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ops-row select, .ops-row input[type=text] { font: inherit; padding: 4px 6px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
+#primFields label { display: flex; gap: 4px; align-items: center; font-size: 12px; }
+#primFields input[type=text] { width: 200px; }
+.ops-body a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>pi-embodied · <span data-t="monitor"></span></h1>
+  <span id="state" class="badge"></span>
+  <span id="result" class="badge" hidden></span>
+  <span id="model" class="badge"></span>
+  <span id="task" class="meta"></span>
+  <span id="lang"></span>
+  <a id="viser" class="badge" target="_blank" rel="noopener" hidden>3D</a>
+  <span class="grow"></span>
+  <button id="llmCheck" data-t="llmCheck"></button>
+  <span id="llmResult" class="meta"></span>
+  <span id="usage" class="meta"></span>
+  <span id="conn" class="meta"></span>
+</header>
+<main>
+  <div class="col">
+    <div class="title"><span data-t="reasoning"></span><span class="grow"></span>
+      <label><input type="checkbox" id="expand" style="width:auto" /> <span data-t="expand"></span></label>
+      <label><input type="checkbox" id="follow" style="width:auto" checked /> <span data-t="autoscroll"></span></label>
+    </div>
+    <div id="transcript" class="scroll"><div class="empty" data-t="noEvents"></div></div>
+    <div class="teleop" id="teleop" hidden>
+      <div class="title"><span data-t="teleop"></span><span id="tpMode" class="badge"></span><span id="tpRec" class="badge"></span><span id="tpTurns" class="badge meta"></span><span class="grow"></span>
+        <label><input type="checkbox" id="tpKeys" style="width:auto" checked /> <span data-t="keys"></span></label>
+        <button id="tpTake"></button>
+      </div>
+      <div class="tp-body">
+        <div id="tpPads" class="tp-row"></div>
+        <div class="tp-side">
+          <form id="tpSeq"><input type="text" id="tpCmd" /><button class="primary" data-t="run"></button></form>
+          <div class="tp-row">
+            <button id="tpStart" data-t="recStart"></button>
+            <label><input type="checkbox" id="tpSuccess" style="width:auto" /> <span data-t="success"></span></label>
+            <button id="tpSave" data-t="recSave"></button>
+            <button id="tpDiscard" data-t="recDiscard"></button>
+          </div>
+          <div class="tp-row" id="tpOp" hidden>
+            <b data-t="opTitle"></b>
+            <button id="opRun" data-t="opRun"></button>
+            <button id="opStep" data-t="opStep"></button>
+            <button id="opPause" data-t="opPause"></button>
+            <span id="opStatus" class="meta"></span>
+          </div>
+        </div>
+        <div class="status" id="tpStatus"></div>
+      </div>
+    </div>
+    <details class="ops" id="ops">
+      <summary data-t="opsTitle"></summary>
+      <div class="ops-body">
+        <div class="ops-row"><b data-t="primTitle"></b><select id="primName"></select><button id="primReload" data-t="reload"></button></div>
+        <form id="primForm" class="ops-row" style="padding:0;border:0;background:none"><span id="primFields" class="ops-row"></span><button class="primary" data-t="run"></button></form>
+        <div class="status" id="primStatus"></div>
+        <div class="ops-row"><b data-t="downloads"></b>
+          <a href="/download/session?format=jsonl" data-t="sessionJsonl"></a>
+          <a href="/download/session?format=html" data-t="sessionHtml"></a>
+          <button id="videosReload" data-t="videos"></button>
+        </div>
+        <div id="videos" class="ops-row"></div>
+      </div>
+    </details>
+    <div class="teleop" id="human" hidden>
+      <div class="title"><span data-t="humanTitle"></span><span id="hmTurn" class="badge meta"></span></div>
+      <div class="tp-body">
+        <pre id="hmText" class="meta" style="max-height:12em;overflow:auto;white-space:pre-wrap;margin:0"></pre>
+        <div id="hmImages" class="tp-row"></div>
+        <form id="hmForm" class="tp-row"><select id="hmTool"></select><textarea id="hmArgs" rows="3" style="flex:1"></textarea><button class="primary" data-t="humanAnswer"></button></form>
+        <div class="status" id="hmStatus"></div>
+      </div>
+    </div>
+    <div class="composer">
+      <textarea id="msg" rows="2"></textarea>
+      <button id="send" class="primary" data-t="send"></button>
+      <button id="stop" data-t="interrupt"></button>
+      <div class="queued" id="queued"></div>
+      <div class="status" id="msgStatus"></div>
+    </div>
+    <form id="newTask">
+      <b data-t="newTask"></b>
+      <span id="taskFields"></span>
+      <button class="primary" data-t="start"></button>
+      <div class="status" id="taskStatus"></div>
+    </form>
+  </div>
+  <div class="col" style="border-right:0">
+    <div class="camera">
+      <div class="title"><span data-t="camera"></span><span id="caption" class="meta" style="font-weight:400"></span><span class="grow"></span>
+        <label title="" id="streamLabel"><input type="checkbox" id="stream" style="width:auto" /> <span data-t="stream"></span></label>
+        <label><input type="checkbox" id="live" style="width:auto" checked /> <span data-t="followLatest"></span></label>
+      </div>
+      <div class="frames" id="frames"><div class="empty" data-t="noFrame"></div></div>
+    </div>
+    <div class="title"><span data-t="timeline"></span><span id="stepCount" class="meta"></span></div>
+    <div class="scroll" style="padding:0"><table><tbody id="timeline"></tbody></table><div class="empty" id="noSteps" data-t="noActions"></div></div>
+  </div>
+</main>
+<script>
+const COPY = {
+  en: {
+    monitor: "Live Monitor", reasoning: "Agent reasoning & tool calls", expand: "expand tool calls", autoscroll: "auto-scroll",
+    noEvents: "No transcript events yet.", send: "Send", interrupt: "Interrupt", newTask: "New task",
+    start: "Start", camera: "Camera", followLatest: "follow latest", stream: "live stream",
+    streamCaption: "live stream · every env step", streamHelp: "Stream the robot's camera continuously while it moves (not only per tool result)",
+    noFrame: "waiting for first frame…", timeline: "Action timeline", noActions: "No actions yet.",
+    placeholder: "Message the agent… (Enter send · Shift+Enter newline · Esc interrupt · /robot-task …)",
+    states: { idle: "idle", running: "running", detached: "switching", succeeded: "succeeded", finished: "finished" },
+    solved: "TASK SOLVED", notSolved: "not solved", claimed: (s) => `claimed ${s}`,
+    you: "You", thinking: (n) => `thinking · ${n.toLocaleString()} chars`, live: "● live", reconnecting: "○ reconnecting…",
+    usage: (u) => `in ${u.input.toLocaleString()} · out ${u.output.toLocaleString()} · ${u.tools} tools`,
+    envStep: (n) => `step ${n}`,
+    confirmSwitch: "The agent is running. Abort this episode and start the new task?",
+    sent: "Sent.", steered: "Queued: delivered after the current tool call.", interrupted: "Interrupt requested.",
+    taskSent: "Starting a new session…", failed: (e) => `Failed: ${e}`, stepCaption: (s) => `#${s.n} ${s.name}`,
+    teleop: "Teleop (GUMI)", keys: "keyboard", run: "Run", recStart: "Start recording", success: "success",
+    recSave: "Save", recDiscard: "Discard", seqPlaceholder: "w*3 a g",
+    opTitle: "VLM operator", opRun: "Run", opStep: "Step once", opPause: "Pause",
+    seqPlaceholderDual: "L:w*3 R:i g",
+    modes: { agent: "agent drives", requested: "takeover requested", human: "operator drives" },
+    take: "Take over", release: "Hand back", waiting: "Waiting for the unit…",
+    recOn: (r, n) => `REC ${r} · ${n} steps`, recOff: "not recording", recDisabled: "recording off (--gumi-record)",
+    confirmDiscard: "Delete the rollout being recorded?", look: "Look",
+    lookTitle: "Refresh the view without a step (not recorded)", endsEpisode: "ends the episode (recorded as the last step)",
+    help: "keys: W/S/A/D move · Q/E up/down · G grasp · R release · Space toggle gripper · hold to repeat",
+    helpDual: "left W/S/A/D Q/E, G or L-Shift grasp, R release, L-Ctrl STILL · right I/K/J/L U/O, R-Shift grasp, . release, R-Ctrl STILL · hold to repeat",
+    arms: { arm: "arm", left: "left arm", right: "right arm" },
+    llmCheck: "Check LLM", llmChecking: "checking…", llmOk: (r) => `LLM ok · ${r.ms} ms`, llmBad: (r) => `LLM failed: ${r.detail}`,
+    opsTitle: "Operator tools", primTitle: "Robot tool", reload: "Reload", downloads: "Download", sessionJsonl: "session (JSONL)",
+    sessionHtml: "session (HTML)", videos: "videos", noVideos: "no videos yet (episode.mp4 is written when the session ends)",
+    primUnavailable: (r) => `not available: ${r}`, primNone: "no robot tools", primRunning: "running…", primDone: "done",
+    withdraw: "Withdraw", queuedStates: { queued: "queued", delivered: "delivered", withdrawn: "withdrawn", dropped: "dropped" },
+    withdrawn: "Withdrawn; the text is back in the box.",
+    axes: { rotate: "rotate", roll: "roll", pitch: "pitch", yaw: "yaw" },
+    turns: (rt, any) => rt ? "turns: RT roll/pitch/yaw (v5, --units-rt)" : any ? "turns: ROTATE (v3)" : "turns: none (no yaw on this robot)",
+    humanTitle: "Answer as the model (human/operator)", humanAnswer: "Answer", humanText: "(text reply)",
+  },
+  "zh-cn": {
+    monitor: "实时监控", reasoning: "智能体推理与工具调用", expand: "展开工具调用", autoscroll: "自动滚动",
+    noEvents: "暂无推理记录。", send: "发送", interrupt: "中断", newTask: "新任务",
+    start: "开始", camera: "相机画面", followLatest: "跟随最新", stream: "实时视频流",
+    streamCaption: "实时视频流 · 每个环境步", streamHelp: "机器人运动时持续推送相机画面(不只在工具返回时)",
+    noFrame: "等待第一帧…", timeline: "动作时间线", noActions: "暂无动作。",
+    placeholder: "向智能体发送消息…(Enter 发送 · Shift+Enter 换行 · Esc 中断 · /robot-task …)",
+    states: { idle: "空闲", running: "运行中", detached: "切换中", succeeded: "执行成功", finished: "已完成" },
+    solved: "任务完成", notSolved: "未完成", claimed: (s) => `智能体声明 ${s}`,
+    you: "你", thinking: (n) => `思考 · ${n.toLocaleString()} 字符`, live: "● 实时", reconnecting: "○ 正在重连…",
+    usage: (u) => `输入 ${u.input.toLocaleString()} · 输出 ${u.output.toLocaleString()} · ${u.tools} 次工具调用`,
+    envStep: (n) => `步 ${n}`,
+    confirmSwitch: "智能体正在运行。中止当前回合并开始新任务?",
+    sent: "已发送。", steered: "已排队:当前工具调用结束后送达。", interrupted: "已请求中断。",
+    taskSent: "正在新建会话…", failed: (e) => `失败:${e}`, stepCaption: (s) => `#${s.n} ${s.name}`,
+    teleop: "遥操作 (GUMI)", keys: "键盘", run: "执行", recStart: "开始录制", success: "成功",
+    recSave: "保存", recDiscard: "丢弃", seqPlaceholder: "w*3 a g",
+    opTitle: "VLM 操作员", opRun: "运行", opStep: "单步", opPause: "暂停",
+    seqPlaceholderDual: "L:w*3 R:i g",
+    modes: { agent: "智能体控制", requested: "等待接管", human: "操作员控制" },
+    take: "接管", release: "交还智能体", waiting: "等待当前动作结束…",
+    recOn: (r, n) => `录制中 ${r} · ${n} 步`, recOff: "未录制", recDisabled: "未开启录制(--gumi-record)",
+    confirmDiscard: "删除正在录制的轨迹?", look: "观察",
+    lookTitle: "只刷新视图,不执行动作(不录制)", endsEpisode: "结束回合(录为最后一步)",
+    help: "按键:W/S/A/D 平移 · Q/E 上/下 · G 抓取 · R 松开 · 空格 切换夹爪 · 按住连续执行",
+    helpDual: "左臂 W/S/A/D Q/E,G 或左 Shift 抓取,R 松开,左 Ctrl 保持 · 右臂 I/K/J/L U/O,右 Shift 抓取,. 松开,右 Ctrl 保持 · 按住连续执行",
+    arms: { arm: "机械臂", left: "左臂", right: "右臂" },
+    llmCheck: "检查 LLM", llmChecking: "检查中…", llmOk: (r) => `LLM 正常 · ${r.ms} ms`, llmBad: (r) => `LLM 失败:${r.detail}`,
+    opsTitle: "操作员工具", primTitle: "机器人工具", reload: "刷新", downloads: "下载", sessionJsonl: "会话(JSONL)",
+    sessionHtml: "会话(HTML)", videos: "视频", noVideos: "暂无视频(episode.mp4 在会话结束时写出)",
+    primUnavailable: (r) => `不可用:${r}`, primNone: "没有机器人工具", primRunning: "执行中…", primDone: "完成",
+    withdraw: "撤回", queuedStates: { queued: "排队中", delivered: "已送达", withdrawn: "已撤回", dropped: "已丢弃" },
+    withdrawn: "已撤回;文字已放回输入框。",
+    axes: { rotate: "旋转", roll: "横滚", pitch: "俯仰", yaw: "偏航" },
+    turns: (rt, any) => rt ? "转动:RT 横滚/俯仰/偏航(v5,--units-rt)" : any ? "转动:ROTATE(v3)" : "转动:无(此机器人没有偏航)",
+    humanTitle: "以模型身份回答(human/operator)", humanAnswer: "回答", humanText: "(文字回答)",
+  },
+};
+const T = COPY[document.documentElement.lang === "zh-cn" ? "zh-cn" : "en"];
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+const short = (v, n = 160) => { const s = typeof v === "string" ? v : JSON.stringify(v); return s && s.length > n ? s.slice(0, n) + "…" : s ?? ""; };
+for (const e of document.querySelectorAll("[data-t]")) e.textContent = T[e.dataset.t];
+$("msg").placeholder = T.placeholder;
+$("streamLabel").title = T.streamHelp;
+
+let episode = null, steps = [], selected = null, tab = 0;
+const nodes = new Map();
+
+function renderItem(item) {
+  const div = el("div", `ev ${item.kind}`);
+  if (item.kind === "user") { div.dataset.who = T.you; div.append(item.text); }
+  else if (item.kind === "thinking") {
+    const d = el("details"); d.open = true;
+    d.append(el("summary", "", T.thinking(item.text.length)), el("div", "", item.text));
+    div.append(d);
+  } else if (item.kind === "tool_call") {
+    div.append(`→ ${item.name}(${short(item.args)})`);
+    const pre = el("pre", "args", JSON.stringify(item.args, null, 2)); pre.hidden = !$("expand").checked; div.append(pre);
+  } else if (item.kind === "tool_result") {
+    if (item.isError) div.classList.add("err");
+    div.append(`← ${item.name}: ${short(item.text)}`);
+    const pre = el("pre", "args", item.text); pre.hidden = !$("expand").checked; div.append(pre);
+    div.onclick = () => select(item.step, true);
+  } else div.append(item.text);
+  return div;
+}
+function putItem(item) {
+  const old = nodes.get(item.id), div = renderItem(item);
+  div._item = item;
+  if (old) old.replaceWith(div); else { $("transcript").querySelector(".empty")?.remove(); $("transcript").append(div); }
+  nodes.set(item.id, div);
+  scroll();
+}
+function appendText(id, text) {
+  const div = nodes.get(id); if (!div) return;
+  div._item.text += text;
+  if (div._item.kind === "thinking") {
+    div.querySelector("details > div").append(text);
+    div.querySelector("summary").textContent = T.thinking(div._item.text.length);
+  } else div.append(text);
+  scroll();
+}
+function scroll() { if ($("follow").checked) $("transcript").scrollTop = $("transcript").scrollHeight; }
+
+function putStep(s) {
+  steps[s.n] = s;
+  $("noSteps").hidden = true;
+  const tr = el("tr", "step");
+  const flags = [s.solved ? "✓ solved" : "", s.isError ? "error" : ""].filter(Boolean).join(" ");
+  const summary = el("td", "m");
+  summary.append(el("b", "", s.name), ` ${short(s.args, 120)}`, el("br"), el("span", s.isError ? "bad" : "meta", `→ ${short(s.result, 200)}`));
+  const full = el("pre", "", `args ${JSON.stringify(s.args, null, 2)}\nresult ${JSON.stringify(s.result, null, 2)}`); full.hidden = true;
+  summary.append(full);
+  tr.append(el("td", "", `#${s.n}`), summary,
+    el("td", "meta", [s.envStep === null ? "" : T.envStep(s.envStep), s.ms === null ? "" : `${(s.ms / 1000).toFixed(1)}s`].filter(Boolean).join(" · ")),
+    el("td", s.solved ? "ok" : s.isError ? "bad" : "", flags));
+  tr.onclick = () => { full.hidden = !full.hidden; if (s.frames.length) select(s.n, true); };
+  tr.id = `step-${s.n}`;
+  $("timeline").append(tr);
+  $("stepCount").textContent = `${steps.length}`;
+  if ($("live").checked && s.frames.length) select(s.n, false);
+}
+/** The live stream (GET /live, multipart PNG) in the camera panel, in place of a step's frames. */
+function showStream() {
+  document.querySelector("tr.sel")?.classList.remove("sel");
+  selected = null;
+  $("caption").textContent = T.streamCaption;
+  const img = el("img"); img.alt = T.stream; img.src = `/live?w=512&t=${Date.now()}`;
+  const a = el("a"); a.append(img, el("span", "", T.stream));
+  $("frames").replaceChildren(a);
+}
+function stopStream() {
+  for (const img of $("frames").querySelectorAll('img[src*="/live"]')) img.src = "";
+  $("frames").replaceChildren(el("div", "empty", T.noFrame)); $("caption").textContent = "";
+}
+function select(n, pin) {
+  const s = steps[n]; if (!s || !s.frames.length) return;
+  if (!pin && $("stream").checked) return;
+  if (pin) { $("live").checked = false; if ($("stream").checked) { $("stream").checked = false; stopStream(); } }
+  document.querySelector("tr.sel")?.classList.remove("sel");
+  $(`step-${n}`)?.classList.add("sel");
+  selected = n;
+  $("caption").textContent = `${T.stepCaption(s)}${s.envStep === null ? "" : " · " + T.envStep(s.envStep)}`;
+  const box = $("frames"); box.replaceChildren();
+  s.frames.forEach((label, k) => {
+    const a = el("a"); a.href = `/frame/${episode.gen}/${n}/${k}`; a.target = "_blank";
+    const img = el("img"); img.src = `${a.href}?w=512`; img.alt = label;
+    a.append(img, el("span", "", label)); box.append(a);
+  });
+}
+
+/** One input per task field of the robot, filled with the current episode's values once. */
+function renderTaskFields(e) {
+  const box = $("taskFields");
+  if (box.dataset.fields === e.fields.join(" ")) return;
+  box.dataset.fields = e.fields.join(" ");
+  box.replaceChildren(...e.fields.map((k) => {
+    const input = el("input"); input.name = k; input.placeholder = k; input.required = true; input.value = e.task[k] ?? "";
+    return input;
+  }));
+}
+
+function renderEpisode() {
+  const e = episode; if (!e) return;
+  const ended = e.solved || e.ended || e.claimed;
+  const state = e.running ? "running" : !e.attached ? "detached" : e.solved ? "succeeded" : ended ? "finished" : "idle";
+  $("state").textContent = T.states[state];
+  $("state").className = "badge " + ({ running: "run", succeeded: "ok", finished: "warn" }[state] ?? "meta");
+  const r = $("result");
+  r.hidden = !ended;
+  if (ended) {
+    const parts = [e.solved ? T.solved : T.notSolved];
+    if (e.claimed) parts.push(T.claimed(e.claimed));
+    r.textContent = parts.join(" · ");
+    r.className = "badge " + (e.solved ? "ok" : "bad");
+    r.title = e.summary ?? "";
+  }
+  $("task").textContent = [e.robot, ...e.fields.map((k) => `${k} ${e.task[k]}`)].join(" · ") + (e.envStep === null ? "" : ` · ${T.envStep(e.envStep)}`);
+  $("model").textContent = e.model ?? "";
+  $("lang").textContent = e.language ? `“${e.language}”` : "";
+  // --viser: the live 3D view on this host (src/viser.ts).
+  $("viser").hidden = !e.viser_port;
+  if (e.viser_port) $("viser").href = `http://${location.hostname}:${e.viser_port}/`;
+  $("usage").textContent = T.usage(e.usage);
+  renderTaskFields(e);
+}
+
+function connect() {
+  const es = new EventSource("/events");
+  es.onopen = () => { $("conn").textContent = T.live; };
+  es.onerror = () => { $("conn").textContent = T.reconnecting; };
+  es.onmessage = (m) => {
+    const op = JSON.parse(m.data);
+    if (op.op === "reset") {
+      episode = op.episode; steps = []; selected = null; nodes.clear();
+      $("transcript").replaceChildren(); $("timeline").replaceChildren(); $("noSteps").hidden = false; $("stepCount").textContent = "";
+      if ($("stream").checked) showStream(); else { $("frames").replaceChildren(el("div", "empty", T.noFrame)); $("caption").textContent = ""; }
+      $("live").checked = true;
+      if (!op.items.length) $("transcript").append(el("div", "empty", T.noEvents));
+      op.items.forEach(putItem); op.steps.forEach(putStep); renderEpisode(); renderGumi(op.gumi); renderQueued(op.queued ?? []); renderHuman(op.human);
+    } else if (op.op === "item") putItem(op.item);
+    else if (op.op === "append") appendText(op.id, op.text);
+    else if (op.op === "step") putStep(op.step);
+    else if (op.op === "episode") { episode = op.episode; renderEpisode(); }
+    else if (op.op === "gumi") renderGumi(op.gumi);
+    else if (op.op === "queued") renderQueued(op.queued);
+    else if (op.op === "human") renderHuman(op.human);
+  };
+}
+
+/** A human/operator request (../human.ts): its text and images, and a composer for a text reply or a tool call. */
+let human = null;
+function renderHuman(h) {
+  human = h ?? null;
+  $("human").hidden = !human;
+  if (!human) return;
+  $("hmStatus").textContent = "";
+  $("hmTurn").textContent = `#${h.turn} · ${h.kind}`;
+  $("hmText").textContent = h.text;
+  $("hmImages").replaceChildren(...Array.from({ length: h.images }, (_, k) => {
+    const img = document.createElement("img");
+    img.src = `/human/image/${h.id}/${k}`; img.style.maxWidth = "180px"; img.style.cursor = "zoom-in";
+    img.onclick = () => window.open(img.src, "_blank");
+    return img;
+  }));
+  const sel = $("hmTool");
+  sel.replaceChildren(...[["", T.humanText], ...h.tools.map((t) => [t.name, t.name])].map(([v, n]) => {
+    const o = document.createElement("option"); o.value = v; o.textContent = n; return o;
+  }));
+  sel.onchange = () => {
+    const t = h.tools.find((x) => x.name === sel.value);
+    $("hmArgs").value = t ? t.skeleton : ""; $("hmArgs").title = t ? t.description : "";
+  };
+  sel.onchange();
+}
+$("hmForm").onsubmit = async (ev) => {
+  ev.preventDefault();
+  if (!human) return;
+  const name = $("hmTool").value;
+  const body = name ? { id: human.id, tool: name, arguments: $("hmArgs").value } : { id: human.id, text: $("hmArgs").value };
+  try { await post("/human/reply", body); $("hmStatus").textContent = T.sent; }
+  catch (err) { $("hmStatus").textContent = T.failed(err.message); }
+};
+
+async function post(path, body) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? res.statusText);
+  return data;
+}
+async function sendMessage() {
+  const text = $("msg").value.trim(); if (!text) return;
+  if (text.startsWith("/robot-task") && episode?.running && !confirm(T.confirmSwitch)) return;
+  try { const r = await post("/message", { text }); $("msg").value = ""; $("msgStatus").textContent = r.steered ? T.steered : T.sent; }
+  catch (err) { $("msgStatus").textContent = T.failed(err.message); }
+}
+async function interrupt() {
+  try { await post("/interrupt", {}); $("msgStatus").textContent = T.interrupted; } catch (err) { $("msgStatus").textContent = T.failed(err.message); }
+}
+$("send").onclick = sendMessage;
+$("stop").onclick = interrupt;
+$("msg").onkeydown = (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMessage(); }
+  else if (e.key === "Escape") { e.preventDefault(); interrupt(); }
+};
+$("newTask").onsubmit = async (e) => {
+  e.preventDefault();
+  if (episode?.running && !confirm(T.confirmSwitch)) return;
+  const values = [...$("taskFields").querySelectorAll("input")].map((i) => i.value.trim());
+  try { await post("/task", { values }); $("taskStatus").textContent = T.taskSent; }
+  catch (err) { $("taskStatus").textContent = T.failed(err.message); }
+};
+$("expand").onchange = () => { for (const p of document.querySelectorAll("#transcript pre.args")) p.hidden = !$("expand").checked; };
+const showLatest = () => { const last = steps.findLast((s) => s && s.frames.length); if (last) select(last.n, false); };
+$("live").onchange = () => { if ($("live").checked) showLatest(); };
+$("stream").onchange = () => {
+  try { localStorage.setItem("pi-embodied.stream", $("stream").checked ? "1" : ""); } catch {}
+  if ($("stream").checked) showStream(); else { stopStream(); showLatest(); }
+};
+try { $("stream").checked = localStorage.getItem("pi-embodied.stream") === "1"; } catch {}
+
+// ---- GUMI teleop: one unit per press, hold to repeat; two arms: one synchronized pair per step.
+const UNIT_LABEL = { MV_FWD: "FWD", MV_BACK: "BACK", MV_LEFT: "LEFT", MV_RIGHT: "RIGHT", MV_UP: "UP", MV_DOWN: "DOWN",
+  ROTATE_CCW: "CCW", ROTATE_CW: "CW", GRASP: "GRASP", RELEASE: "RELEASE", STOP: "", STILL: "STILL",
+  RT_ROLL_LEFT: "ROLL+", RT_ROLL_RIGHT: "ROLL-", RT_PITCH_FWD: "PITCH+", RT_PITCH_BACK: "PITCH-", RT_YAW_CCW: "YAW+", RT_YAW_CW: "YAW-" };
+// The turn pairs: ROTATE_* (v3 mode), or RT_* with --units-rt; roll and pitch positive turn first (RT_TURNS),
+// the yaw pair in the rotate pair's physical order (Z/X: gumi/index.ts RT_KEYS). Only bound keys are shown.
+const TURN_PAIRS = [["rotate", "ROTATE_CCW", "ROTATE_CW"], ["yaw", "RT_YAW_CW", "RT_YAW_CCW"], ["roll", "RT_ROLL_LEFT", "RT_ROLL_RIGHT"], ["pitch", "RT_PITCH_FWD", "RT_PITCH_BACK"]];
+// Key bindings come from the server (gumi/index.ts KEYS, in the state as `keys`: code -> [arm, unit]).
+const ONE_SHOT = new Set(["GRASP", "RELEASE", "STOP", "STILL"]);
+const REPEAT_MS = 250;
+let G = null, padsKey = "", inFlight = false, timer = null;
+const held = new Map();   // key/button id -> [arm, unit], newest last
+const dual = () => G && G.arms.length > 1;
+const keyName = (code) => code.replace(/^(Key|Digit|Arrow)/, "").replace("Period", ".").replace("Left", "L-").replace("Right", "R-");
+/** A bound unit's name: a robot's own units are bound with their parameter ("WALK(normal)" is a WALK key). */
+const baseUnit = (label) => String(label).replace(/\(.*\)$/, "");
+const keyOf = (arm, unit) => Object.keys(G.keys ?? {}).find((k) => G.keys[k][0] === arm && baseUnit(G.keys[k][1]) === unit && !k.startsWith("Arrow"));
+/** The bound turn keys, e.g. "Z/X rotate" or "Z/X yaw · 1/2 roll ± · 3/4 pitch ±" (two arms: per arm). */
+const turnHelp = () => G.arms.map((arm) => {
+  const pairs = TURN_PAIRS.map(([axis, pos, neg]) => [axis, keyOf(arm, pos), keyOf(arm, neg)]).filter(([, a, b]) => a && b)
+    .map(([axis, a, b]) => `${keyName(a)}/${keyName(b)} ${T.axes[axis]}${axis === "rotate" || axis === "yaw" ? "" : " ±"}`);
+  return pairs.length ? (dual() ? `${T.arms[arm] ?? arm} ` : "") + pairs.join(" · ") : "";
+}).filter(Boolean).join(" · ");
+
+function renderGumi(g) {
+  G = g ?? null;
+  $("teleop").hidden = !G || !G.available;
+  if (!G || !G.available) return;
+  $("tpMode").textContent = T.modes[G.mode];
+  $("tpMode").className = "badge " + (G.mode === "human" ? "warn" : G.mode === "requested" ? "run" : "meta");
+  $("tpTake").textContent = G.mode === "agent" ? T.take : G.mode === "requested" ? T.waiting : T.release;
+  $("tpRec").textContent = !G.root ? T.recDisabled : G.recording ? T.recOn(G.recording, G.steps) : T.recOff;
+  $("tpRec").className = "badge " + (G.recording ? "rec" : "meta");
+  $("tpTurns").textContent = T.turns(G.rt === true, G.vocabulary.some((u) => u.startsWith("ROTATE_") || u.startsWith("RT_")));
+  $("tpStart").disabled = !G.root || !!G.recording;
+  $("tpSave").disabled = $("tpDiscard").disabled = !G.recording;
+  $("tpCmd").placeholder = dual() ? T.seqPlaceholderDual : T.seqPlaceholder;
+  const O = G.operator;
+  $("tpOp").hidden = !O?.available;
+  if (O?.available) {
+    $("opRun").disabled = O.mode === "continuous";
+    $("opStatus").textContent = [O.model, O.status, `${O.executed} steps`, O.lastDecision ? `${O.lastDecision.phase}: ${O.lastDecision.command || "-"} (${O.lastDecision.confidence})` : ""].filter(Boolean).join(" · ");
+  }
+  $("tpStatus").textContent = [G.message, G.last ? `last: ${G.last}` : "", dual() ? T.helpDual : T.help, turnHelp()].filter(Boolean).join(" · ");
+  const terminal = G.terminal ?? [];
+  const key = G.arms.join() + "|" + G.vocabulary.join() + "|" + JSON.stringify(G.keys ?? {}) + "|" + terminal.join() + "|" + G.look;
+  if (key === padsKey) return;
+  padsKey = key;
+  // The arm's STOP holds one step and returns the view: the pad calls it Look. A robot's own STOP that ends
+  // the episode (`terminal`) is labelled as itself; its look (the vocabulary's observe) is a separate button.
+  const stopLooks = G.vocabulary.includes("STOP") && !terminal.includes("STOP");
+  $("tpPads").replaceChildren(...G.arms.map((arm) => {
+    const pad = el("div", "pad"); pad.append(el("b", "", T.arms[arm] ?? arm));
+    for (const unit of G.vocabulary.filter((u) => u !== "DONE" && (u !== "STILL" || dual()))) {
+      const code = keyOf(arm, unit);
+      const b = el("button", "", unit === "STOP" && stopLooks ? T.look : UNIT_LABEL[unit] || unit);
+      if (code) b.append(el("kbd", "", keyName(code)));
+      b.title = terminal.includes(unit) ? `${unit}: ${T.endsEpisode}` : unit; b.dataset.id = `btn:${arm}:${unit}`;
+      b.onpointerdown = (e) => { e.preventDefault(); press(b.dataset.id, arm, unit); };
+      b.onpointerup = b.onpointerleave = () => release(b.dataset.id);
+      pad.append(b);
+    }
+    return pad;
+  }), ...(G.look && !stopLooks ? [(() => {
+    const pad = el("div", "pad");
+    const b = el("button", "", T.look); b.title = T.lookTitle;
+    b.onclick = () => gumiPost("/gumi/look", {});
+    pad.append(b);
+    return pad;
+  })()] : []));
+}
+function press(id, arm, unit) {
+  if (held.has(id)) return;
+  held.set(id, [arm, unit]);
+  document.querySelector(`[data-id="${CSS.escape(id)}"]`)?.classList.add("held");
+  tick();
+  timer ??= setInterval(tick, REPEAT_MS);
+}
+function release(id) {
+  held.delete(id);
+  document.querySelector(`[data-id="${CSS.escape(id)}"]`)?.classList.remove("held");
+  if (!held.size) { clearInterval(timer); timer = null; }
+}
+/** One step from what is held now: the newest unit per arm (the idle arm STILL); one request in flight. */
+async function tick() {
+  if (inFlight || !held.size || !G) return;
+  const per = {};
+  for (const [id, [arm, unit]] of held) {
+    if (unit === null) continue;
+    per[arm] = unit;
+    if (ONE_SHOT.has(unit)) held.set(id, [arm, null]);
+  }
+  if (!Object.keys(per).length) return;
+  const body = dual() ? { left: per.left ?? "STILL", right: per.right ?? "STILL" } : { unit: per[G.arms[0]] };
+  if (dual() && body.left === "STILL" && body.right === "STILL") return;
+  await gumiPost("/gumi/step", body);
+}
+async function gumiPost(path, body) {
+  inFlight = true;
+  try { const r = await post(path, body); if (r.state) renderGumi(r.state); return r; }
+  catch (err) { $("tpStatus").textContent = T.failed(err.message); }
+  finally { inFlight = false; }
+}
+$("tpSeq").onsubmit = async (e) => {
+  e.preventDefault();
+  const command = $("tpCmd").value.trim(); if (!command) return;
+  if (await gumiPost("/gumi/step", { command })) $("tpCmd").select();
+};
+$("opRun").onclick = () => gumiPost("/gumi/operator", { action: "run" });
+$("opStep").onclick = () => gumiPost("/gumi/operator", { action: "step" });
+$("opPause").onclick = () => gumiPost("/gumi/operator", { action: "pause" });
+$("tpTake").onclick = () => gumiPost("/gumi/control", { action: G?.mode === "agent" ? "take" : "release" });
+$("tpStart").onclick = () => gumiPost("/gumi/record", { action: "start" });
+$("tpSave").onclick = () => gumiPost("/gumi/record", { action: "save", success: $("tpSuccess").checked });
+$("tpDiscard").onclick = () => { if (confirm(T.confirmDiscard)) gumiPost("/gumi/record", { action: "discard" }); };
+const typing = (e) => ["INPUT", "TEXTAREA"].includes(e.target?.tagName) && e.target.type !== "checkbox";
+document.addEventListener("keydown", (e) => {
+  if (e.repeat || typing(e) || !$("tpKeys").checked || !G?.available || e.metaKey || e.altKey) return;
+  if (e.ctrlKey && !e.code.startsWith("Control")) return;
+  let hit = G.keys?.[e.code];
+  if (!dual() && e.code === "Space") hit = [G.arms[0], G.closed[G.arms[0]] ? "RELEASE" : "GRASP"];
+  if (!hit || !G.vocabulary.includes(baseUnit(hit[1])) && hit[1] !== "STILL") return;
+  e.preventDefault();
+  press(`key:${e.code}`, hit[0], hit[1]);
+});
+document.addEventListener("keyup", (e) => release(`key:${e.code}`));
+window.addEventListener("blur", () => { for (const id of [...held.keys()]) release(id); });
+// ---- queued messages (pi's steering queue): withdraw one the agent has not taken yet.
+function renderQueued(list) {
+  $("queued").replaceChildren(...list.slice(-5).map((q) => {
+    const row = el("div"); row.append(el("span", "t", q.text), el("span", "meta", T.queuedStates[q.status] ?? q.status));
+    if (q.status === "queued") {
+      const b = el("button", "", T.withdraw);
+      b.onclick = async () => {
+        try { const r = await post("/message/withdraw", { id: q.id }); if (!$("msg").value) $("msg").value = r.text; $("msgStatus").textContent = T.withdrawn; }
+        catch (err) { $("msgStatus").textContent = T.failed(err.message); }
+      };
+      row.append(b);
+    }
+    return row;
+  }));
+}
+
+// ---- LLM connectivity: one real 1-token completion to the session's model.
+$("llmCheck").onclick = async () => {
+  $("llmResult").textContent = T.llmChecking; $("llmResult").className = "meta";
+  try { const r = await post("/llm-check", {}); $("llmResult").textContent = r.ok ? T.llmOk(r) : T.llmBad(r); $("llmResult").className = r.ok ? "ok" : "bad"; $("llmResult").title = `${r.model}: ${r.detail}`; }
+  catch (err) { $("llmResult").textContent = T.failed(err.message); $("llmResult").className = "bad"; }
+};
+
+// ---- manual robot tool calls (operator mode): fields from the tool's JSON schema.
+let prims = [];
+async function loadPrims() {
+  try {
+    const r = await (await fetch("/primitives")).json();
+    prims = r.tools ?? [];
+    const keep = $("primName").value;
+    $("primName").replaceChildren(...prims.map((t) => { const o = el("option", "", t.name); o.value = t.name; o.title = t.description; return o; }));
+    if (prims.some((t) => t.name === keep)) $("primName").value = keep;
+    renderPrimFields();
+    $("primStatus").textContent = !prims.length ? T.primNone : r.available ? "" : T.primUnavailable(r.reason);
+  } catch (err) { $("primStatus").textContent = T.failed(err.message); }
+}
+function fieldFor(name, schema, required) {
+  const label = el("label"); label.title = schema.description ?? "";
+  label.append(el("span", "", name + (required ? "*" : "")));
+  let input;
+  const enumValues = schema.enum ?? (schema.anyOf?.every((x) => "const" in x) ? schema.anyOf.map((x) => x.const) : null);
+  if (enumValues) {
+    input = el("select"); if (!required) input.append(el("option", "", ""));
+    for (const v of enumValues) { const o = el("option", "", String(v)); o.value = JSON.stringify(v); input.append(o); }
+    input.dataset.kind = "json";
+  } else if (schema.type === "boolean") { input = el("input"); input.type = "checkbox"; input.style.width = "auto"; input.dataset.kind = "bool"; }
+  else if (schema.type === "number" || schema.type === "integer") {
+    input = el("input"); input.type = "number"; input.step = schema.type === "integer" ? "1" : "any"; input.dataset.kind = "number";
+    if (schema.minimum !== undefined) input.min = schema.minimum; if (schema.maximum !== undefined) input.max = schema.maximum;
+  } else if (schema.type === "string") { input = el("input"); input.type = "text"; input.dataset.kind = "string"; }
+  else { input = el("input"); input.type = "text"; input.placeholder = "JSON"; input.dataset.kind = "json"; }
+  input.name = name; input.dataset.required = required ? "1" : "";
+  label.append(input);
+  return label;
+}
+function renderPrimFields() {
+  const t = prims.find((p) => p.name === $("primName").value);
+  $("primName").title = t?.description ?? "";
+  const props = t?.parameters?.properties ?? {};
+  const req = new Set(t?.parameters?.required ?? []);
+  $("primFields").replaceChildren(...Object.entries(props).map(([k, v]) => fieldFor(k, v, req.has(k))));
+}
+$("primName").onchange = renderPrimFields;
+$("primReload").onclick = loadPrims;
+$("ops").ontoggle = () => { if ($("ops").open) { loadPrims(); loadVideos(); } };
+$("primForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const args = {};
+  try {
+    for (const input of $("primFields").querySelectorAll("input, select")) {
+      const k = input.dataset.kind;
+      if (k === "bool") { args[input.name] = input.checked; continue; }
+      if (input.value === "") { if (input.dataset.required) throw new Error(`${input.name} is required`); continue; }
+      args[input.name] = k === "number" ? Number(input.value) : k === "json" ? JSON.parse(input.value) : input.value;
+    }
+  } catch (err) { $("primStatus").textContent = T.failed(err.message); return; }
+  $("primStatus").textContent = T.primRunning;
+  try { const r = await post("/primitive", { name: $("primName").value, arguments: args }); $("primStatus").textContent = `${T.primDone}: ${short(r.text, 300)}`; }
+  catch (err) { $("primStatus").textContent = T.failed(err.message); }
+};
+
+// ---- downloads: pi's /export of the session, and the sessions' episode videos.
+async function loadVideos() {
+  try {
+    const r = await (await fetch("/downloads")).json();
+    const links = r.sessions.flatMap((s) => s.videos.map((v) => {
+      const a = el("a", "", `${s.current ? "" : s.id.slice(0, 8) + "/"}${v}`); a.href = `/download/video/${s.id}/${encodeURIComponent(v)}`; return a;
+    }));
+    $("videos").replaceChildren(...(links.length ? links : [el("span", "meta", T.noVideos)]));
+  } catch (err) { $("videos").replaceChildren(el("span", "bad", T.failed(err.message))); }
+}
+$("videosReload").onclick = loadVideos;
+connect();
+</script>
+</body>
+</html>

@@ -1,0 +1,918 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer, type IncomingMessage } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { encodePng } from "../src/infra/png.ts";
+import finetuned, {
+	activeSubgoal,
+	allowedTokens,
+	buildRequest,
+	DUAL_PROMPTS,
+	formatPrompt,
+	isV5,
+	PRESETS,
+	PROMPTS,
+	parsePair,
+	parseToken,
+	prepareImages,
+	RELEASED,
+	recentText,
+	STEP_ENTRY,
+	V5_ACTIONS,
+} from "../src/modes/finetuned/index.ts";
+import { convertRun, findRuns, trainedTokens } from "../src/modes/finetuned/prepare.ts";
+import { decodePng, fingerprint, parseView, prepareView } from "../src/modes/finetuned/views.ts";
+import { RT_UNITS, UNITS, UNITS_EVENT, type UnitsHandle } from "../src/modes/units/index.ts";
+import { deployFlags } from "./helpers/deployment.ts";
+
+/**
+ * The reference: Show-Harness @137d571's own MvTokenController + VLMClient.complete_action_token
+ * (with _post_chat captured) and core/record/images.prepare_view under opencv 4.11 / numpy 1.26, fed
+ * the two synthetic frames below; image parts are replaced by the pixel fingerprint of the PNG sent.
+ */
+const TASK = "pick up the red cube and place it on the plate";
+const REF_PROMPT = `You are controlling a robot arm with two cameras:
+- Agentview: overhead view of the robot and workspace
+- Wristview: close-up view from the gripper
+
+Task: ${TASK}
+Recent moves, newest first: MV_LEFT, MV_DOWN
+
+Output exactly one action token:
+MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, GRASP, RELEASE, DONE
+
+Check both camera views and choose the next action:
+- Use AgentView to locate the target when it is not in wrist view
+- Use wrist view to fine-align when target is visible up close
+- GRASP when gripper fingers are aligned around the object
+- RELEASE when object is above the destination
+- DONE when the task is complete: the object is at its destination and the gripper is clear
+- Avoid repeating a direction that conflicts with the most recent move
+
+Return the single token only, no punctuation, no explanation:`;
+const REF = {
+	raw: {
+		agent: { sha1: "b18f71cedaac", shape: [512, 512, 3] },
+		wrist: { sha1: "ff8788f8ee4b", shape: [480, 640, 3] },
+	},
+	payload: {
+		model: "qwen3_5_2b_showharness_sim",
+		messages: [
+			{
+				role: "user",
+				content: [
+					{ type: "image_url", image_url: { url: "<png>", sha1: "6c883980c15b", shape: [256, 256, 3] } },
+					{ type: "image_url", image_url: { url: "<png>", sha1: "1e53f10798cd", shape: [256, 256, 3] } },
+					{ type: "text", text: REF_PROMPT },
+				],
+			},
+		],
+		temperature: 0,
+		max_tokens: 24,
+		chat_template_kwargs: { enable_thinking: false, thinking: false },
+	},
+	/** vlm_client._parse_single_token on these replies (null: it raises, and the runner falls back). */
+	parsed: {
+		MV_LEFT: "MV_LEFT",
+		" GRASP\n": "GRASP",
+		"<think>hmm MV_UP</think>DONE": "DONE",
+		'{"token": "RELEASE"}': "RELEASE",
+		"I will MV_FWD.": "MV_FWD",
+		"Therefore the answer is MV_BACK because": "MV_BACK",
+		"MV_DOWN is best": "MV_DOWN",
+		"move left": null,
+		MV_LEFTX: null,
+		"MV_UP then MV_DOWN": "MV_DOWN",
+		mv_left: null,
+		// upstream returns "grasp" as written, which no controller executes; we return the canonical unit.
+		"final: grasp": "GRASP",
+		"The gripper should go MV_RIGHT.": "MV_RIGHT",
+	} as Record<string, string | null>,
+};
+
+/** The synthetic frame of the reference script: (x*3+y+seed, x*y+seed, x^y) mod 256. */
+function pattern(h: number, w: number, seed: number) {
+	const rgb = Buffer.alloc(h * w * 3);
+	for (let y = 0; y < h; y++)
+		for (let x = 0; x < w; x++) {
+			const o = (y * w + x) * 3;
+			rgb[o] = (x * 3 + y + seed) % 256;
+			rgb[o + 1] = (x * y + seed) % 256;
+			rgb[o + 2] = (x ^ y) & 255;
+		}
+	return { width: w, height: h, rgb };
+}
+const agentRaw = pattern(512, 512, 7);
+const wristRaw = pattern(480, 640, 11);
+const SPECS = [parseView("square=256"), parseView("rot=90,flip=vertical,crop=1.3333,square=256")];
+const png = (img: { width: number; height: number; rgb: Buffer }) => encodePng(img.rgb, img.width, img.height);
+
+/** A request body with its images replaced by the fingerprints of their pixels, as REF stores them. */
+function fingerprinted(body: any) {
+	const b = structuredClone(body);
+	for (const part of b.messages[0].content)
+		if (part.type === "image_url") {
+			const url: string = part.image_url.url;
+			assert.ok(url.startsWith("data:image/png;base64,"));
+			part.image_url = { url: "<png>", ...fingerprint(decodePng(Buffer.from(url.split(",")[1], "base64"))) };
+		}
+	return b;
+}
+
+test("the request matches Show-Harness's own rendering: prompt bytes, image order, pixels, sampling", () => {
+	assert.deepEqual(fingerprint(agentRaw), REF.raw.agent);
+	assert.deepEqual(fingerprint(wristRaw), REF.raw.wrist);
+	const tpl = PROMPTS.v3;
+	const prompt = formatPrompt(tpl, {
+		task: TASK,
+		recent_moves: recentText(["MV_LEFT", "MV_DOWN"]),
+		gripper_state: "open",
+	});
+	assert.equal(prompt, REF_PROMPT);
+	const sent = prepareImages(
+		[png(agentRaw), png(wristRaw)].map((p) => ({ data: p.toString("base64") })),
+		[0, 1],
+		SPECS,
+	);
+	const body = buildRequest(
+		"qwen3_5_2b_showharness_sim",
+		prompt,
+		sent.map((s) => s.png),
+	);
+	assert.deepEqual(fingerprinted(body), REF.payload);
+	assert.deepEqual(allowedTokens(tpl), [
+		"MV_FWD",
+		"MV_BACK",
+		"MV_LEFT",
+		"MV_RIGHT",
+		"MV_UP",
+		"MV_DOWN",
+		"GRASP",
+		"RELEASE",
+		"DONE",
+	]);
+	assert.deepEqual(fingerprint(prepareView(wristRaw, SPECS[1])), fingerprint(sent[1].view));
+	assert.equal(formatPrompt("a {{b}} {c}", { c: "d" }), "a {b} d");
+	assert.throws(() => formatPrompt("{missing}", {}), /has no value/);
+	assert.equal(recentText([]), "none");
+});
+
+test("replies parse like vlm_client._parse_single_token", () => {
+	const allowed = allowedTokens(PROMPTS.v3);
+	for (const [raw, want] of Object.entries(REF.parsed)) {
+		if (want === null) assert.throws(() => parseToken(raw, allowed), /invalid token/, raw);
+		else assert.equal(parseToken(raw, allowed), want, raw);
+	}
+});
+
+// ---------------------------------------------------------------------------
+// the provider, driven like pi's agent loop, against a local OpenAI-compatible endpoint
+
+type Handler = (event: any, ctx: any) => unknown;
+
+async function endpoint(replies: (string | { status: number; body: string })[]) {
+	const bodies: any[] = [];
+	const server = createServer(async (req: IncomingMessage, res) => {
+		let data = "";
+		for await (const chunk of req) data += chunk;
+		bodies.push({ path: req.url, auth: req.headers.authorization, body: JSON.parse(data) });
+		const r = replies.shift() ?? "DONE";
+		if (typeof r !== "string") {
+			res.writeHead(r.status, { "content-type": "application/json" });
+			res.end(r.body);
+			return;
+		}
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: r } }] }));
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+	return { url, bodies, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+}
+
+function fakePi(
+	flags: Record<string, string>,
+	robot = "maniskill",
+	tools = ["act", "finish"],
+	units?: Partial<UnitsHandle>,
+) {
+	flags = deployFlags(flags);
+	const handlers = new Map<string, Handler[]>();
+	const defaults: Record<string, unknown> = {};
+	const entries: { type: string; data: any }[] = [];
+	const listeners = new Map<string, ((data: unknown) => void)[]>();
+	let provider: any;
+	const pi = {
+		events: {
+			on: (channel: string, fn: (data: unknown) => void) => {
+				listeners.set(channel, [...(listeners.get(channel) ?? []), fn]);
+				return () => {};
+			},
+		},
+		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
+		registerFlag: (name: string, o: { default?: unknown }) => {
+			defaults[name] = o.default;
+		},
+		getFlag: (name: string) => (name in flags ? flags[name] : defaults[name]),
+		getActiveTools: () => tools,
+		registerProvider: (p: any) => {
+			provider = p;
+		},
+		appendEntry: (type: string, data: any) => entries.push({ type, data }),
+	} as unknown as ExtensionAPI;
+	const warnings: string[] = [];
+	const ctx = {
+		hasUI: true,
+		model: { provider: "finetuned" },
+		ui: { notify: (s: string) => warnings.push(s) },
+		sessionManager: { getBranch: () => [{ type: "custom", customType: "robot_task", data: { robot } }] },
+	};
+	finetuned(pi);
+	const emit = async (name: string) => {
+		// The robot's units layer publishes its handle at session start, before the provider's handlers.
+		if (name === "session_start" && units) for (const fn of listeners.get(UNITS_EVENT) ?? []) fn(units);
+		for (const fn of handlers.get(name) ?? []) await fn({ type: name }, ctx);
+	};
+	const model = (id: string) => provider.getModels().find((m: any) => m.id === id);
+	const turn = (messages: unknown[], id = "qwen3_5_2b_showharness_sim", signal?: AbortSignal) =>
+		provider.streamSimple(model(id), { messages }, { signal }).result();
+	return { emit, turn, entries, warnings, model };
+}
+
+const calls = (m: any) => m.content.filter((c: any) => c.type === "toolCall");
+/** The units `act` result: its header (with the TASK line), then the robot's state and images. */
+const observation = (m: any, details: Record<string, unknown> = {}) =>
+	calls(m).map((c: any) => ({
+		role: "toolResult",
+		toolCallId: c.id,
+		toolName: c.name,
+		content: [
+			{ type: "text", text: `units: ${c.arguments.unit} x1\nRecent units: none\nTASK: ${TASK}` },
+			{ type: "text", text: "{}" },
+			{ type: "image", data: png(agentRaw).toString("base64"), mimeType: "image/png" },
+			{ type: "image", data: png(wristRaw).toString("base64"), mimeType: "image/png" },
+		],
+		details,
+		isError: false,
+	}));
+
+test("one stateless request per step; the token becomes a units act; DONE finishes", async () => {
+	const ep = await endpoint(["MV_DOWN", "MV_LEFT", "no idea", "GRASP", "DONE"]);
+	const p = fakePi({ "ft-endpoint": ep.url, "ft-wrist": "rot=90,flip=vertical,crop=1.3333,square=256" });
+	try {
+		assert.deepEqual(
+			[...RELEASED, "local"].map((id) => Boolean(p.model(id))),
+			[...RELEASED, "local"].map(() => true),
+		);
+		await p.emit("session_start");
+		await p.emit("before_agent_start");
+		assert.deepEqual(p.warnings, []);
+		// The opening RELEASE asks no model.
+		const t0 = await p.turn([]);
+		assert.deepEqual(calls(t0)[0].arguments, { unit: "RELEASE" });
+		assert.equal(t0.usage.totalTokens, 0);
+		assert.equal(ep.bodies.length, 0);
+		const history: unknown[] = [t0, ...observation(t0)];
+		const units: string[] = [];
+		let m = t0;
+		for (let i = 0; i < 6 && calls(m)[0]?.name === "act"; i++) {
+			m = await p.turn(history);
+			history.push(m, ...observation(m));
+			units.push(
+				calls(m)
+					.map((c: any) => (c.name === "act" ? c.arguments.unit : c.name))
+					.join(),
+			);
+		}
+		// "no idea" parses to nothing: the runner's MV_DOWN fallback.
+		assert.deepEqual(units, ["MV_DOWN", "MV_LEFT", "MV_DOWN", "GRASP", "finish"]);
+		assert.deepEqual(calls(m)[0].arguments.status, "success");
+		assert.equal(ep.bodies.length, 5);
+		assert.equal(ep.bodies[0].path, "/v1/chat/completions");
+		assert.equal(ep.bodies[0].auth, "Bearer EMPTY");
+		// Step 2's request is exactly the reference: after MV_DOWN then MV_LEFT, newest first.
+		const second = fingerprinted(ep.bodies[2].body);
+		assert.deepEqual(second, REF.payload);
+		// GRASP / RELEASE never enter the move history; each request is one user message.
+		const last = ep.bodies[4].body;
+		assert.equal(last.messages.length, 1);
+		assert.match(last.messages[0].content[2].text, /Recent moves, newest first: MV_DOWN, MV_LEFT, MV_DOWN\n/);
+		const steps = p.entries.filter((e) => e.type === STEP_ENTRY).map((e) => e.data);
+		assert.deepEqual(
+			steps.map((s) => [s.token, s.fallback]),
+			[
+				["MV_DOWN", false],
+				["MV_LEFT", false],
+				["MV_DOWN", true],
+				["GRASP", false],
+				["DONE", false],
+			],
+		);
+		assert.equal(steps[2].raw, "no idea");
+		assert.deepEqual(
+			steps[2].media.map((x: any) => [x.camera, x.sha1]),
+			[
+				["agentview", "6c883980c15b"],
+				["wrist", "1e53f10798cd"],
+			],
+		);
+		// pi stops after finish; asked again, the policy is spent.
+		assert.equal(calls(await p.turn(history)).length, 0);
+	} finally {
+		await ep.close();
+	}
+});
+
+test("the execution swap changes only the executed unit; env success, max steps and errors end the episode", async () => {
+	const ep = await endpoint(["MV_FWD", "MV_FWD"]);
+	const p = fakePi({ "ft-endpoint": ep.url, "ft-swap": "MV_FWD,MV_BACK", "ft-max-steps": "1" }, "piper");
+	try {
+		await p.emit("session_start");
+		await p.emit("before_agent_start");
+		const t0 = await p.turn([]);
+		const h: unknown[] = [t0, ...observation(t0)];
+		const t1 = await p.turn(h);
+		assert.deepEqual(calls(t1)[0].arguments, { unit: "MV_BACK" });
+		h.push(t1, ...observation(t1));
+		const t2 = await p.turn(h);
+		assert.deepEqual(calls(t2)[0].arguments.status, "failure");
+		assert.match(calls(t2)[0].arguments.summary, /max_steps \(1\)/);
+		const step = p.entries.find((e) => e.type === STEP_ENTRY)?.data;
+		assert.deepEqual([step.token, step.executed], ["MV_FWD", "MV_BACK"]);
+	} finally {
+		await ep.close();
+	}
+
+	const q = fakePi({ "ft-endpoint": "http://127.0.0.1:9/v1" }, "maniskill");
+	await q.emit("session_start");
+	const t0 = await q.turn([]);
+	const done = await q.turn([t0, ...observation(t0, { terminated: true, success: true })]);
+	assert.deepEqual(calls(done)[0].arguments.status, "success");
+	assert.match(calls(done)[0].arguments.summary, /environment reports success/);
+
+	// A non-retryable HTTP error is a model error, not a fallback unit.
+	const bad = await endpoint([{ status: 400, body: '{"error":"no such adapter"}' }]);
+	const r = fakePi({ "ft-endpoint": bad.url }, "robolab", ["finish"]);
+	try {
+		await r.emit("session_start");
+		await r.emit("before_agent_start");
+		assert.match(r.warnings.join("\n"), /--units/);
+		const s0 = await r.turn([]);
+		const err = await r.turn([s0, ...observation(s0)]);
+		assert.equal(err.stopReason, "error");
+		assert.match(err.errorMessage, /HTTP 400/);
+		// An aborted turn ends the policy.
+		const ac = new AbortController();
+		ac.abort();
+		assert.equal((await r.turn([], "qwen3_5_2b_showharness_sim", ac.signal)).stopReason, "aborted");
+		// finetuned/local needs an adapter name.
+		await r.emit("session_start");
+		const l0 = await r.turn([], "local");
+		assert.match((await r.turn([l0, ...observation(l0)], "local")).errorMessage, /--ft-model/);
+	} finally {
+		await bad.close();
+	}
+});
+
+test("prepare turns a GUMI run into a Show-Harness rollout with the provider's camera transform", () => {
+	const run = mkdtempSync(join(tmpdir(), "gumi-"));
+	mkdirSync(join(run, "images", "agentview"), { recursive: true });
+	mkdirSync(join(run, "images", "wrist"), { recursive: true });
+	writeFileSync(join(run, "images", "agentview", "0000.png"), png(agentRaw));
+	writeFileSync(join(run, "images", "wrist", "0000.png"), png(wristRaw));
+	const rows = [
+		{ step: 0, token: "MV_DOWN", gripper_closed: false, agentview: "images/agentview/0000.png", src: "agent" },
+		{
+			step: 1,
+			token: "GRASP",
+			gripper_closed: true,
+			agentview: "images/agentview/0000.png",
+			wrist: "images/wrist/0000.png",
+		},
+	];
+	writeFileSync(join(run, "actions.jsonl"), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+	const out = mkdtempSync(join(tmpdir(), "rollouts-"));
+	const views = { agentview: SPECS[0], wrist: SPECS[1] };
+	const r = convertRun(run, join(out, "t"), 0, views, TASK, { robot: "libero" });
+	assert.equal(r.rows, 1);
+	assert.match(r.warnings.join(), /dropped steps 0/);
+	const line = JSON.parse(readFileSync(join(r.out, "actions.jsonl"), "utf8").trim());
+	assert.deepEqual(
+		[line.token, line.gripper_closed, line.agentview, line.wrist],
+		["GRASP", true, "agentview/0000.png", "wrist/0000.png"],
+	);
+	// Byte-identical to what the provider sends for the same frames (the REF fingerprints).
+	assert.equal(fingerprint(decodePng(readFileSync(join(r.out, line.agentview)))).sha1, "6c883980c15b");
+	assert.equal(fingerprint(decodePng(readFileSync(join(r.out, line.wrist)))).sha1, "1e53f10798cd");
+	const meta = JSON.parse(readFileSync(join(r.out, "metadata.json"), "utf8"));
+	assert.equal(meta.task_text, TASK);
+	assert.deepEqual(findRuns(run), [run]);
+});
+
+test("prepare keeps RT_* turns for the v5 vocabulary (15 units) and drops them for v3", () => {
+	assert.equal(trainedTokens("v5-libero").length, 15);
+	assert.ok(RT_UNITS.every((u) => trainedTokens("v5-libero").includes(u)));
+	assert.ok(!RT_UNITS.some((u) => trainedTokens("v3").includes(u)));
+	assert.throws(() => trainedTokens("v9"), /unknown prompt version v9/);
+	const run = mkdtempSync(join(tmpdir(), "gumi-"));
+	mkdirSync(join(run, "images", "agentview"), { recursive: true });
+	mkdirSync(join(run, "images", "wrist"), { recursive: true });
+	writeFileSync(join(run, "images", "agentview", "0000.png"), png(agentRaw));
+	writeFileSync(join(run, "images", "wrist", "0000.png"), png(wristRaw));
+	const frame = { agentview: "images/agentview/0000.png", wrist: "images/wrist/0000.png" };
+	const tokens = ["MV_DOWN", "RT_PITCH_FWD", "ROTATE_CW", "RT_YAW_CCW", "GRASP"];
+	const rows = tokens.map((token, step) => ({ step, token, kind: "move", gripper_closed: false, ...frame }));
+	writeFileSync(join(run, "actions.jsonl"), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+	const views = { agentview: SPECS[0], wrist: SPECS[1] };
+	const convert = (version?: string) => {
+		const out = mkdtempSync(join(tmpdir(), "rollouts-"));
+		const r = convertRun(run, join(out, "t"), 0, views, TASK, { robot: "libero" }, version);
+		const lines = readFileSync(join(r.out, "actions.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l));
+		const meta = JSON.parse(readFileSync(join(r.out, "metadata.json"), "utf8"));
+		return { r, lines, meta };
+	};
+	const v3 = convert();
+	// ROTATE_* stays for the converter to skip, as before; the images are renumbered densely.
+	assert.deepEqual(
+		v3.lines.map((l) => l.token),
+		["MV_DOWN", "ROTATE_CW", "GRASP"],
+	);
+	assert.deepEqual(
+		v3.lines.map((l) => l.agentview),
+		["agentview/0000.png", "agentview/0001.png", "agentview/0002.png"],
+	);
+	assert.match(v3.r.warnings.join(), /dropped RT_\* steps 1, 3 \(v3 has no turns/);
+	assert.equal(v3.meta.prompt_version, "v3");
+	const v5 = convert("v5-libero");
+	assert.deepEqual(
+		v5.lines.map((l) => l.token),
+		tokens,
+	);
+	assert.deepEqual(v5.r.warnings, []);
+	assert.equal(v5.meta.prompt_version, "v5-libero");
+});
+
+const V5_TEMPLATE = `Task: {task}
+Recent moves, newest first: {recent_moves}
+Output one of: MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, RT_ROLL_LEFT, RT_ROLL_RIGHT, RT_PITCH_FWD, RT_PITCH_BACK, RT_YAW_CW, RT_YAW_CCW, GRASP, RELEASE, DONE`;
+
+/** A v5 run on a robot whose units layer reports `eef` (m) at each decision. */
+function v5Run(ep: { url: string }, eef: number[][], vocabulary: readonly string[] = UNITS, flags = {}) {
+	const file = join(mkdtempSync(join(tmpdir(), "v5-")), "prompt_v5.txt");
+	writeFileSync(file, `${V5_TEMPLATE}\n`);
+	return fakePi(
+		{ "ft-endpoint": ep.url, "ft-prompt": "v5-libero", "ft-prompt-file": file, "units-plugins": "", ...flags },
+		"libero",
+		["act", "finish"],
+		{ vocabulary, state: async () => ({ eef_xyz: eef.shift() ?? [0, 0, 0] }) },
+	);
+}
+
+test("v5: 15 units, turns in the history, the no-progress guard, DONE and out-of-vocabulary asked again", async () => {
+	assert.deepEqual(
+		allowedTokens(V5_TEMPLATE),
+		V5_ACTIONS.map((t) => t),
+	);
+	const ep = await endpoint(["MV_DOWN", "MV_DOWN", "RT_YAW_CW", "DONE", "GRASP", "MV_STRETCH", "MV_UP"]);
+	// MV_DOWN moves 1 mm, then 1 mm again: withheld from the third decision.
+	const p = v5Run(ep, [
+		[0.5, 0, 0.2],
+		[0.5, 0, 0.199],
+		[0.5, 0, 0.198],
+		[0.5, 0, 0.198],
+		[0.5, 0, 0.198],
+		[0.5, 0, 0.198],
+	]);
+	try {
+		await p.emit("session_start");
+		await p.emit("before_agent_start");
+		assert.deepEqual(p.warnings, []);
+		const t0 = await p.turn([]);
+		const history: unknown[] = [t0, ...observation(t0)];
+		const units: string[] = [];
+		for (let i = 0; i < 5; i++) {
+			const m = await p.turn(history);
+			history.push(m, ...observation(m, i === 4 ? { terminated: true } : {}));
+			units.push(calls(m)[0].arguments.unit);
+		}
+		assert.deepEqual(units, ["MV_DOWN", "MV_DOWN", "RT_YAW_CW", "GRASP", "MV_UP"]);
+		const done = await p.turn(history);
+		assert.equal(calls(done)[0].arguments.status, "success");
+		assert.match(calls(done)[0].arguments.summary, /environment reports success/);
+
+		const b = ep.bodies.map((x) => x.body);
+		assert.equal(b.length, 7);
+		// Unconstrained unless something is withheld.
+		assert.equal(b[0].structured_outputs, undefined);
+		assert.deepEqual(
+			b[2].structured_outputs.choice,
+			V5_ACTIONS.filter((t) => t !== "MV_DOWN"),
+		);
+		// DONE counted, then asked again without it; the history holds the turn.
+		assert.deepEqual(
+			b[4].structured_outputs.choice,
+			V5_ACTIONS.filter((t) => t !== "DONE"),
+		);
+		assert.match(b[4].messages[0].content[2].text, /Recent moves, newest first: RT_YAW_CW, MV_DOWN, MV_DOWN\n/);
+		// Out of vocabulary: asked again, constrained to the whole vocabulary.
+		assert.equal(b[5].structured_outputs, undefined);
+		assert.deepEqual(b[6].structured_outputs.choice, [...V5_ACTIONS]);
+		const steps = p.entries.filter((e) => e.type === STEP_ENTRY).map((e) => e.data);
+		assert.deepEqual(
+			steps.map((s) => [s.token, s.withheld ?? null, s.moved_mm ?? null]),
+			[
+				["MV_DOWN", null, null],
+				["MV_DOWN", null, 1],
+				["RT_YAW_CW", ["MV_DOWN"], 1],
+				["GRASP", null, null],
+				["MV_UP", null, null],
+			],
+		);
+		assert.equal(steps[3].done_ignored, 1);
+		assert.equal(steps[4].asks[0].raw, "MV_STRETCH");
+	} finally {
+		await ep.close();
+	}
+});
+
+test("v5: the budget, an endpoint that ignores the constraint, and a robot that cannot turn", async () => {
+	// The step budget ends a v5 episode; the reason names env success, not DONE.
+	const b = await endpoint(["MV_FWD"]);
+	const budget = v5Run(b, [], UNITS, { "ft-max-steps": "1" });
+	try {
+		await budget.emit("session_start");
+		const t0 = await budget.turn([]);
+		const t1 = await budget.turn([t0, ...observation(t0)]);
+		assert.equal(calls(t1)[0].arguments.unit, "MV_FWD");
+		const t2 = await budget.turn([t0, ...observation(t0), t1, ...observation(t1)]);
+		assert.match(calls(t2)[0].arguments.summary, /max_steps \(1\) reached without env success/);
+	} finally {
+		await b.close();
+	}
+
+	// DONE asked again, but the endpoint answers DONE anyway: a model error, never a silent finish.
+	const ignoring = await endpoint(["DONE", "DONE"]);
+	const q = v5Run(ignoring, []);
+	try {
+		await q.emit("session_start");
+		const s0 = await q.turn([]);
+		const err = await q.turn([s0, ...observation(s0)]);
+		assert.equal(err.stopReason, "error");
+		assert.match(err.errorMessage, /ignored structured_outputs/);
+	} finally {
+		await ignoring.close();
+	}
+
+	// Without RT_* in the robot's act: a warning up front, and an emitted turn ends the episode with the reason.
+	const turnless = await endpoint(["RT_ROLL_LEFT"]);
+	const r = v5Run(
+		turnless,
+		[],
+		UNITS.filter((u) => !u.startsWith("RT_")),
+	);
+	try {
+		await r.emit("session_start");
+		await r.emit("before_agent_start");
+		assert.match(r.warnings.join("\n"), /does not offer RT_ROLL_LEFT.*--units-rt=true/);
+		const s0 = await r.turn([]);
+		const end = await r.turn([s0, ...observation(s0)]);
+		assert.equal(calls(end)[0].name, "finish");
+		assert.equal(calls(end)[0].arguments.status, "failure");
+		assert.match(calls(end)[0].arguments.summary, /RT_ROLL_LEFT, which this robot's act does not offer/);
+	} finally {
+		await turnless.close();
+	}
+
+	// v5 reads the vendored prompt (no warning); plugins that regrind a token are flagged.
+	const none = fakePi({ "ft-prompt": "v5-libero", "units-plugins": "variable_step,mem_text" }, "libero");
+	await none.emit("session_start");
+	await none.emit("before_agent_start");
+	assert.doesNotMatch(none.warnings.join("\n"), /not vendored/);
+	assert.match(none.warnings.join("\n"), /units plugins variable_step change what a token does/);
+});
+
+test("fine-tuned mode refuses a robot whose images are not an agentview and a wrist view, before any step", async () => {
+	const base = { vocabulary: ["MV_FWD", "GRASP", "RELEASE", "DONE"], arms: [] as string[] };
+	// No wrist camera (ManiSkill widowxai, the default dual Franka, a UR5e with fixed cameras).
+	const none = fakePi({}, "maniskill", ["act", "finish"], { ...base, wrist: () => false });
+	await none.emit("session_start");
+	assert.match(
+		none.warnings.join("\n"),
+		/finetuned: the fine-tuned adapters read an agentview and a wrist image, and this robot configuration has no wrist camera/,
+	);
+	const t = await none.turn([]);
+	assert.deepEqual(calls(t), [], "no act: not even the opening RELEASE");
+	assert.match(t.content[0].text, /refused this robot/);
+	// --ft-cameras must name a third-person view and a wrist view of the robot's observation.
+	const nav = { ...base, wrist: () => true, views: () => ({ views: 3, wrist: 2 }) };
+	const wrong = fakePi({}, "robocasa", ["act", "finish"], nav);
+	await wrong.emit("session_start");
+	assert.match(
+		wrong.warnings.join("\n"),
+		/--ft-cameras 0,1: image 1 must be a wrist view and image 0 a third-person view \(the robot's wrist views are image\(s\) 2\)/,
+	);
+	assert.deepEqual(calls(await wrong.turn([])), []);
+	const short = fakePi({}, "maniskill", ["act", "finish"], { ...base, views: () => ({ views: 1 }) });
+	await short.emit("session_start");
+	assert.match(
+		short.warnings.join("\n"),
+		/--ft-cameras 0,1 names image 1, but the robot's observation carries 1 image/,
+	);
+	// The right pair runs.
+	const right = fakePi({ "ft-cameras": "0,2" }, "robocasa", ["act", "finish"], nav);
+	await right.emit("session_start");
+	assert.doesNotMatch(right.warnings.join("\n"), /refused|ft-cameras/);
+	assert.deepEqual(calls(await right.turn([]))[0].arguments, { unit: "RELEASE" });
+	const libero = fakePi({}, "libero", ["act", "finish"], {
+		...base,
+		wrist: () => true,
+		views: () => ({ views: 2, wrist: 1 }),
+	});
+	await libero.emit("session_start");
+	assert.deepEqual(calls(await libero.turn([]))[0].arguments, { unit: "RELEASE" });
+});
+
+/** A dual-arm units `act` result: the header, then the front, left wrist and right wrist images. */
+const dualObservation = (m: any) =>
+	calls(m).map((c: any) => ({
+		role: "toolResult",
+		toolCallId: c.id,
+		toolName: c.name,
+		content: [
+			{ type: "text", text: `units: ${c.arguments.unit} x1\nTASK: fold the towel` },
+			{ type: "image", data: png(agentRaw).toString("base64"), mimeType: "image/png" },
+			{ type: "image", data: png(wristRaw).toString("base64"), mimeType: "image/png" },
+			{ type: "image", data: png(wristRaw).toString("base64"), mimeType: "image/png" },
+		],
+		details: {},
+		isError: false,
+	}));
+const DUAL_UNITS: Partial<UnitsHandle> = {
+	arms: ["left", "right"],
+	vocabulary: [...UNITS],
+	wrist: () => true,
+	views: () => ({ views: 3, wrist: [1, 2] }),
+};
+
+test("dual prompts: the v4 templates verbatim, one token per arm, and the pair parser", () => {
+	assert.match(DUAL_PROMPTS["v4-dual-once"].template, /^You are controlling a dual-arm robot with three cameras:/);
+	assert.match(DUAL_PROMPTS["v4-dual-once"].template, /Return the two tokens only, no punctuation, no explanation:$/);
+	assert.match(DUAL_PROMPTS["v4-dual-twice"].template, /Control the \{arm\} arm now\./);
+	assert.match(DUAL_PROMPTS["v4-dual-chain"].followup ?? "", /Now choose the next action for the RIGHT arm/);
+	const allowed = ["MV_FWD", "MV_UP", "STILL", "DONE"];
+	assert.deepEqual(parsePair("MV_UP STILL", allowed), ["MV_UP", "STILL"]);
+	assert.deepEqual(
+		parsePair("<think>x</think>STILL, MV_FWD.", allowed),
+		["STILL", "MV_FWD"],
+		"reading order, not vocabulary order",
+	);
+	assert.throws(() => parsePair("MV_UP", allowed), /needs TWO tokens/);
+});
+
+test("dual fine-tuned (once): both arms open, pairs run as one paired act, a lone DONE holds, both DONE finish", async () => {
+	const ep = await endpoint(["MV_UP MV_FWD", "STILL GRASP", "DONE MV_UP", "garbage", "DONE DONE"]);
+	const p = fakePi(
+		{ "ft-endpoint": ep.url, "ft-prompt": "v4-dual-once" },
+		"piper_dual",
+		["act", "finish"],
+		DUAL_UNITS,
+	);
+	try {
+		await p.emit("session_start");
+		await p.emit("before_agent_start");
+		const t0 = await p.turn([]);
+		assert.deepEqual(calls(t0)[0].arguments, { unit: "RELEASE", arm: "left", other: "RELEASE" });
+		const history: unknown[] = [t0, ...dualObservation(t0)];
+		const acts: unknown[] = [];
+		let m = t0;
+		for (let i = 0; i < 6 && calls(m)[0]?.name === "act"; i++) {
+			m = await p.turn(history);
+			history.push(m, ...dualObservation(m));
+			acts.push(calls(m)[0].name === "act" ? calls(m)[0].arguments : calls(m)[0].name);
+		}
+		assert.deepEqual(acts, [
+			{ unit: "MV_UP", arm: "left", other: "MV_FWD" },
+			{ unit: "GRASP", arm: "right" },
+			{ unit: "MV_UP", arm: "right" },
+			// Unparsable: both arms hold; STOP on one arm returns the next observation.
+			{ unit: "STOP", arm: "left" },
+			"finish",
+		]);
+		assert.equal(calls(m)[0].arguments.status, "success");
+		const body = ep.bodies[3].body;
+		assert.equal(body.max_tokens, 48, "two tokens: the budget doubles");
+		assert.equal(body.messages[0].content.filter((c: any) => c.type === "image_url").length, 3);
+		const text = body.messages[0].content[3].text;
+		// Per-arm history, newest first, STILL included (the lone DONE is recorded as the STILL it ran).
+		assert.match(text, /Left arm recent moves, newest first: STILL, STILL, MV_UP\n/);
+		assert.match(text, /Right arm recent moves, newest first: MV_UP, MV_FWD\n/);
+		const steps = p.entries.filter((e) => e.type === STEP_ENTRY).map((e) => e.data);
+		assert.deepEqual(steps[2].executed, { left: "STILL", right: "MV_UP" });
+		assert.equal(steps[3].fallback, true);
+		assert.deepEqual(
+			steps[0].media.map((x: any) => x.camera),
+			["agentview", "wrist_left", "wrist_right"],
+		);
+	} finally {
+		await ep.close();
+	}
+});
+
+test("dual fine-tuned twice and chain: the request shapes of the scheme", async () => {
+	const ep = await endpoint(["MV_UP", "MV_FWD", "MV_DOWN", "GRASP"]);
+	try {
+		const t = fakePi(
+			{ "ft-endpoint": ep.url, "ft-prompt": "v4-dual-twice" },
+			"piper_dual",
+			["act", "finish"],
+			DUAL_UNITS,
+		);
+		await t.emit("session_start");
+		const t0 = await t.turn([]);
+		const t1 = await t.turn([t0, ...dualObservation(t0)]);
+		assert.deepEqual(calls(t1)[0].arguments, { unit: "MV_UP", arm: "left", other: "MV_FWD" });
+		const [left, right] = ep.bodies.map((b) => b.body.messages[0].content.at(-1).text);
+		assert.match(left, /Control the LEFT arm now\./);
+		assert.match(right, /Control the RIGHT arm now\./);
+		assert.equal(
+			right,
+			left
+				.replaceAll("LEFT arm", "RIGHT arm")
+				.replaceAll("LEFT wrist", "RIGHT wrist")
+				.replaceAll("LEFT gripper fingers", "RIGHT gripper fingers")
+				.replaceAll("LEFT gripper holds", "RIGHT gripper holds"),
+			"the right call is not told the left token",
+		);
+
+		const c = fakePi(
+			{ "ft-endpoint": ep.url, "ft-prompt": "v4-dual-chain" },
+			"piper_dual",
+			["act", "finish"],
+			DUAL_UNITS,
+		);
+		await c.emit("session_start");
+		const c0 = await c.turn([]);
+		const c1 = await c.turn([c0, ...dualObservation(c0)]);
+		assert.deepEqual(calls(c1)[0].arguments, { unit: "MV_DOWN", arm: "left", other: "GRASP" });
+		const follow = ep.bodies[3].body.messages;
+		assert.equal(follow.length, 3);
+		assert.deepEqual(follow[1], { role: "assistant", content: "MV_DOWN" });
+		assert.match(follow[2].content, /Now choose the next action for the RIGHT arm/);
+	} finally {
+		await ep.close();
+	}
+	// A dual prompt on one arm, and a single-arm prompt on two, are refused before any step.
+	const one = fakePi({ "ft-prompt": "v4-dual-once" }, "piper", ["act", "finish"], {
+		arms: [],
+		vocabulary: [...UNITS],
+	});
+	await one.emit("session_start");
+	assert.match(one.warnings.join("\n"), /drives two arms .* this robot has 1/);
+	const two = fakePi({ "ft-prompt": "v4-piper" }, "piper_dual", ["act", "finish"], DUAL_UNITS);
+	await two.emit("session_start");
+	assert.match(two.warnings.join("\n"), /this robot has two arms/);
+});
+
+const PLAN = [
+	{
+		motion: "GRASP",
+		target: "banana",
+		affordance: "left end",
+		description: "approach then close",
+		completion: "banana between the fingers",
+	},
+	{
+		motion: "LIFT",
+		target: "banana",
+		affordance: "left end",
+		description: "lift",
+		completion: "banana above the table",
+	},
+	{ motion: "MOVE", target: "plate", affordance: "center", description: "carry", completion: "banana over the plate" },
+	{ motion: "RELEASE", target: "plate", affordance: "center", description: "open", completion: "banana on the plate" },
+	{
+		motion: "RETREAT",
+		target: "gripper",
+		affordance: "gripper",
+		description: "lift away",
+		completion: "gripper clear",
+	},
+];
+
+test("subgoal conditioning follows rollouts_to_alpaca.py's phase anchors and even split", () => {
+	assert.equal(activeSubgoal(PLAN, 0, 5, 20)?.index, 0, "approach + grasp: the GRASP subgoal");
+	assert.equal(activeSubgoal(PLAN, 1, 0, 20)?.index, 1, "transport starts at LIFT");
+	assert.equal(activeSubgoal(PLAN, 1, 12, 20)?.index, 2, "and moves on to MOVE over the phase");
+	assert.equal(activeSubgoal(PLAN, 1, 99, 20)?.index, 2, "never past the phase");
+	assert.equal(activeSubgoal(PLAN, 2, 0, 20)?.index, 3);
+	assert.equal(activeSubgoal(PLAN, 2, 15, 20)?.index, 4);
+	assert.equal(activeSubgoal([], 0, 0, 20), undefined);
+});
+
+test("v3-subgoal and v3-affordance prompts carry the task's config; the policy's GRASP moves the phase", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "ft-cond-"));
+	writeFileSync(join(dir, "task_config.json"), JSON.stringify({ task: TASK, subgoals: PLAN }));
+	writeFileSync(
+		join(dir, "affordance_config.json"),
+		JSON.stringify({ task: TASK, target: "banana", affordance: "left end" }),
+	);
+	const ep = await endpoint(["GRASP", "MV_UP", "MV_LEFT"]);
+	try {
+		const p = fakePi({
+			"ft-endpoint": ep.url,
+			"ft-prompt": "v3-subgoal",
+			"ft-task-config": join(dir, "task_config.json"),
+		});
+		await p.emit("session_start");
+		const t0 = await p.turn([]);
+		const h: unknown[] = [t0, ...observation(t0)];
+		for (let i = 0; i < 2; i++) {
+			const m = await p.turn(h);
+			h.push(m, ...observation(m));
+		}
+		const texts = ep.bodies.map((b) => b.body.messages[0].content.at(-1).text as string);
+		assert.match(
+			texts[0],
+			/Stage: GRASP\nTarget: banana\nAffordance: left end\nStage goal: approach then close\nDone when: banana between the fingers\n/,
+		);
+		assert.match(texts[0], /between the black gripper fingers/);
+		assert.match(texts[1], /Stage: LIFT\n/, "after the policy's GRASP: transport");
+		const steps = p.entries.filter((e) => e.type === STEP_ENTRY).map((e) => e.data.conditioning);
+		assert.deepEqual(steps[1], { phase: 1, phase_step: 0, subgoal: 1 });
+
+		const q = fakePi({
+			"ft-endpoint": ep.url,
+			"ft-prompt": "v3-affordance",
+			"ft-affordance-config": join(dir, "affordance_config.json"),
+		});
+		await q.emit("session_start");
+		const q0 = await q.turn([]);
+		await q.turn([q0, ...observation(q0)]);
+		assert.match(ep.bodies.at(-1)?.body.messages[0].content.at(-1).text, /Grasp first: banana, at left end\n/);
+		// Without its config the conditioned prompt fails rather than rendering blanks.
+		const r = fakePi({ "ft-endpoint": ep.url, "ft-prompt": "v3-subgoal" });
+		await r.emit("session_start");
+		const r0 = await r.turn([]);
+		const failed = await r.turn([r0, ...observation(r0)]);
+		assert.equal(failed.stopReason, "error");
+		assert.match(failed.errorMessage, /needs --ft-task-config/);
+	} finally {
+		await ep.close();
+	}
+});
+
+test("v5-libero runs the vendored prompt_v5.txt verbatim with the 15-unit vocabulary", () => {
+	const tpl = readFileSync(new URL("../src/modes/finetuned/templates/v5_libero_mvtoken.txt", import.meta.url), "utf8");
+	const vendored = readFileSync(
+		new URL("../../../services/pi_embodied_services/finetuned/showharness/prompts/v5/prompt_v5.txt", import.meta.url),
+		"utf8",
+	);
+	assert.equal(tpl, vendored);
+	assert.deepEqual(allowedTokens(tpl.trim()), [...V5_ACTIONS]);
+	assert.equal(trainedTokens("v5-libero").length, 15);
+	assert.match(formatPrompt(tpl.trim(), { task: "t", recent_moves: "none" }), /^You are controlling a robot arm/);
+	// The file is not Show-Harness's: its NOTICE names the source dataset, the declared license and this exact hash (U4).
+	const notice = readFileSync(
+		new URL("../../../services/pi_embodied_services/finetuned/showharness/prompts/v5/NOTICE", import.meta.url),
+		"utf8",
+	);
+	assert.match(notice, /huggingface\.co\/datasets\/aaroncaozj\/libero_show-harness_tokenized/);
+	assert.match(notice, /Declared license: MIT/);
+	assert.ok(
+		notice.includes(createHash("sha256").update(vendored).digest("hex")),
+		"the NOTICE names the vendored file's sha256",
+	);
+});
+
+test("--ft-prompt names a prompt version or a template file; anything else is refused before the first step (U3)", async () => {
+	// v5-lite (a misspelt v5-libero) used to start and run prompt_v5 under v3's rules; v5 was an alias.
+	for (const name of ["v5-lite", "v5", "v6-libero"]) {
+		const p = fakePi({ "ft-prompt": name }, "libero");
+		await p.emit("session_start");
+		assert.match(
+			p.warnings.join("\n"),
+			new RegExp(`--ft-prompt ${name}: not a prompt version \\(.*v5-libero.*\\) and not a template file`),
+			name,
+		);
+	}
+	assert.equal(isV5("v5"), false);
+	assert.equal(isV5("v5-libero"), true);
+	assert.equal(PRESETS.v5, undefined, "no alias of v5-libero");
+	// A known version, and a template file by path, start.
+	const ok = fakePi({ "ft-prompt": "v5-libero" }, "libero");
+	await ok.emit("session_start");
+	assert.doesNotMatch(ok.warnings.join("\n"), /not a prompt version/);
+	const file = join(mkdtempSync(join(tmpdir(), "ft-")), "prompt.txt");
+	writeFileSync(file, `${V5_TEMPLATE}\n`);
+	const byPath = fakePi({ "ft-prompt": file }, "libero");
+	await byPath.emit("session_start");
+	assert.doesNotMatch(byPath.warnings.join("\n"), /not a prompt version/);
+});

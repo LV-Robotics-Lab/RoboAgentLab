@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { getPublicWorkspacePackages } from "./release-packages.mjs";
+import { getPiReleasePackages } from "./release-packages.mjs";
 import { execNpmSync } from "./npm-command.mjs";
 
 const manifestSchemaVersion = 1;
@@ -81,7 +81,7 @@ export function produceArtifactSet({ repoRoot, outDir, build = true, offlineMode
 		execNpmSync(["run", offlineModelData ? "build:offline" : "build"], { cwd: root, stdio: "inherit" });
 	}
 	const artifactSource = source === undefined ? getGitSource(root) : source;
-	const packages = getPublicWorkspacePackages(join(root, "packages"));
+	const packages = getPiReleasePackages(join(root, "packages"));
 	const packedPackages = packPackages(packages, join(artifactDirectory, "tarballs"));
 	const manifest = {
 		schemaVersion: manifestSchemaVersion,

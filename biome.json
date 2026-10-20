@@ -37,6 +37,7 @@
 			"!**/*.models.ts",
 			"!packages/mom/data/**/*",
 			"!!**/node_modules",
+			"!!.local",
 			"!!apps"
 		]
 	},

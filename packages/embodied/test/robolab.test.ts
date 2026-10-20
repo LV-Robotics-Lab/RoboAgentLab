@@ -1,0 +1,335 @@
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { test } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
+import robolab, { MAX_ROTATE_RAD, STEP_M, VECTORS, YAW_STEP_RAD } from "../src/robots/robolab/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
+
+type Handler = (event: any, ctx: any) => unknown;
+
+/** A stub pi that records flags and tools and runs handlers in registration order (no env server is started). */
+function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
+	const handlers = new Map<string, Handler[]>();
+	const flags: Record<string, unknown> = {};
+	const tools = new Map<string, any>();
+	const entries: { type: string; data: any }[] = [];
+	let active: string[] = [];
+	const pi = {
+		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
+		registerFlag: (name: string, o: { default?: unknown }) => {
+			flags[name] = name in values ? values[name] : o.default;
+		},
+		getFlag: (name: string) => flags[name],
+		registerTool: (t: any) => tools.set(t.name, t),
+		registerCommand: () => {},
+		registerProvider: () => {},
+		setActiveTools: (names: string[]) => {
+			active = names;
+		},
+		getActiveTools: () => active,
+		appendEntry: (type: string, data: any) => entries.push({ type, data }),
+		events: { emit: () => {}, on: () => () => {} },
+	} as unknown as ExtensionAPI;
+	const ctx = {
+		hasUI: false,
+		cwd: tmpdir(),
+		ui: { notify: () => {} },
+		shutdown: () => {},
+		abort: () => {},
+		sessionManager: {
+			getBranch: () => [],
+			getEntries: () => [],
+			getSessionDir: () => tmpdir(),
+			getSessionFile: () => undefined,
+			getSessionId: () => "sess",
+		},
+	};
+	async function emit(name: string, event: Record<string, unknown> = {}) {
+		let result: any;
+		for (const fn of handlers.get(name) ?? []) result = (await fn({ type: name, ...event }, ctx)) ?? result;
+		return result;
+	}
+	const run = async (name: string, params: unknown) =>
+		(await tools.get(name).execute("id", params, undefined, undefined, ctx)) as any;
+	return { pi, flags, tools, entries, emit, run, active: () => active };
+}
+
+/**
+ * A fake env server (the wire protocol of ../src/rpc.ts) whose hand turns by exactly the yaw it is asked;
+ * the task is solved from the `solvedAfter`th motion on.
+ */
+async function fakeEnv(solvedAfter = Infinity) {
+	const calls: { method: string; args: unknown[]; kwargs: Record<string, unknown> }[] = [];
+	let yaw = 0;
+	let moved = 0;
+	const nd = (dtype: string, shape: number[], data: Buffer) => ({
+		__ndarray__: data.toString("base64"),
+		dtype,
+		shape,
+	});
+	const f32 = (v: number[]) => nd("float32", [v.length], Buffer.from(Float32Array.from(v).buffer));
+	const obs = () => ({
+		agentview: nd("uint8", [2, 2, 3], Buffer.alloc(12)),
+		wrist: nd("uint8", [2, 2, 3], Buffer.alloc(12)),
+		eef_pos: f32([0.4, 0, 0.3]),
+		eef_quat_wxyz: f32([0, 1, 0, 0]),
+		tilt_deg: 0,
+		yaw_deg: (yaw * 180) / Math.PI,
+		gripper_width: 0.08,
+		gripper_command: "open",
+		success: moved >= solvedAfter,
+		terminated: moved >= solvedAfter,
+		truncated: false,
+		env_steps: calls.length,
+	});
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			const { method, args = [], kwargs = {} } = JSON.parse(body);
+			calls.push({ method, args, kwargs });
+			const meta = {
+				task: "BananaInBowlTask",
+				seed: 0,
+				instruction: "put the banana in the bowl",
+				instruction_type: "default",
+				subtask: false,
+				episode_length_s: 60,
+				control_hz: 15,
+			};
+			let result: unknown = { status: "ok" };
+			if (method === "code.api") result = codeApiReply("robolab", kwargs.tier);
+			else if (method === "env.get_env_meta") result = meta;
+			else if (method === "env.reset") result = [obs(), {}];
+			else if (method === "env.move_delta") {
+				moved++;
+				result = { ...obs(), commanded_m: args[0], moved_m: args[0], decisions: 1, control_steps: 8 };
+			} else if (method === "code.run") {
+				// A program that solved the task in 16 control steps (the server's step count is 37 after it).
+				moved = solvedAfter;
+				result = {
+					status: "ran",
+					stdout: "",
+					stderr: "",
+					traceback: null,
+					error: null,
+					result: null,
+					calls: [],
+					n_calls: 2,
+					move_m: 0.1,
+					ms: 5,
+					steps: 16,
+					success: true,
+					terminated: true,
+					truncated: false,
+					obs: { ...obs(), env_steps: 37 },
+					frames: [nd("uint8", [2, 2, 3], Buffer.alloc(12))],
+				};
+			} else if (method === "env.rotate_delta") {
+				moved++;
+				yaw += Number(kwargs.yaw);
+				result = {
+					...obs(),
+					requested_yaw: kwargs.yaw,
+					commanded_yaw: kwargs.yaw,
+					yaw: kwargs.yaw,
+					moved_m: [0, 0, 0],
+					decisions: 2,
+					control_steps: 16,
+				};
+			}
+			res.end(JSON.stringify({ ok: true, result }));
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	const close = () => {
+		server.closeAllConnections();
+		server.close();
+	};
+	const motions = () => calls.filter((c) => c.method === "env.move_delta" || c.method === "env.rotate_delta");
+	return { url, calls, motions, close };
+}
+
+test("each MV_* unit is one 2 cm step along the base-frame vector (-y is MV_LEFT, +x away from the base)", () => {
+	for (const unit of MOVE_UNITS) {
+		const move = ground({ vectors: VECTORS, stepM: STEP_M }, unit)!;
+		assert.deepEqual(
+			move.delta.map((v) => Number(v.toFixed(9))),
+			VECTORS[unit].map((v) => v * 0.02),
+		);
+		assert.equal(Math.hypot(...VECTORS[unit]), 1);
+	}
+	assert.deepEqual(VECTORS.MV_LEFT, [0, -1, 0]);
+	assert.deepEqual(VECTORS.MV_FWD, [1, 0, 0]);
+});
+
+test("ROTATE_CW grounds to +yaw about base +z (counter-clockwise seen from above), as on LIBERO; one unit is one call", () => {
+	const spec = { vectors: VECTORS, stepM: STEP_M, yawStepRad: YAW_STEP_RAD };
+	assert.deepEqual(ground(spec, "ROTATE_CW"), { delta: [0, 0, 0], yaw: 0.15, gripper: null });
+	assert.deepEqual(ground(spec, "ROTATE_CCW"), { delta: [0, 0, 0], yaw: -0.15, gripper: null });
+	assert.ok(YAW_STEP_RAD <= MAX_ROTATE_RAD);
+});
+
+test("units: ROTATE_* run as env.rotate_delta with the grounded yaw, MV_* as env.move_delta; the 150 deg cap holds", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	const s = stubPi({ units: "true", "units-plugins": "", "env-url": env.url });
+	robolab(s.pi);
+	await s.emit("session_start");
+	assert.deepEqual(s.active(), ["act", "read", "ls", "grep", "find", "write", "finish"]);
+	assert.deepEqual(
+		env.calls.map((c) => c.method).filter((m) => m !== "code.api"),
+		["healthz", "env.get_env_meta", "env.reset"],
+	);
+	let r = await s.run("act", { unit: "ROTATE_CW", n: 2 });
+	assert.match(r.content[0].text, /^units: ROTATE_CW x2\n/);
+	assert.deepEqual(
+		env.motions().map((c) => [c.method, c.kwargs.yaw]),
+		[
+			["env.rotate_delta", 0.15],
+			["env.rotate_delta", 0.15],
+		],
+	);
+	r = await s.run("act", { unit: "ROTATE_CCW" });
+	assert.equal(env.motions().at(-1)?.kwargs.yaw, -0.15);
+	assert.match(r.content[1].text, /"yaw_deg":-?[0-9.]+/, "the heading is part of the reported state");
+	await s.run("act", { unit: "MV_FWD" });
+	const fwd = env.motions().at(-1)!;
+	assert.equal(fwd.method, "env.move_delta");
+	assert.deepEqual(fwd.args, [[0.02, 0, 0]]);
+	assert.deepEqual(fwd.kwargs, { gripper: null, return_frames: true });
+	// The accumulated-yaw guard: 0.15 rad units stop at 150 deg (17 more turns from +0.15).
+	for (let i = 0; i < 2; i++) await s.run("act", { unit: "ROTATE_CW", n: 10 });
+	const turns = env.motions().filter((c) => c.method === "env.rotate_delta");
+	assert.equal(turns.length, 3 + 16);
+	const total = turns.reduce((a, c) => a + Number(c.kwargs.yaw), 0);
+	assert.ok(total <= (150 * Math.PI) / 180 && total > 2.5, `total ${total} rad`);
+	r = await s.run("act", { unit: "ROTATE_CW" });
+	assert.match(r.content[0].text, /ROTATE_CW refused: the gripper is already turned 146 deg/);
+	assert.equal(env.motions().filter((c) => c.method === "env.rotate_delta").length, 19);
+	// The robot's own tool refuses a turn beyond the per-call limit before calling the server.
+	await assert.rejects(s.run("rotate_delta", { yaw: 0.5 }), /the limit is 0.3 rad per call/);
+	const ok = await s.run("rotate_delta", { yaw: -0.3 });
+	assert.equal(env.motions().at(-1)?.kwargs.yaw, -0.3);
+	assert.match(ok.content[0].text, /"commanded_yaw":-0.3/);
+});
+
+test("tool results carry `terminated` (the solved signal of exploration and the memory recipe) beside `success`", async (t) => {
+	const env = await fakeEnv(2);
+	t.after(env.close);
+	const s = stubPi({ "env-url": env.url });
+	robolab(s.pi);
+	await s.emit("session_start");
+	const details = (r: any) => r.details as { success: boolean; terminated: boolean; state: { yaw_deg: number } };
+	let r = await s.run("move_delta", { delta_xyz: [0.02, 0, 0] });
+	assert.deepEqual([details(r).success, details(r).terminated], [false, false]);
+	r = await s.run("rotate_delta", { yaw: 0.15 });
+	assert.deepEqual([details(r).success, details(r).terminated], [true, true]);
+	assert.equal(details(r).state.yaw_deg, (0.15 * 180) / Math.PI);
+	assert.equal(JSON.parse(r.content[0].text).terminated, true);
+});
+
+test("attaching to a server with another task, phrasing or subtask setting fails closed", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	for (const [values, why] of [
+		[{ subtask: true }, /subtask false\), not BananaInBowlTask seed 0 \(default, subtask true\)/],
+		[{ "instruction-type": "vague" }, /\(default, subtask false\), not BananaInBowlTask seed 0 \(vague/],
+		[{ seed: "3" }, /not BananaInBowlTask seed 3/],
+	] as const) {
+		const s = stubPi({ "env-url": env.url, ...values });
+		robolab(s.pi);
+		const errors: string[] = [];
+		const stderr = console.error;
+		console.error = (m: string) => errors.push(String(m));
+		try {
+			await s.emit("session_start");
+		} finally {
+			console.error = stderr;
+		}
+		assert.deepEqual(s.active(), []);
+		assert.match(errors.join("\n"), why);
+	}
+	process.exitCode = 0;
+});
+
+test("instruction phrasing and subtask tracking are flags, default as Show-Harness (default, off)", () => {
+	const s = stubPi();
+	robolab(s.pi);
+	assert.equal(s.flags["instruction-type"], "default");
+	assert.equal(s.flags.subtask, false);
+	assert.equal(s.flags.task, "BananaInBowlTask");
+	const vague = stubPi({ "instruction-type": "vague", subtask: true });
+	robolab(vague.pi);
+	assert.equal(vague.flags["instruction-type"], "vague");
+});
+
+test("string choices in tool schemas are plain string enums (no anyOf of literals)", () => {
+	const s = stubPi();
+	robolab(s.pi);
+	const move = s.tools.get("move_delta");
+	assert.ok(move, [...s.tools.keys()].join(","));
+	const schema = JSON.stringify(move.parameters);
+	assert.doesNotMatch(schema, /anyOf/);
+	assert.match(schema, /"enum":\["open","close"\]/);
+	assert.deepEqual(Object.keys(s.tools.get("rotate_delta").parameters.properties), ["yaw"]);
+});
+
+test("--code=true: run_code runs on the env server and its result becomes the observation and the success", async (t) => {
+	const env = await fakeEnv(1);
+	t.after(env.close);
+	const s = stubPi({ "env-url": env.url, code: "true", "code-api": "low" });
+	robolab(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.deepEqual(s.active(), ["run_code", "read", "ls", "grep", "find", "write", "finish"]);
+	assert.deepEqual(
+		env.calls.filter((c) => c.method === "code.api").map((c) => c.kwargs.tier),
+		[undefined, "low"],
+		"the episode's registry, then code mode's tier",
+	);
+	await s.emit("agent_start");
+	const r = await s.run("run_code", { code: "move_delta([0, 0, 0.05])" });
+	const run = env.calls.find((c) => c.method === "code.run")!;
+	assert.equal(run.kwargs.tier, "low");
+	assert.equal(run.kwargs.code, "move_delta([0, 0, 0.05])");
+	assert.equal(r.details.status, "ran");
+	assert.equal(r.details.success, true);
+	assert.equal(r.details.step, 37, "the server's step count, absorbed from the run's obs");
+	assert.deepEqual(
+		r.content.map((c: { type: string }) => c.type),
+		["text", "text", "image", "image"],
+	);
+	// As the motion tools: nothing runs once the task is solved.
+	const again = await s.run("run_code", { code: "move_delta([0, 0, 0.05])" });
+	assert.match(again.content[0].text, /already solved/);
+	assert.equal(env.calls.filter((c) => c.method === "code.run").length, 1);
+	await s.run("finish", { status: "success", summary: "banana in bowl" });
+	await s.emit("agent_end", { messages: [] });
+	const result = s.entries.find((e) => e.type === "robot_result")?.data;
+	assert.equal(result.success, true);
+	assert.equal(result.env_steps, 37);
+	assert.equal(result.code, "true");
+	assert.equal(result.code_api, "low");
+});
+
+test("the evaluation prompt carries memory's mandatory reading step once, at SYSTEM.md's {{memory}}", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	const s = stubPi({ "env-url": env.url });
+	robolab(s.pi);
+	await s.emit("session_start");
+	const prompt = (await s.emit("before_agent_start", { systemPrompt: "" }))?.systemPrompt as string;
+	assert.match(prompt, /# Memory\nCell `\w+`/);
+	assert.match(prompt, /Before your first motion, read `[^`]+\/MEMORY\.md`/);
+	assert.equal(prompt.split("Reading memory is a required step before your first robot action").length, 2);
+	assert.doesNotMatch(prompt, /\{\{\w+\}\}/);
+});
