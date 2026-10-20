@@ -1,4 +1,4 @@
-# pi-embodied
+# RoboAgentLab
 
 Robots as [pi](https://github.com/earendil-works/pi) extensions. A robot is a pi extension that
 registers its tools, flags and observations; pi provides the agent loop, the models, sessions and
@@ -44,8 +44,8 @@ Prerequisites:
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 # 2. this repository and the embodied package
-git clone https://github.com/LV-Robotics-Lab/pi-embodied ~/pi-embodied
-cd ~/pi-embodied && pi install ./packages/embodied
+git clone https://github.com/LV-Robotics-Lab/RoboAgentLab ~/RoboAgentLab
+cd ~/RoboAgentLab && pi install ./packages/embodied
 
 # 3. uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -68,7 +68,7 @@ yes. Inside pi:
 The launch command `/embodied-setup` prints (with absolute paths) carries the episode budget:
 
 ```bash
-cd ~/robot-runs/embodied-libero && source ~/pi-embodied/services/.venv-libero/pi-embodied.env && pi --libero-type standard --suite libero_10 --task 0 --seed 0 --units=true --max-turns 40 --time-limit 900 --dashboard=true
+cd ~/robot-runs/embodied-libero && source ~/RoboAgentLab/services/.venv-libero/pi-embodied.env && pi --libero-type standard --suite libero_10 --task 0 --seed 0 --units=true --max-turns 40 --time-limit 900 --dashboard=true
 ```
 
 With a model that has thinking levels, `--thinking low` keeps each turn's reasoning short (pi clamps
@@ -129,7 +129,7 @@ memory already on disk.
 
 ## Built on pi
 
-pi-embodied is a fork of [earendil-works/pi](https://github.com/earendil-works/pi) by Mario Zechner,
+RoboAgentLab is a fork of [earendil-works/pi](https://github.com/earendil-works/pi) by Mario Zechner,
 used under the MIT license ([LICENSE-MIT](LICENSE-MIT)). The packages other than `packages/embodied`
 are pi's (`packages/ai`, `agent`, `coding-agent`, `tui`, ...); their documentation is in
 [packages/coding-agent/docs](packages/coding-agent/docs) and at [pi.dev/docs](https://pi.dev/docs/latest).
