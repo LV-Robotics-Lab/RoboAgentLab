@@ -1,177 +1,206 @@
-# RoboAgentLab
+<p align="center">
+  <a href="https://pi.dev">
+    <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
+  </a>
+</p>
+<p align="center">
+  <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
+  <a href="https://www.npmjs.com/package/@earendil-works/pi-coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@earendil-works/pi-coding-agent?style=flat-square" /></a>
+</p>
 
-[v1.0 release](https://github.com/RoboAgentLab/RoboAgentLab/releases/tag/v1.0) ·
-[Awesome Agentic Robotics](https://github.com/RoboAgentLab/awesome-agentic-robotics) ·
-[Datasets](https://huggingface.co/RoboAgentLab/datasets)
+> New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Robots as [pi](https://github.com/earendil-works/pi) extensions. A robot is a pi extension that
-registers its tools, flags and observations; pi provides the agent loop, the models, sessions and
-the interactive, print, JSON and RPC modes. The planner is any model pi can use, so a robot run is a
-pi session.
+# Pi
 
-- **Simulators:** LIBERO, LIBERO-PRO, LIBERO-Plus, RoboCasa, RoboTwin, ManiSkill, RoboLab, RoboDojo,
-  Robosuite, Metaworld, Genesis, BEHAVIOR-1K, HumanCLAW.
-- **Real robots:** Franka, dual Franka, Piper (single and dual), UR5e, with an operator gate on every
-  motion.
-- **Policy backends:** Pi0.5 (openpi), OpenVLA, OpenVLA-OFT, GR00T, RLDX-1, LingBot-VLA, XPolicyLab
-  policies, and fine-tuned Qwen adapters.
-- **Modes:** tools (the default: perception, motion and grasp primitives), units (Show-Harness action
-  units), code (CaP-X `run_code` and tiers), fine-tuned, Flash replay, MotorMind.
-- **Other hosts:** Codex and Claude Code reach the robots' tools mode through an MCP server.
+Pi is a minimal, extensible agent harness that you can make your own.
 
-The package lives in [`packages/embodied`](packages/embodied/README.md); the Python env and model
-servers live in [`services`](services/README.md).
+Adapt Pi to your workflows, not the other way around. Customize Pi with [extensions](packages/coding-agent/docs/extensions.md), [skills](packages/coding-agent/docs/skills.md), [prompt templates](packages/coding-agent/docs/prompt-templates.md), and [themes](packages/coding-agent/docs/themes.md). Bundle them as [Pi packages](packages/coding-agent/docs/packages.md) and share via npm or git.
 
-## Quickstart: one LIBERO episode
+Pi ships with powerful defaults but skips features like sub-agents and plan mode. Ask Pi to build what you want, or install a package that does it your way.
 
-This path runs one LIBERO episode in units mode, which needs no VLA checkpoint. It needs Linux with
-an NVIDIA GPU and EGL driver, and about 25 GB of free disk (the venv is about 10 GB with the CUDA
-torch; uv's download cache 12-16 GB, set `UV_CACHE_DIR` to put it elsewhere).
+Use Pi [interactively](packages/coding-agent/docs/usage.md), automate it in [print or JSON mode](packages/coding-agent/docs/cli.md), control it over [RPC](packages/coding-agent/docs/rpc.md), or build apps with the [Pi TypeScript SDK](packages/coding-agent/docs/sdk.md). See [OpenClaw](https://github.com/OpenClaw/OpenClaw) for a real-world integration.
 
-Prerequisites:
+## Getting started
 
-- **Node.js 22.19 or newer, with `npm`, on your `PATH`** (step 1 uses `npm`; the preflight runs
-  `node`). Without one: install Node 22 or later from [nodejs.org](https://nodejs.org/en/download)
-  or with [nvm](https://github.com/nvm-sh/nvm) (`nvm install 22`), or run the pi.dev installer
-  instead of step 1. That installer installs Node through apt or Homebrew where it can; otherwise it
-  puts its own Node in `~/.local/share/pi-node/current/bin` without adding it to your shell's
-  `PATH`, so add it (`export PATH="$HOME/.local/share/pi-node/current/bin:$PATH"`, also in your
-  shell profile).
-- **[uv](https://docs.astral.sh/uv/)** (or Python 3.11), for `services/setup.sh`.
-- **GitHub and Hugging Face reachable.** The services' extras install packages from GitHub (RLinf's
-  openpi fork with submodules, LIBERO, SAM3), and the LIBERO scene assets come from Hugging Face. See
-  [Mainland China network](#mainland-china-network).
-- **A planner model with image input**, from a provider pi supports.
+Install the command-line interface:
 
 ```bash
-# 1. pi (or the pi.dev installer, which also installs Node: curl -fsSL https://pi.dev/install.sh | sh)
+curl -fsSL https://pi.dev/install.sh | sh
+```
+
+On Windows:
+
+```shell
+powershell -c "irm https://pi.dev/install.ps1 | iex"
+```
+
+The installer pins all dependencies and updates Pi with `pi update`. Alternatively, install directly with npm, which does not pin transitive dependencies:
+
+```bash
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-
-# 2. this repository and the embodied package
-git clone https://github.com/RoboAgentLab/RoboAgentLab ~/RoboAgentLab
-cd ~/RoboAgentLab && pi install ./packages/embodied
-
-# 3. uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 4. an experiment directory
-mkdir -p ~/robot-runs && cd ~/robot-runs && pi
 ```
 
-`pi install` asks whether to trust the repository folder (it has its own `.pi/` directory); answer
-yes. Inside pi:
+Pi requires Node.js 22.19 or newer. The macOS, Linux, and Windows installers can install it if needed. Pi does not require dependency lifecycle scripts for a normal npm installation.
 
-1. `/login` to connect a provider, or configure one in `~/.pi/agent/models.json`
-   ([providers](packages/coding-agent/docs/providers.md), [models](packages/coding-agent/docs/models.md)).
-   Without a model `/embodied-setup` says how to add one and exits without writing anything.
-2. `/embodied-setup`: pick LIBERO, mode units, services here and your model; at
-   `Experiment directory (empty: …)` press Enter for the default, `~/robot-runs/embodied-libero`.
-   After you confirm, the agent runs `services/setup.sh libero` (venv, packages and the LIBERO scene
-   assets, about 430 MB) and the preflight, and ends with the launch command.
-
-The launch command `/embodied-setup` prints (with absolute paths) carries the episode budget:
+Start Pi in the directory where you want it to work:
 
 ```bash
-cd ~/robot-runs/embodied-libero && source ~/RoboAgentLab/services/.venv-libero/pi-embodied.env && pi --libero-type standard --suite libero_10 --task 0 --seed 0 --units=true --max-turns 40 --time-limit 900 --dashboard=true
+cd /path/to/project
+pi
 ```
 
-With a model that has thinking levels, `--thinking low` keeps each turn's reasoning short (pi clamps
-the level to what the model supports).
+For a built-in AI provider, run `/login` inside Pi to connect a subscription or API key. Then give Pi a task.
 
-pi asks once whether to trust the experiment directory (its settings load the robot); answer yes.
-The robot resets the scene and waits: type `Solve the task.` to start the episode. The dashboard URL
-is printed at startup. The same episode without the terminal UI:
+See the [documentation](https://pi.dev/docs/latest) for full setup and usage instructions, or [visit pi.dev](https://pi.dev) for demos.
+
+## Run with Nix
 
 ```bash
-pi -a -p --libero-type standard --suite libero_10 --task 0 --seed 0 --units=true \
-  --max-turns 40 --time-limit 900 --thinking low "Solve the task."
+nix run github:earendil-works/pi/stable
 ```
 
-`-a` trusts the directory for this run, which print mode cannot ask about. Every turn sends camera
-images to the planner, and without `--max-turns` / `--time-limit` an episode runs until the model
-calls `finish`, which on a long LIBERO task can take an hour and millions of input tokens. Keep a
-budget on every run against a paid API.
+`stable` points at the latest release. Install it with `nix profile add github:earendil-works/pi/stable` and update with `nix profile upgrade pi`. Use a release tag such as `github:earendil-works/pi/v1.0.0` to pin a version, or `github:earendil-works/pi` for unreleased changes on `main`. Nix builds Pi from source.
 
-The episode ends with a `robot_result` entry in the session (`terminated` is LIBERO's success flag).
-On a machine with several GPUs, pick one with `CUDA_VISIBLE_DEVICES` and `MUJOCO_EGL_DEVICE_ID`.
+Supports ARM64 and x86-64 on Linux and macOS. Use `nix build .` or `nix run .` to build or run your checkout.
 
-### Mainland China network
+Nix builds are offline, so the bundled model data comes from a pi.dev model catalog revision pinned in `nix/model-catalog.json`. At runtime, Pi still overlays newer catalog data from pi.dev as usual. The Nix workflow replaces the pin on `main` when it no longer matches the checkout, for example after a provider is added or gains a new model type. To refresh it by hand:
 
-GitHub, Hugging Face, PyPI and the PyTorch wheel index can be slow or unreachable from mainland
-China. The install still works through mirrors or a proxy:
+```bash
+npm run update:model-catalog-pin
+```
 
-- GitHub: the extras clone repositories with submodules during `uv pip install`; route git through
-  a proxy (`https_proxy`) if a clone stalls. Through a proxy, uv's `git fetch` of a pinned commit
-  (RLinf's openpi) can fail with HTTP 503, and uv does not retry it: rerun `setup.sh`.
-- Hugging Face: `HF_ENDPOINT=https://hf-mirror.com`. The mirror rate-limits (HTTP 429) downloads of
-  datasets with many files, such as the LIBERO scene assets (`RLinf/LIBERO-PRO-assets`, 865 files) of
-  `setup.sh libero`: from a mirror it fetches two files at a time and retries a 429 with backoff, and a
-  rerun resumes (it links the assets only once every file is there). If the mirror keeps answering
-  429, use huggingface.co through the proxy instead: `unset HF_ENDPOINT` (with `https_proxy` set) and
-  rerun `setup.sh libero`. `pi-embodied.env` does not set `HF_ENDPOINT`, so export it in the shell that
-  runs pi as well.
-- PyPI: `UV_INDEX_URL` / `PIP_INDEX_URL` pointing at a PyPI mirror.
-- PyTorch CUDA wheels: a mirror of `download.pytorch.org/whl/cu128`, used with `--find-links`.
+## Packages
 
-Two warnings at pi's start are harmless: pi downloads `fd` and `ripgrep` from GitHub when they are
-missing, which can time out or fail on the proxy's certificate (pi starts without them), and the
-robot's memory sync (`RLinf/RPent-memory`) can get HTTP 429 from hf-mirror, in which case it uses the
-memory already on disk.
+This monorepo contains the Pi CLI and its supporting libraries.
 
-## Documentation
+| Package | Description |
+|---------|-------------|
+| **[@earendil-works/chord](packages/chord)** | Typed host runtime for hot-reloadable plugins, contracts, replicated state, and RPC over JSON links |
+| **[@earendil-works/pi-telemetry](packages/telemetry)** | Vendor-neutral telemetry contracts, reference adapter, conformance tests, and typed schemas |
+| **[@earendil-works/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
+| **[@earendil-works/pi-durable](packages/durable)** | Durable conversation, task, and document runtime |
+| **[@earendil-works/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
+| **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
+| **[@earendil-works/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
 
-- [packages/embodied/README.md](packages/embodied/README.md): the robots, modes, flags, deployment
-  config, evaluation scripts, and the Codex / Claude Code plugins.
-- [packages/embodied/skills/embodied-quickstart/SKILL.md](packages/embodied/skills/embodied-quickstart/SKILL.md):
-  install, preflight, one episode and evaluation for every robot.
-- [services/README.md](services/README.md): installing each simulator and model server by hand.
-- [services/PROTOCOL.md](services/PROTOCOL.md): the RPC protocol and each env server's methods.
-- [Adding a robot](packages/embodied/docs/adding-a-robot.md),
-  [adding a primitive](packages/embodied/docs/adding-a-primitive.md),
-  [pi compatibility](packages/embodied/docs/pi-compatibility.md),
-  [renamed flags](packages/embodied/docs/flags-migration.md).
+For Slack/chat automation and workflows see [earendil-works/pi-chat](https://github.com/earendil-works/pi-chat).
 
-## Built on pi
+## Permissions & Containerization
 
-RoboAgentLab v1.0 is the platform's source release. Its version is independent of the
-upstream pi packages and the `@lv-robotics/pi-embodied` package version.
-See [RELEASES.md](RELEASES.md) for the release scope.
+Pi does not include a built-in permission system for restricting filesystem, process, network, or credential access. By default, it runs with the permissions of the user and process that launched it.
 
-RoboAgentLab is a fork of [earendil-works/pi](https://github.com/earendil-works/pi) by Mario Zechner,
-used under the MIT license ([LICENSE-MIT](LICENSE-MIT)). The packages other than `packages/embodied`
-are pi's (`packages/ai`, `agent`, `coding-agent`, `tui`, ...); their documentation is in
-[packages/coding-agent/docs](packages/coding-agent/docs) and at [pi.dev/docs](https://pi.dev/docs/latest).
-Issues with pi itself belong upstream.
+If you need stronger boundaries, containerize or sandbox Pi. See [packages/coding-agent/docs/containerization.md](packages/coding-agent/docs/containerization.md) for three patterns:
 
-The quickstart above uses the official pi. This fork's pi adds two extension APIs the dashboard uses
-for session export and withdrawing queued messages; on the official pi those two dashboard actions
-report that they are unavailable
-([pi compatibility](packages/embodied/docs/pi-compatibility.md)).
+- **Gondolin extension**: keep `pi` and provider auth on the host while routing built-in tools and `!` commands into a local Linux micro-VM.
+- **Plain Docker**: run the whole `pi` process in a local container for simple isolation.
+- **OpenShell**: run the whole `pi` process in a policy-controlled sandbox.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.md](AGENTS.md) for project-specific rules (for both humans and agents).  Longer term plans for Pi can also be found in [RFCs](https://rfc.earendil.com/keyword/pi/).
 
 ## Development
 
 ```bash
-npm ci --ignore-scripts      # install dependencies without lifecycle scripts
-npm run build                # regenerate the model catalog from the providers' live listings, then build
-npm run build:offline        # rebuild from the model data already generated, without network access
-npm run check                # lint, format, type check
-npm test                     # the workspaces' tests
-(cd packages/embodied && node --test --experimental-strip-types test/*.test.ts)
-services/test.sh             # the Python services' tests and ruff (needs uv)
-./pi-test.sh                 # run this checkout's pi
+npm install --ignore-scripts  # Install all dependencies without running lifecycle scripts
+npm run build         # Refresh model data, then build all packages
+npm run build:offline # Rebuild using existing model data without network access
+npm run check         # Lint, format, and type check
+./test.sh            # Run tests (skips LLM-dependent tests without API keys)
+./pi-test.sh         # Run pi from sources (can be run from any directory)
 ```
 
-Development needs the same Node.js 22.19 or newer as the quickstart; CI
-([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs the build, the checks and these tests
-with Node.js 24 on every push to `main` and every pull request. `npm ci` on Node 22 warns
-`EBADENGINE` for `@earendil-works/gondolin` (it asks for Node 23.6): only pi's gondolin example
-extension uses it. Tests use faux providers and fake
-servers: no model API, no GPU. `package-lock.json` is the dependency ground truth; the pre-commit hook
-refuses lockfile changes unless `PI_ALLOW_LOCKFILE_CHANGE=1` is set.
+### Using local packages outside the monorepo
+
+Build every public package into one coherent local artifact set:
+
+```bash
+npm run pack:packages -- --out .artifacts/pi-packages
+```
+
+This refreshes model data before building `pi-ai`. To avoid network access when
+model data is already hydrated, pass `--offline-model-data`.
+
+Then configure an external project to consume one package and resolve all of
+its Pi dependencies from the same artifact set. npm is the default:
+
+```bash
+node scripts/use-local-packages.mjs \
+  --manifest .artifacts/pi-packages/manifest.json \
+  --consumer ../my-project \
+  --package @earendil-works/pi-durable \
+  --package @earendil-works/pi-agent-core
+cd ../my-project
+npm install --ignore-scripts
+```
+
+For a pnpm project, point `--consumer` at the workspace root:
+
+```bash
+node scripts/use-local-packages.mjs \
+  --manifest .artifacts/pi-packages/manifest.json \
+  --consumer ../my-project \
+  --package @earendil-works/pi-agent-core \
+  --package-manager pnpm
+cd ../my-project
+pnpm install --ignore-scripts
+```
+
+Repeat `--package` for each direct dependency. The command updates the
+consumer's `package.json` with content-addressed local `file:` references. It
+writes transitive overrides to `package.json` for npm or `pnpm-workspace.yaml`
+for pnpm. Keep the artifact directory available while installing or updating
+the consumer. Re-run both commands after changing Pi source.
+
+## Building standalone binaries from release source
+
+GitHub releases include a versioned source archive covered by the release's `SHA256SUMS` file. Extract it and run the same build script used for the official standalone binaries:
+
+```bash
+VERSION="<release-version>"
+tar -xzf "pi-${VERSION}-source.tar.gz"
+cd "pi-${VERSION}"
+./scripts/build-binaries.sh --offline-model-data --platform linux-x64 --out "$PWD/out"
+```
+
+The archive includes release model data and native prebuilds. `--offline-model-data` uses that model data without refreshing provider catalogs. The script installs dependencies and builds the executable with its runtime assets; pass `--skip-install` if dependencies are already provided.
+
+## Supply-chain hardening
+
+We treat npm dependency changes as reviewed code changes.
+
+- Direct external dependencies are pinned to exact versions. Internal workspace packages remain version-ranged.
+- `.npmrc` sets `save-exact=true` and `min-release-age=2` to avoid same-day dependency releases during npm resolution.
+- `package-lock.json` is the dependency ground truth. Pre-commit blocks accidental lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1` is set.
+- `npm run check` verifies pinned direct deps, native TypeScript import compatibility, and the generated coding-agent install lock.
+- The pi.dev installer installs from `packages/coding-agent/install-lock/`, generated from the root lockfile, to pin transitive deps. The npm package does not pin transitive deps.
+- Local release smoke tests and npm publication use the same tarball packer; npm publishes the validated tarballs rather than repacking workspace directories.
+- Local release installs, documented npm installs, and `pi update --self` use `--ignore-scripts` where supported.
+- CI installs with `npm ci --ignore-scripts`, and a scheduled GitHub workflow runs `npm audit --omit=dev` plus `npm audit signatures --omit=dev`.
+- Install lock generation has an explicit allowlist for dependency lifecycle scripts; new lifecycle-script deps fail checks until reviewed.
+
+## Share your OSS coding agent sessions
+
+If you use Pi or other coding agents for open source work, please share your sessions.
+
+Public OSS session data helps improve coding agents with real-world tasks, tool use, failures, and fixes instead of toy benchmarks.
+
+For the full explanation, see [this post on X](https://x.com/badlogicgames/status/2037811643774652911).
+
+To publish sessions, use [`badlogic/pi-share-hf`](https://github.com/badlogic/pi-share-hf). Read its README.md for setup instructions. All you need is a Hugging Face account, the Hugging Face CLI, and `pi-share-hf`.
+
+You can also watch [this video](https://x.com/badlogicgames/status/2041151967695634619), where I show how I publish my `pi-mono` sessions.
+
+I regularly publish my own `pi-mono` work sessions here:
+
+- [badlogicgames/pi-mono on Hugging Face](https://huggingface.co/datasets/badlogicgames/pi-mono)
 
 ## License
 
-The code written for this repository (`packages/embodied`, `services/`, and the changes to pi's
-packages) is licensed under the Apache License 2.0 ([LICENSE](LICENSE)). pi is licensed under the MIT
-license ([LICENSE-MIT](LICENSE-MIT)), which applies to pi's code in this repository. Third-party
-notices are in [NOTICE](NOTICE).
+MIT
+
+<p align="center">
+  <a href="https://pi.dev">pi.dev</a> domain graciously donated by
+  <br /><br />
+  <a href="https://exe.dev"><img src="packages/coding-agent/docs/images/exy.png" alt="Exy mascot" width="48" /><br />exe.dev</a>
+</p>

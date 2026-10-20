@@ -56,6 +56,7 @@ export const PolicyDoc = defineDoc<PolicyState>({
 	scope: "conversation",
 	history: "latest",
 	fork: "initial",
+	checkpointWhen: (_value, _ops, { deltasSinceBase }) => deltasSinceBase >= 64,
 	initial: () => ({
 		robot: "",
 		current: null,

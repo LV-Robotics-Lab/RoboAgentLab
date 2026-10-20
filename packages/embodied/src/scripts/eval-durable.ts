@@ -46,6 +46,7 @@ const Run = defineDoc<{ signature: string; task: TaskId<number> | null; attempt:
 	scope: "conversation",
 	history: "latest",
 	fork: "initial",
+	checkpointWhen: () => true,
 	initial: () => ({ signature: "", task: null, attempt: 0 }),
 });
 

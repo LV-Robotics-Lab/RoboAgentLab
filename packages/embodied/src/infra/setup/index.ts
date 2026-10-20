@@ -24,7 +24,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 /** The package root and the services checkout next to it (absent in an npm install). */
 export const PKG = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
 const SERVICES = join(PKG, "../../services");
-const REPO = "https://github.com/LV-Robotics-Lab/pi-embodied.git";
+const REPO = "https://github.com/RoboAgentLab/RoboAgentLab.git";
 const SKILL = join(PKG, "skills/embodied-quickstart/SKILL.md");
 export const NOTICE_ENTRY = "pi-embodied-setup-notice";
 export const COMMAND = "embodied-setup";
