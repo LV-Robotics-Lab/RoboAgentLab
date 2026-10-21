@@ -33,7 +33,6 @@ function rig(o: { idle?: boolean; flags?: Record<string, unknown> } = {}) {
 	let hold: Promise<void> | undefined;
 	let release = () => {};
 	const branch: any[] = [];
-	const exports: string[] = [];
 	let active: string[] = [];
 	let idle = o.idle ?? true;
 	const pi = {
@@ -77,7 +76,12 @@ function rig(o: { idle?: boolean; flags?: Record<string, unknown> } = {}) {
 	const ctx = {
 		hasUI: true,
 		ui: { notify: (m: string) => notes.push(m) },
-		sessionManager: { getBranch: () => branch, getSessionId: () => "sess-1", getSessionFile: () => undefined },
+		sessionManager: {
+			getBranch: () => branch,
+			getSessionId: () => "sess-1",
+			getSessionFile: () => undefined,
+			getCwd: () => "/work",
+		},
 		isIdle: () => idle,
 		hasPendingMessages: () => queue.length > 0,
 		signal: undefined,
@@ -95,11 +99,6 @@ function rig(o: { idle?: boolean; flags?: Record<string, unknown> } = {}) {
 			if (i < 0) return false;
 			queue.splice(i, 1);
 			return true;
-		},
-		exportSession: async (format: string, path: string) => {
-			exports.push(format);
-			writeFileSync(path, format === "html" ? "<html>session</html>" : '{"type":"session"}\n');
-			return path;
 		},
 	};
 	const robot = defineRobot(pi, {
@@ -151,7 +150,6 @@ function rig(o: { idle?: boolean; flags?: Record<string, unknown> } = {}) {
 		sent,
 		queue,
 		moves,
-		exports,
 		requests,
 		setIdle: (v: boolean) => {
 			idle = v;
@@ -331,9 +329,16 @@ test("the LLM check sends the session's model one real 1-token completion throug
 	}
 });
 
-test("downloads: the session is pi's /export (JSONL or HTML); the episode videos are listed and served", async () => {
+test("downloads: the session branch as pi's /export JSONL or an HTML transcript; the episode videos are listed and served", async () => {
 	const r = rig();
 	const url = await r.start();
+	r.branch.push({
+		type: "message",
+		id: "m1",
+		parentId: null,
+		timestamp: "2026-10-21T00:00:00.000Z",
+		message: { role: "user", content: "pick up the <cube>" },
+	});
 	const dir = mkdtempSync(join(tmpdir(), "dash-video-"));
 	mkdirSync(join(dir, "sub"));
 	writeFileSync(join(dir, "episode.mp4"), "mp4-bytes");
@@ -342,11 +347,23 @@ test("downloads: the session is pi's /export (JSONL or HTML); the episode videos
 	try {
 		const jsonl = await call(`${url}download/session`);
 		assert.equal(jsonl.status, 200);
-		assert.equal(jsonl.text, '{"type":"session"}\n');
+		assert.equal(jsonl.type, "application/x-ndjson");
+		const lines = jsonl.text
+			.trimEnd()
+			.split("\n")
+			.map((l) => JSON.parse(l));
+		assert.equal(lines.length, 1 + r.branch.length);
+		assert.equal(lines[0].type, "session");
+		assert.equal(lines[0].id, "sess-1");
+		assert.equal(lines[0].cwd, "/work");
+		const user = lines.find((l) => l.type === "message");
+		assert.equal(user.message.content, "pick up the <cube>");
 		assert.match(String(jsonl.headers["content-disposition"]), /session-sess-1\.jsonl/);
 		const html = await call(`${url}download/session?format=html`);
-		assert.equal(html.text, "<html>session</html>");
-		assert.deepEqual(r.exports, ["jsonl", "html"]);
+		assert.equal(html.status, 200);
+		assert.match(html.type, /^text\/html/);
+		assert.match(html.text, /<!doctype html>/);
+		assert.match(html.text, /pick up the &lt;cube&gt;/);
 
 		const list = await call(`${url}downloads`);
 		assert.deepEqual(list.json.sessions, [{ id: "sess-1", current: true, videos: ["episode.mp4"] }]);
@@ -474,14 +491,13 @@ test("the dashboard checks the Host header, and off loopback every request needs
 	}
 });
 
-test("official pi context: fork-only actions are unavailable while steering and robot tools still work", async () => {
+test("official pi context: withdrawal is unavailable (501) while export, steering and robot tools still work", async () => {
 	const r = rig({ idle: false });
-	Reflect.deleteProperty(r.ctx, "exportSession");
 	Reflect.deleteProperty(r.ctx, "withdrawQueuedMessage");
 	const url = await r.start();
 	try {
-		assert.deepEqual((await snapshot(url)).capabilities, { sessionExport: false, queueWithdrawal: false });
-		assert.equal((await call(`${url}download/session`)).status, 501);
+		assert.deepEqual((await snapshot(url)).capabilities, { sessionExport: true, queueWithdrawal: false });
+		assert.equal((await call(`${url}download/session`)).status, 200);
 		const queued = await post(`${url}message`, { text: "go left" });
 		assert.equal(queued.status, 202);
 		assert.equal((await post(`${url}message/withdraw`, { id: queued.json.id })).status, 501);

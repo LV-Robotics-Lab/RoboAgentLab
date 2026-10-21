@@ -18,8 +18,12 @@
 	"files": [
 		"src",
 		"skills",
+		"scripts",
 		"README.md"
 	],
+	"scripts": {
+		"check:pi-compat": "node scripts/check-pi-compat.mjs"
+	},
 	"pi": {
 		"extensions": [
 			"src/infra/setup/index.ts"
@@ -29,12 +33,12 @@
 		]
 	},
 	"peerDependencies": {
-		"@earendil-works/chord": "^1.0.0",
-		"@earendil-works/pi-agent-core": "^1.0.0",
-		"@earendil-works/pi-ai": "^1.0.0",
-		"@earendil-works/pi-coding-agent": "^1.0.0",
-		"@earendil-works/pi-durable": "^1.0.0",
-		"@earendil-works/pi-mcp": "^1.0.0",
+		"@earendil-works/chord": "^1.3.0",
+		"@earendil-works/pi-agent-core": "^1.3.0",
+		"@earendil-works/pi-ai": "^1.3.0",
+		"@earendil-works/pi-coding-agent": "^1.3.0",
+		"@earendil-works/pi-durable": "^1.3.0",
+		"@earendil-works/pi-mcp": "^1.3.0",
 		"typebox": "*"
 	},
 	"peerDependenciesMeta": {

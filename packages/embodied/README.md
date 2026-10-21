@@ -30,11 +30,23 @@ Prerequisites:
   [Mainland China network](../../README.md#mainland-china-network).
 - A planner model with image input: `/login` in pi, or a provider in `~/.pi/agent/models.json`.
 
+No build of pi and no `npm link`: install the official pi (1.3.0 is the tested version), clone this
+repository for the extension and its services, and point pi at the extension package.
+
 ```bash
+npm install -g @earendil-works/pi-coding-agent@1.3.0   # the tested official pi (docs/pi-compatibility.md)
 git clone https://github.com/LV-Robotics-Lab/pi-embodied ~/pi-embodied
+node ~/pi-embodied/packages/embodied/scripts/check-pi-compat.mjs
 cd ~/pi-embodied && pi install ./packages/embodied   # or npm:@lv-robotics/pi-embodied once published
 mkdir -p ~/robot-runs && cd ~/robot-runs && pi        # a notice points to /embodied-setup
 ```
+
+The check prints which pi it found and whether every pi export this package uses is there. Only the
+durable policy (`--policy-store`) and the MCP server for the Codex and Claude Code plugins need more:
+`@earendil-works/pi-durable`, `@earendil-works/chord` and `@earendil-works/pi-mcp` next to the package
+(`npm install --no-save` them in `packages/embodied`; `docs/official-pi-migration.md`).
+Developing pi itself still works from this checkout (`npm ci --ignore-scripts`, `npm run build:offline`,
+`npm link --ignore-scripts --workspace @earendil-works/pi-coding-agent`, then the same `pi install`).
 
 `/embodied-setup` asks for the robot or benchmark (and what it needs: GPU, Isaac Sim, real hardware
 and an operator), the mode (tools, units, fine-tuned, flash), where the services run (here, or a
