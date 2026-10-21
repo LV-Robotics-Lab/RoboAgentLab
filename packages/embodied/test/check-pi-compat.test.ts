@@ -36,10 +36,10 @@ function run(...args: string[]) {
 }
 
 test("an old pi fails the peer range; a pi without the exports fails on each missing one", () => {
-	const { status, report } = run("--pi", fakePi("1.2.0"));
+	const { status, report } = run("--pi", fakePi("1.1.0"));
 	assert.equal(status, 1);
-	assert.equal(report.pi.version, "1.2.0");
-	assert.ok(report.failures.some((f: string) => /1\.2\.0 does not satisfy peerDependencies \^1\.3\.0/.test(f)));
+	assert.equal(report.pi.version, "1.1.0");
+	assert.ok(report.failures.some((f: string) => /1\.1\.0 does not satisfy peerDependencies \^1\.2\.0/.test(f)));
 	const host = report.modules.find((m: any) => m.specifier === "@earendil-works/pi-coding-agent");
 	assert.equal(host.status, "missing-exports");
 	assert.ok(host.values.includes("parseFrontmatter"));

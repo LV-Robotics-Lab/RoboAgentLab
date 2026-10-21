@@ -20,7 +20,7 @@ pi install ~/RoboAgentLab/packages/embodied
 ```
 
 `check-pi-compat.mjs` finds the installed pi (or takes `--pi <dir>`), checks its version against the
-package's `peerDependencies` (now `^1.3.0`: 1.3.0 is the version these checks ran against) and
+package's `peerDependencies` (now `^1.2.0`, the workspace's own pi version; 1.3.0 is the published version these checks ran against) and
 verifies that every value and type the extension imports from `@earendil-works/*` and `typebox` is
 exported by that pi. It fails on a missing export, so a future pi that drops something the extension
 needs is caught before `pi install`.

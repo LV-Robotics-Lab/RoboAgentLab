@@ -1,8 +1,9 @@
 # Pi boundary and default regression
 
-The extension targets the published pi. `peerDependencies` require pi 1.3.0 or a later 1.x
-(`^1.3.0`): 1.3.0 is the version the compatibility check and the extension-loading check below ran
-against, and the range is installation metadata, not a claim that every later 1.x release has passed
+The extension targets the published pi. `peerDependencies` require pi 1.2.0 or a later 1.x
+(`^1.2.0`): 1.2.0 is the pi this repository's workspace builds, so the workspace satisfies its own
+package, and 1.3.0 is the published version the compatibility check and the extension-loading check
+below ran against. The range is installation metadata, not a claim that every 1.x release has passed
 the same regression. `scripts/check-pi-compat.mjs` verifies an installed pi before `pi install`
 (`docs/official-pi-migration.md` has the install steps and what changed when the fork stopped being
 required).
