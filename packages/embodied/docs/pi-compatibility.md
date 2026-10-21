@@ -1,17 +1,19 @@
 # Pi boundary and default regression
 
-The development baseline is pi 1.0.0 (release tag `v1.0.0`, commit
-`a13d35a742c6ef8462812a28fbe1d8c8b7431c32`), including upstream fixes through
-`319fecb89b17b7bf8a4b62734de9a6cc6ceabe49`. Peer dependencies target pi 1.x;
-the range is installation metadata, not a claim that every pi 1.x release has
-passed the same regression checks.
+The extension targets the published pi. `peerDependencies` require pi 1.3.0 or a later 1.x
+(`^1.3.0`): 1.3.0 is the version the compatibility check and the extension-loading check below ran
+against, and the range is installation metadata, not a claim that every later 1.x release has passed
+the same regression. `scripts/check-pi-compat.mjs` verifies an installed pi before `pi install`
+(`docs/official-pi-migration.md` has the install steps and what changed when the fork stopped being
+required).
 
 The agent loop, model registry, messages, sessions, tools and extension events
 belong to pi. Robot task state, motion gates, camera context and results belong
 to the embodied extension. Python RPC services own simulation, perception and
 bounded robot execution. New robotics features should use these boundaries
-before proposing another core patch. Pi 1.0 removes the experimental harness and
-session-storage exports from `pi-agent-core`; durable sessions belong to
+rather than a core patch: the extension imports only pi's public exports, and
+the check fails when one goes missing. Pi 1.0 removed the experimental harness
+and session-storage exports from `pi-agent-core`; durable sessions belong to
 `pi-durable`. Embodied adapters use the retained `Agent` and coding-agent
 extension APIs.
 
@@ -27,20 +29,58 @@ classes; they register nothing in pi and change no robot or mode behaviour.
 They serve tools mode only: units, code mode, VDM, memory, exploration, replay
 and evaluation remain pi's, so the pi regression boundary above is unchanged.
 
-## Official pi and fork capabilities
+## The compatibility check
 
-The fork adds `ExtensionContext.exportSession` and `withdrawQueuedMessage`.
-Dashboard checks these capabilities per attached session. Its SSE snapshot
-reports `capabilities.sessionExport` and `capabilities.queueWithdrawal`.
-An unavailable operation returns HTTP 501 with an explanation; sending a
-steering message and calling an available robot tool continue to work.
-An unsuccessful withdrawal leaves the message in pi's queue.
+```sh
+node packages/embodied/scripts/check-pi-compat.mjs [--pi <dir>] [--strict] [--json]
+```
 
-Tests cover contexts with and without these optional APIs. This is contract
-coverage, not an end-to-end certification of every official pi installation.
-Before claiming standalone upstream support, run extension loading and session
-lifecycle tests against an unmodified official distribution at the stated
-version. The deployed, integrated target remains this fork.
+It finds the pi to check (`--pi`: the pi-coding-agent package directory or an npm prefix; else the
+`pi` on PATH, `npm root -g`, or the pi-coding-agent next to the package, which is the fork workspace),
+compares its version with the peer range, then scans every `import ... from "@earendil-works/*"` and
+`"typebox"` under `src/`: each module must resolve from that pi, each imported value must be an export
+of it and each imported type must be declared in its `.d.ts`. A missing export fails the check.
+
+Two kinds of module appear in its output:
+
+- host-provided: pi-coding-agent, pi-agent-core, pi-tui, pi-ai and typebox, which pi's extension loader
+  maps to its own copies for every extension (coding-agent `src/core/extensions/loader.ts`). These are
+  checked against pi's own installation.
+- not mapped by the loader: `@earendil-works/pi-durable` and `@earendil-works/chord` (the durable
+  policy, which the MetaWorld robot loads only with `--policy-store`, and `src/scripts/eval-durable.ts`)
+  and `@earendil-works/pi-mcp` (the MCP server, `src/integrations/mcp`). At runtime these come from a
+  `node_modules` next to the package: the fork workspace, or `npm install --no-save` of the three at
+  pi's version in `packages/embodied`. The robot extensions, the dashboard and `/embodied-setup` load
+  without them. pi-durable and chord are optional peers; the check reports a missing one and skips it
+  unless `--strict`.
+
+CI runs the check against a fresh `npm install -g @earendil-works/pi-coding-agent@1.3.0`
+(`.github/workflows/ci.yml`, "embodied against the official pi"), not against the workspace build.
+
+## Official pi and the fork's context
+
+The RoboAgentLab fork of pi adds `ExtensionContext.exportSession` and `withdrawQueuedMessage`. The
+extension no longer needs either:
+
+- The dashboard writes `GET /download/session` itself from pi's public session manager
+  (`src/capabilities/dashboard/session-export.ts`): the JSONL pi's `/export` writes, or a plain HTML
+  transcript. Its SSE snapshot reports `capabilities.sessionExport: true` on every pi.
+- The dashboard still calls `withdrawQueuedMessage` when the context has it. pi 1.3.0 has no public way
+  for an extension to take a message back out of the steering queue, so on an official pi the snapshot
+  reports `capabilities.queueWithdrawal: false`, `POST /message/withdraw` answers HTTP 501 with an
+  explanation, and the message stays queued until the agent takes it. Sending a steering message and
+  calling an available robot tool work on both.
+
+The fork's third change, the NInfer `expired while waiting for admission` retry pattern in pi-ai, is
+dropped: pi offers no extension hook into its retry classifier and NInfer is no longer the selfhost
+engine (`docs/official-pi-migration.md`).
+
+Tests cover dashboard contexts with and without `withdrawQueuedMessage` (`test/dashboard-ops.test.ts`)
+and the export's shape (`test/session-export.test.ts`). The checks run against an unmodified pi 1.3.0
+so far: the compat check, and loading the package, the LIBERO and MetaWorld robots and the dashboard
+through pi's own loader with `/embodied-setup` and the robot commands registered. A full session
+lifecycle on an official installation (an episode with a robot extension and its services) remains the
+fork-based regression below.
 
 ## Default workflow
 

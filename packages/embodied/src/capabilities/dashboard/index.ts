@@ -28,7 +28,9 @@
  *
  * Operator tools (RPent's dashboard, github.com/RLinf/RPent @eecf206 rpent/dashboard/server.py):
  * - A message sent while the agent runs goes into pi's steering queue; until the agent takes it
- *   (its user message starts) `POST /message/withdraw {id}` takes it back out (`ctx.withdrawQueuedMessage`).
+ *   (its user message starts) `POST /message/withdraw {id}` takes it back out (`ctx.withdrawQueuedMessage`,
+ *   which only the pi-embodied fork's context has: on an unmodified pi the route answers 501 and the
+ *   message stays queued; docs/pi-compatibility.md).
  * - `GET /primitives` lists the robot's active tools with their parameter schemas, and
  *   `POST /primitive {name, arguments}` runs one through the robot's own tool path (../robot.ts
  *   PRIMITIVES_EVENT: schema check, the robot's and the operator's gates, the same execute), only in
@@ -39,7 +41,8 @@
  *   `/message` and `/task` wait while one runs (409).
  * - `POST /llm-check` sends the session's model one real 1-token completion through pi's model
  *   registry (../check.ts llmCheck) and reports its latency or error.
- * - `GET /download/session?format=jsonl|html` is pi's /export of the current session;
+ * - `GET /download/session?format=jsonl|html` is the current session branch, written from pi's public
+ *   session manager (./session-export.ts: the JSONL pi's /export writes, or a plain HTML transcript);
  *   `GET /downloads` lists the episode videos (../video.ts) of the sessions this process served, and
  *   `GET /download/video/<session>/<file>.mp4` sends one. episode.mp4 is written when its session ends.
  *
@@ -49,10 +52,10 @@
  */
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
-import { hostname, tmpdir } from "node:os";
+import { hostname } from "node:os";
 import { basename, join } from "node:path";
 import { inflateSync } from "node:zlib";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -78,6 +81,7 @@ import {
 } from "../../robot.ts";
 import { type Gumi, type GumiState, gumi, observation, type Step as UnitStep } from "../gumi/index.ts";
 import { vlmOperator } from "../gumi/operator.ts";
+import { sessionHtml, sessionJsonl } from "./session-export.ts";
 
 const HUB = Symbol.for("pi-embodied.dashboard");
 /** The episode videos ../video.ts writes: episode.mp4, episode_overlay.mp4, action_<n>_<tool>.mp4. */
@@ -137,9 +141,8 @@ const modelLabel = (pi: ExtensionAPI, ctx: ExtensionContext) =>
 
 /** Process-wide dashboard; it outlives extension runtimes, which pi rebuilds on every session switch. */
 type Hub = ReturnType<typeof createHub>;
-/** Optional fork APIs: keep official pi contexts valid without pretending these features exist. */
+/** The fork's optional context API: an official pi context has no withdrawal, and the route says so (501). */
 type DashboardContext = ExtensionContext & {
-	exportSession?: (format: "jsonl" | "html", outputPath: string) => Promise<string>;
 	withdrawQueuedMessage?: (text: string) => boolean;
 };
 
@@ -265,7 +268,7 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 	const snapshot = () => ({
 		op: "reset",
 		capabilities: {
-			sessionExport: typeof ctx?.exportSession === "function",
+			sessionExport: true,
 			queueWithdrawal: typeof ctx?.withdrawQueuedMessage === "function",
 		},
 		episode,
@@ -634,26 +637,16 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 				return reply(200, { session: current ?? null, sessions });
 			}
 			if (req.method === "GET" && url.pathname === "/download/session") {
-				// pi's own /export (JSONL or HTML) of the current session branch, into a temp file sent once.
+				// The current session branch from pi's public session manager (./session-export.ts).
 				const format = url.searchParams.get("format") === "html" ? "html" : "jsonl";
 				if (!ctx) return reply(409, { error: "session is switching; retry in a moment" });
-				if (typeof ctx.exportSession !== "function")
-					return reply(501, {
-						error: "Session export requires the pi-embodied fork. Use pi /export in this runtime.",
-					});
-				const dir = mkdtempSync(join(tmpdir(), "pi-dashboard-export-"));
 				const name = `session-${ctx.sessionManager.getSessionId()}.${format}`;
-				try {
-					const path = await ctx.exportSession(format, join(dir, name));
-					res.writeHead(200, {
-						"Content-Type": format === "html" ? "text/html; charset=utf-8" : "application/x-ndjson",
-						"Content-Disposition": `attachment; filename="${name}"`,
-						"Cache-Control": "no-store",
-					});
-					res.end(readFileSync(path));
-				} finally {
-					rmSync(dir, { recursive: true, force: true });
-				}
+				res.writeHead(200, {
+					"Content-Type": format === "html" ? "text/html; charset=utf-8" : "application/x-ndjson",
+					"Content-Disposition": `attachment; filename="${name}"`,
+					"Cache-Control": "no-store",
+				});
+				res.end(format === "html" ? sessionHtml(ctx.sessionManager) : sessionJsonl(ctx.sessionManager));
 				return;
 			}
 			const video = url.pathname.match(/^\/download\/video\/([\w-]+)\/([^/]+)$/);
@@ -745,7 +738,7 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 			if (url.pathname === "/message/withdraw") {
 				if (typeof ctx.withdrawQueuedMessage !== "function")
 					return reply(501, {
-						error: "Queue withdrawal requires the pi-embodied fork. The message remains queued.",
+						error: "This pi has no ExtensionContext.withdrawQueuedMessage (the pi-embodied fork's extension, not in pi 1.3): the message remains queued until the agent takes it.",
 					});
 				const q = queued.find((x) => x.id === Number(body.id));
 				if (!q) return reply(404, { error: "no such message" });

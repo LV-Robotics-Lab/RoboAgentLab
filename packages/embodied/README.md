@@ -6,20 +6,26 @@ Robotics extensions for the pi agent harness. Robots and algorithms connect thro
 
 ## Quickstart
 
-Requires Node.js 22.19+ and a Linux NVIDIA GPU machine for simulation. Build pi from this fork:
+Requires Node.js 22.19+ and a Linux NVIDIA GPU machine for simulation. Install the official pi
+(1.3.0 is the tested version; `docs/pi-compatibility.md`), clone this repository for the extension
+and its services, and point pi at the extension package. No build and no `npm link`:
 
 ```bash
+npm install -g @earendil-works/pi-coding-agent@1.3.0
 git clone https://github.com/RoboAgentLab/RoboAgentLab ~/RoboAgentLab
-cd ~/RoboAgentLab
-npm ci --ignore-scripts
-node scripts/hydrate-ci-models.mjs
-npm run build:offline
-npm link --ignore-scripts --workspace @earendil-works/pi-coding-agent
-pi install ./packages/embodied
+node ~/RoboAgentLab/packages/embodied/scripts/check-pi-compat.mjs
+pi install ~/RoboAgentLab/packages/embodied
 mkdir -p ~/robot-runs
 cd ~/robot-runs
 pi
 ```
+
+The check prints which pi it found and whether every pi export this package uses is there. Only the
+durable policy (`--policy-store`) and the MCP server for the Codex and Claude Code plugins need more:
+`@earendil-works/pi-durable`, `@earendil-works/chord` and `@earendil-works/pi-mcp` next to the package
+(`npm install --no-save` them in `packages/embodied`; `docs/official-pi-migration.md`).
+Developing pi itself still works from this fork (`npm ci --ignore-scripts`, `npm run build:offline`,
+`npm link --ignore-scripts --workspace @earendil-works/pi-coding-agent`, then the same `pi install`).
 
 Inside pi, configure an image-capable planner with `/login`, then run `/embodied-setup`.
 The wizard selects a robot, mode, deployment, and experiment directory, installs services,
