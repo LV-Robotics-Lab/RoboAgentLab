@@ -24,8 +24,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-node
       - run: python3 -m pip install --user -q uv==0.12.17 # setup.sh's dry runs need uv
-      # Regenerates the model catalog from the providers' live listings, so a new model type shows up here first.
-      - run: npm run build
+      # The reviewed catalog pin (nix/model-catalog.json) is CI's model data: provider listing changes
+      # cannot change CI input. `npm run update:model-catalog-pin` moves the pin, with the fixtures it affects.
+      - name: Load pinned model catalog
+        run: node scripts/hydrate-ci-models.mjs
+      - run: npm run build:offline
       - run: npm run check
       - run: npm run build:daemon --workspace packages/env
       - run: npm test

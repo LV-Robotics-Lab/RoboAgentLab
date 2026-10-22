@@ -144,8 +144,10 @@ report that they are unavailable
 
 ```bash
 npm ci --ignore-scripts      # install dependencies without lifecycle scripts
-npm run build                # regenerate the model catalog from the providers' live listings, then build
-npm run build:offline        # rebuild from the model data already generated, without network access
+node scripts/hydrate-ci-models.mjs   # download the pinned model catalog (nix/model-catalog.json), as CI does
+npm run build:offline        # build from that model data, without further network access
+npm run build                # instead: regenerate the model data from the providers' live listings, then build
+npm run update:model-catalog-pin     # move the pin to the newest published catalog; fix the test fixtures it changes in the same commit
 npm run check                # lint, format, type check
 npm test                     # the workspaces' tests
 (cd packages/embodied && node --test --experimental-strip-types test/*.test.ts)

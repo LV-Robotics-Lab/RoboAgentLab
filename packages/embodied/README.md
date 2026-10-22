@@ -45,7 +45,7 @@ The check prints which pi it found and whether every pi export this package uses
 durable policy (`--policy-store`) and the MCP server for the Codex and Claude Code plugins need more:
 `@earendil-works/pi-durable`, `@earendil-works/chord` and `@earendil-works/pi-mcp` next to the package
 (`npm install --no-save` them in `packages/embodied`; `docs/official-pi-migration.md`).
-Developing pi itself still works from this checkout (`npm ci --ignore-scripts`, `npm run build:offline`,
+Developing pi itself still works from this checkout (`npm ci --ignore-scripts`, `node scripts/hydrate-ci-models.mjs`, `npm run build:offline`,
 `npm link --ignore-scripts --workspace @earendil-works/pi-coding-agent`, then the same `pi install`).
 
 `/embodied-setup` asks for the robot or benchmark (and what it needs: GPU, Isaac Sim, real hardware
@@ -469,7 +469,7 @@ state viewers, advisors), module-owned tools, units, code mode (`run_code`), VDM
 replay, evaluation and `result.json`. Run `pi` for those.
 
 Both hosts need, on the machine that reaches the env server: a built checkout
-(`npm install && npm run build:offline`), the deployment config (`~/.pi/agent/embodied.json`, which
+(`npm ci --ignore-scripts && node scripts/hydrate-ci-models.mjs && npm run build:offline`), the deployment config (`~/.pi/agent/embodied.json`, which
 gives the python, the services tree and the CUDA device), and an env server to attach to
 (`PI_EMBODIED_ENV_URL=http://host:port[#token=HEX]`, started with the robot's `serve.sh`) or to
 start (`PI_EMBODIED_SERVE_ARGS="--suite libero_10 --task 0 --seed 0"`: the env server's own arguments;
